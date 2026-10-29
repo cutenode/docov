@@ -1,0 +1,3 @@
+# LF on every checkout, Windows included: a test compares docov.schema.json byte for byte with
+# what `docov --print-schema` prints.
+* text=auto eol=lf
