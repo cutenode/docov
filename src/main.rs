@@ -18,7 +18,7 @@ struct Cli {
     #[arg(long, value_name = "FILE")]
     config: Option<PathBuf>,
     /// Fail under this documented percentage
-    #[arg(long, value_name = "PERCENT", value_parser = percent)]
+    #[arg(long, value_name = "PERCENT", value_parser = config::percent)]
     threshold: Option<f64>,
     /// Which declarations count [default: the config's, or exports]
     #[arg(long, value_enum)]
@@ -29,11 +29,6 @@ struct Cli {
     /// Print the config file's JSON Schema and exit
     #[arg(long, exclusive = true)]
     print_schema: bool,
-}
-
-fn percent(value: &str) -> Result<f64, &'static str> {
-    // Something that isn't a number fails the range check as NaN.
-    config::percent(value.parse().unwrap_or(f64::NAN))
 }
 
 fn main() -> ExitCode {

@@ -38,6 +38,23 @@ pub struct Config {
     pub scope: Scope,
 }
 
+/// Parses `--threshold`: a number from 0 to 100. It lives here rather than in the binary so tests
+/// can call it: a bad value makes clap exit the process, and on Windows a process that exits that
+/// way never writes its coverage.
+pub fn percent(value: &str) -> Result<f64, String> {
+    // Something that isn't a number fails the range check as NaN.
+    in_range(value.parse().unwrap_or(f64::NAN))
+}
+
+/// `value`, if it's from 0 to 100. `--threshold` and the config's `threshold` both check with this.
+fn in_range(value: f64) -> Result<f64, String> {
+    if (0.0..=100.0).contains(&value) { Ok(value) } else { Err("expected a number from 0 to 100".into()) }
+}
+
+fn threshold<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<f64>, D::Error> {
+    Option::<f64>::deserialize(deserializer)?.map(in_range).transpose().map_err(de::Error::custom)
+}
+
 /// Why the config file couldn't be loaded. Each variant's `path` is the file's.
 #[derive(Debug, thiserror::Error)]
 #[expect(missing_docs, reason = "the variants document their fields")]
@@ -48,16 +65,6 @@ pub enum Error {
     /// It isn't valid JSON, or doesn't match the schema.
     #[error("{}: {source}", path.display())]
     Parse { path: PathBuf, source: serde_json::Error },
-}
-
-/// `value`, if it's a percentage from 0 to 100. `--threshold` and the config's `threshold` both
-/// check with this.
-pub fn percent(value: f64) -> Result<f64, &'static str> {
-    if (0.0..=100.0).contains(&value) { Ok(value) } else { Err("expected a number from 0 to 100") }
-}
-
-fn threshold<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<f64>, D::Error> {
-    Option::<f64>::deserialize(deserializer)?.map(percent).transpose().map_err(de::Error::custom)
 }
 
 impl Config {

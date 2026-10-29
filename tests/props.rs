@@ -2,7 +2,7 @@
 
 use std::{fs, path::Path, path::PathBuf, process::Command};
 
-use docov::{FileReport, Format, Item, Kind, Scope, Totals, collect, report, scan, scan_file};
+use docov::{FileReport, Format, Item, Kind, Scope, Totals, collect, config, report, scan, scan_file};
 use hegel::{TestCase, generators as gs};
 use oxc_span::SourceType;
 
@@ -420,6 +420,21 @@ impl std::io::Write for Room {
 
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
+    }
+}
+
+/// A threshold is any number from 0 to 100, written any way Rust reads a float, and nothing else.
+#[hegel::test(test_cases = 200)]
+fn thresholds_are_percentages(tc: TestCase) {
+    let edges = vec!["0", "-0", "100", "100.0", "1e2", "100.00001", "-0.00001", "NaN", "inf", ""];
+    let text = match tc.draw(gs::integers::<u8>().max_value(2)) {
+        0 => tc.draw(gs::floats::<f64>()).to_string(),
+        1 => tc.draw(gs::sampled_from(edges)).to_owned(),
+        _ => tc.draw(gs::text()),
+    };
+    match text.parse::<f64>() {
+        Ok(p) if (0.0..=100.0).contains(&p) => assert_eq!(config::percent(&text), Ok(p)),
+        _ => assert_eq!(config::percent(&text), Err("expected a number from 0 to 100".into())),
     }
 }
 
