@@ -35,6 +35,16 @@ pub struct Config {
     pub scope: Scope,
 }
 
+/// Parses `--threshold`: a number from 0 to 100. It lives here rather than in the binary so tests
+/// can call it: a bad value makes clap exit the process, and on Windows a process that exits that
+/// way never writes its coverage.
+pub fn percent(value: &str) -> Result<f64, String> {
+    match value.parse::<f64>() {
+        Ok(p) if (0.0..=100.0).contains(&p) => Ok(p),
+        _ => Err("expected a number from 0 to 100".into()),
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("{}: {source}", path.display())]
