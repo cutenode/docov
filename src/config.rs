@@ -1,12 +1,13 @@
-//! docov.json, the settings file.
+//! docov.json (or docov.jsonc), the settings file.
 
-use std::{fs, io, path::Path, path::PathBuf};
+use std::{env, fs, io, iter, path::Path, path::PathBuf};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize, de};
 
-/// The file `docov` reads its settings from when no `--config` is given, if it's there.
-pub const DEFAULT_PATH: &str = "docov.json";
+/// The files `docov` reads its settings from when no `--config` is given: the first of these in
+/// the current folder, or else in the nearest folder above it that has one.
+pub const FILE_NAMES: [&str; 2] = ["docov.json", "docov.jsonc"];
 
 /// Which declarations count toward coverage.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema, clap::ValueEnum)]
@@ -22,13 +23,16 @@ pub enum Scope {
 /// docov's settings. Flags on the command line win over them.
 #[derive(Debug, Default, PartialEq, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
+// Tells editors (VS Code's JSON service reads these) that the file may have comments and trailing
+// commas, which `load` strips.
+#[schemars(extend("allowComments" = true, "allowTrailingCommas" = true))]
 pub struct Config {
     /// This file's JSON Schema, for editors.
     #[serde(rename = "$schema")]
     pub schema: Option<String>,
-    /// Files and folders to scan, relative to where docov runs. Defaults to the current folder.
+    /// Files and folders to scan, relative to this file's folder. Defaults to the folder docov runs in.
     pub paths: Vec<PathBuf>,
-    /// Gitignore-style globs of files to leave out, on top of what .gitignore leaves out.
+    /// Gitignore-style globs of files to leave out, relative to this file's folder, on top of .gitignore.
     pub exclude: Vec<String>,
     /// The lowest documented percentage that passes.
     #[schemars(range(min = 0, max = 100))]
@@ -36,6 +40,10 @@ pub struct Config {
     pub threshold: Option<f64>,
     /// Which declarations count.
     pub scope: Scope,
+    /// The folder the file is in, as a path from the current folder (empty for the current folder,
+    /// or with no file). `paths` and `exclude` are relative to it.
+    #[serde(skip)]
+    pub dir: PathBuf,
 }
 
 /// Parses `--threshold`: a number from 0 to 100. It lives here rather than in the binary so tests
@@ -55,6 +63,17 @@ fn threshold<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<f64>, 
     Option::<f64>::deserialize(deserializer)?.map(in_range).transpose().map_err(de::Error::custom)
 }
 
+/// The nearest of [`FILE_NAMES`], as a path from the current folder (`../docov.json` one folder
+/// up).
+fn find() -> Option<PathBuf> {
+    // This fails only when the current folder is gone, and then there's nothing to find.
+    let here = env::current_dir().unwrap_or_default();
+    here.ancestors().enumerate().find_map(|(up, dir)| {
+        let name = FILE_NAMES.iter().find(|name| dir.join(name).is_file())?;
+        Some(iter::repeat_n(Path::new(".."), up).collect::<PathBuf>().join(name))
+    })
+}
+
 /// Why the config file couldn't be loaded. Each variant's `path` is the file's.
 #[derive(Debug, thiserror::Error)]
 #[expect(missing_docs, reason = "the variants document their fields")]
@@ -62,24 +81,29 @@ pub enum Error {
     /// It couldn't be read.
     #[error("{}: {source}", path.display())]
     Read { path: PathBuf, source: io::Error },
+    /// It has a `/` that doesn't start a `//` or `/* */` comment.
+    #[error("{}: a `/` that doesn't start a comment", path.display())]
+    Slash { path: PathBuf },
     /// It isn't valid JSON, or doesn't match the schema.
     #[error("{}: {source}", path.display())]
     Parse { path: PathBuf, source: serde_json::Error },
 }
 
 impl Config {
-    /// Reads `path`, or `docov.json` when `path` is `None`, which may be missing.
+    /// Reads `path`, or else the nearest of [`FILE_NAMES`], if there is one.
     pub fn load(path: Option<&Path>) -> Result<Self, Error> {
-        let (path, required) = match path {
-            Some(path) => (path, true),
-            None => (Path::new(DEFAULT_PATH), false),
-        };
-        let text = match fs::read_to_string(path) {
-            Ok(text) => text,
-            Err(e) if !required && e.kind() == io::ErrorKind::NotFound => return Ok(Self::default()),
-            Err(source) => return Err(Error::Read { path: path.to_owned(), source }),
-        };
-        serde_json::from_str(&text).map_err(|source| Error::Parse { path: path.to_owned(), source })
+        let Some(path) = path.map(Path::to_path_buf).or_else(find) else { return Ok(Self::default()) };
+        let mut text = fs::read_to_string(&path).map_err(|source| Error::Read { path: path.clone(), source })?;
+        // Comments and trailing commas turn into spaces, so serde_json's lines and columns still
+        // match the file. A stray `/` stops it partway, after blanking that `/`, so it can't go on
+        // to serde_json.
+        if json_strip_comments::strip(&mut text).is_err() {
+            return Err(Error::Slash { path });
+        }
+        let mut config: Self =
+            serde_json::from_str(&text).map_err(|source| Error::Parse { path: path.clone(), source })?;
+        config.dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
+        Ok(config)
     }
 
     /// The JSON Schema for this file, as `docov --print-schema` prints it.

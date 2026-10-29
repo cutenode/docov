@@ -13,7 +13,7 @@
       "default": null
     },
     "exclude": {
-      "description": "Gitignore-style globs of files to leave out, on top of what .gitignore leaves out.",
+      "description": "Gitignore-style globs of files to leave out, relative to this file's folder, on top of .gitignore.",
       "type": "array",
       "default": [],
       "items": {
@@ -21,7 +21,7 @@
       }
     },
     "paths": {
-      "description": "Files and folders to scan, relative to where docov runs. Defaults to the current folder.",
+      "description": "Files and folders to scan, relative to this file's folder. Defaults to the folder docov runs in.",
       "type": "array",
       "default": [],
       "items": {
@@ -46,6 +46,8 @@
     }
   },
   "additionalProperties": false,
+  "allowComments": true,
+  "allowTrailingCommas": true,
   "$defs": {
     "Scope": {
       "description": "Which declarations count toward coverage.",

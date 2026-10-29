@@ -505,7 +505,7 @@ fn write(dir: &Path, path: &str, text: &str) {
 /// Where a generated project's settings come from.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Settings {
-    /// docov.json, found without a flag.
+    /// docov.json or docov.jsonc, found without a flag, sometimes from a subfolder.
     Default,
     /// Another file, named by `--config`.
     Named,
@@ -550,6 +550,12 @@ fn the_cli_counts_the_project_and_fails_by_the_threshold(tc: TestCase) {
             (r#"{ "threshold": 150 }"#, "expected a number from 0 to 100"),
         ]))
     });
+    // A found config's name, whether it has comments and a trailing comma, and whether docov runs
+    // from a subfolder, finding it one folder up (its `paths` then lead back to the project).
+    let name = tc.draw(gs::sampled_from(config::FILE_NAMES.to_vec()));
+    let commented = tc.draw(gs::booleans());
+    let from_sub = settings == Settings::Default && tc.draw(gs::booleans());
+    let up = if from_sub { "../" } else { "" };
     // Each file's path, documented and total items, and whether .gitignore (0) or the config's
     // excludes (1) leave it out.
     let mut files = Vec::new();
@@ -595,15 +601,21 @@ fn the_cli_counts_the_project_and_fails_by_the_threshold(tc: TestCase) {
     let format = tc.draw(gs::sampled_from(vec!["text", "json", "lcov"]));
     let mut args = vec!["--format".to_owned(), format.into()];
     let scope_name = if scope == Scope::All { "all" } else { "exports" };
-    let config = serde_json::json!({ "exclude": excluded, "scope": scope_name, "threshold": threshold });
+    let mut config = serde_json::json!({ "exclude": excluded, "scope": scope_name, "threshold": threshold });
+    if from_sub {
+        config["paths"] = serde_json::json!(["."]);
+    }
+    let config = config.to_string();
+    let config =
+        if commented { format!("// docov\n{}, /* end */ }}\n", config.strip_suffix('}').unwrap()) } else { config };
     match settings {
-        Settings::Default => write(dir.path(), "docov.json", &config.to_string()),
+        Settings::Default => write(dir.path(), name, &config),
         Settings::Named => {
-            write(dir.path(), "custom.json", &config.to_string());
+            write(dir.path(), "custom.json", &config);
             args.extend(["--config".into(), "custom.json".into()]);
         }
         Settings::Missing => args.extend(["--config".into(), "missing.json".into()]),
-        Settings::Invalid => write(dir.path(), "docov.json", invalid.unwrap().0),
+        Settings::Invalid => write(dir.path(), name, invalid.unwrap().0),
         Settings::BadGlob => {
             // Big enough that globset can't build it (it fails from about 30,000 alternatives).
             let glob = if huge_glob {
@@ -627,18 +639,20 @@ fn the_cli_counts_the_project_and_fails_by_the_threshold(tc: TestCase) {
     // Naming the files scans the same ones, the broken one too.
     let named = tc.draw(gs::booleans());
     if named {
-        args.extend(scanned.iter().map(|f| f.0.clone()));
+        args.extend(scanned.iter().map(|f| format!("{up}{}", f.0)));
     }
     if let Some(path) = broken.filter(|p| named || *p == "README.md") {
-        args.push(path.into());
+        args.push(format!("{up}{path}"));
     }
     let gone = tc.draw(gs::weighted_booleans(0.1));
     if gone {
         args.push("gone".into());
     }
 
+    let cwd = dir.path().join(if from_sub { "sub" } else { "" });
+    fs::create_dir_all(&cwd).unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_docov"));
-    command.args(&args).current_dir(dir.path());
+    command.args(&args).current_dir(cwd);
     // A pipe whose reader has gone (`docov | head` after head exits): writes to it fail.
     let unwritable = tc.draw(gs::weighted_booleans(0.1));
     if unwritable {
@@ -681,4 +695,107 @@ fn the_cli_counts_the_project_and_fails_by_the_threshold(tc: TestCase) {
         "lcov" => assert_eq!(stdout.matches("SF:").count(), scanned.len()),
         _ => assert!(stdout.ends_with(&format!("{documented}/{total}  total\n")), "{stdout}"),
     }
+}
+
+/// Each kind of bad input on its own, in a generated project that's fine otherwise: docov exits 2
+/// without a report, and its error names the culprit. The CLI property above draws these too, but
+/// each only now and then, so a derandomized run could miss one; this one reaches them all.
+#[hegel::test(test_cases = 10)]
+fn each_bad_input_fails_naming_itself(tc: TestCase) {
+    let dir = tempfile::tempdir().unwrap();
+    for f in 0..tc.draw(gs::integers::<usize>().min_value(1).max_value(3)) {
+        let doc = if tc.draw(gs::booleans()) { "/** Docs. */\n" } else { "" };
+        write(dir.path(), &format!("src/f{f}.ts"), &format!("{doc}export const a = 1;\n"));
+    }
+    write(dir.path(), "README.md", "not code");
+    let fails_naming = |args: &[&str], culprit: &str| {
+        let out = Command::new(env!("CARGO_BIN_EXE_docov")).args(args).current_dir(dir.path()).output().unwrap();
+        let (stdout, stderr) = (String::from_utf8(out.stdout).unwrap(), String::from_utf8(out.stderr).unwrap());
+        assert_eq!((out.status.code(), stdout.as_str()), (Some(2), ""), "{args:?} {stderr}");
+        assert!(stderr.contains(culprit), "{culprit}: {stderr}");
+    };
+    // Bad arguments, and what the error names.
+    let bad_args: [(&[&str], &str); 4] = [
+        (&["--config", "missing.json"], "missing.json"),
+        (&["--threshold", "150"], "150"),
+        (&["gone"], "gone"),
+        (&["README.md"], "README.md"),
+    ];
+    for (args, culprit) in bad_args {
+        fails_naming(args, culprit);
+    }
+    // Bad files, each removed after its run, and what the error names.
+    let config = |value: serde_json::Value| value.to_string().into_bytes();
+    // Big enough that globset can't build it (it fails from about 30,000 alternatives).
+    let huge_glob = format!("{{{}}}", (0..40_000).map(|i| format!("x{i}[a-z][0-9]?")).collect::<Vec<_>>().join(","));
+    let bad_files = [
+        ("docov.json", br#"{ "treshold": 1 }"#.to_vec(), "treshold"),
+        ("docov.json", br#"{ "threshold": "80" }"#.to_vec(), "invalid type"),
+        ("docov.json", br#"{ "threshold": 150 }"#.to_vec(), "expected a number from 0 to 100"),
+        ("docov.jsonc", br#"{ "threshold": 5 / }"#.to_vec(), "doesn't start a comment"),
+        ("docov.json", config(serde_json::json!({ "exclude": ["src/[z"] })), "[z"),
+        ("docov.json", config(serde_json::json!({ "exclude": [huge_glob] })), "NFA"),
+        ("src/broken.ts", b"export function (".to_vec(), "broken.ts"),
+        ("src/latin1.js", b"// caf\xe9\n".to_vec(), "latin1.js"),
+    ];
+    for (path, text, culprit) in bad_files {
+        fs::write(dir.path().join(path), text).unwrap();
+        fails_naming(&[], culprit);
+        fs::remove_file(dir.path().join(path)).unwrap();
+    }
+
+    // A pipe whose reader has gone (`docov | head` after head exits): every format's write fails.
+    for format in ["text", "json", "lcov"] {
+        let (reader, writer) = std::io::pipe().unwrap();
+        drop(reader);
+        let out = Command::new(env!("CARGO_BIN_EXE_docov"))
+            .args(["--format", format])
+            .current_dir(dir.path())
+            .stdout(writer)
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8(out.stderr).unwrap();
+        assert_eq!(out.status.code(), Some(2), "{format}: {stderr}");
+        assert!(stderr.starts_with("docov: "), "{format}: {stderr}");
+    }
+}
+
+/// A config file loads the same with comments and trailing commas added as without them, strings
+/// that look like comments included, and fails to load with a `/` that starts no comment.
+#[hegel::test(test_cases = 50)]
+fn comments_in_config_files_change_nothing(tc: TestCase) {
+    let dir = tempfile::tempdir().unwrap();
+    let exclude = tc.draw(gs::vecs(gs::sampled_from(vec!["*.js", "src/*/x.ts", "a//b", "c/**"])).max_size(3));
+    let threshold = tc.draw(gs::optional(gs::integers::<u8>().max_value(100)));
+    let scope = tc.draw(gs::sampled_from(vec!["exports", "all"]));
+    let json = serde_json::json!({ "exclude": exclude, "threshold": threshold, "scope": scope });
+    let plain = serde_json::to_string_pretty(&json).unwrap();
+    let load = |text: &str| {
+        let path = dir.path().join("docov.jsonc");
+        fs::write(&path, text).unwrap();
+        config::Config::load(Some(&path))
+    };
+
+    let lines: Vec<_> = plain.lines().collect();
+    let mut commented = String::new();
+    for (i, line) in lines.iter().enumerate() {
+        match tc.draw(gs::integers::<u8>().max_value(2)) {
+            0 => commented.push_str("// a note\n"),
+            1 => commented.push_str("/* a note */ "),
+            _ => {}
+        }
+        commented.push_str(line);
+        let closes_next = lines.get(i + 1).is_some_and(|next| next.trim_start().starts_with(['}', ']']));
+        if closes_next && !line.ends_with(['{', '[']) && tc.draw(gs::booleans()) {
+            commented.push(',');
+        }
+        commented.push('\n');
+    }
+    assert_eq!(load(&commented).unwrap(), load(&plain).unwrap(), "{commented}");
+
+    // A `/` before a line, where nothing is in a string.
+    let at = tc.draw(gs::integers::<usize>().max_value(lines.len() - 1));
+    let stray: Vec<_> =
+        lines.iter().enumerate().map(|(i, l)| if i == at { format!("/ {l}") } else { (*l).into() }).collect();
+    assert!(matches!(load(&stray.join("\n")), Err(config::Error::Slash { .. })));
 }
