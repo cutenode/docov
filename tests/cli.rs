@@ -75,6 +75,16 @@ fn bad_configs_and_files_fail_with_their_paths() {
     let (code, _, err) = docov(dir.path(), &[]);
     assert_eq!(code, 2);
     assert!(err.contains("unknown field `treshold`"), "{err}");
+
+    // The same range as --threshold.
+    fs::write(dir.path().join("docov.json"), r#"{ "threshold": 150 }"#).unwrap();
+    let (code, _, err) = docov(dir.path(), &[]);
+    assert_eq!(code, 2);
+    assert!(err.starts_with("docov: docov.json: expected a number from 0 to 100"), "{err}");
+    fs::write(dir.path().join("docov.json"), r#"{ "threshold": "80" }"#).unwrap();
+    let (code, _, err) = docov(dir.path(), &[]);
+    assert_eq!(code, 2);
+    assert!(err.contains("invalid type: string \"80\""), "{err}");
     fs::remove_file(dir.path().join("docov.json")).unwrap();
 
     fs::write(dir.path().join("src/broken.ts"), "export function (").unwrap();

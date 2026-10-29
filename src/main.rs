@@ -1,8 +1,10 @@
+//! The `docov` command.
+
 use std::{io, path::PathBuf, process::ExitCode};
 
 use clap::Parser;
-use docov::{Config, FileReport, Format, Scope, Totals, config, report, scan_file, walk};
-use rayon::prelude::*;
+use docov::{Config, Format, Scope, Totals, config, report, scan_file, walk};
+use rayon::{iter::Either, prelude::*};
 
 /// Checks how much of a JavaScript or TypeScript project's API has JSDoc.
 ///
@@ -21,6 +23,7 @@ struct Cli {
     /// Which declarations count [default: the config's, or exports]
     #[arg(long, value_enum)]
     scope: Option<Scope>,
+    /// How to write the report
     #[arg(long, value_enum, default_value_t)]
     format: Format,
     /// Print the config file's JSON Schema and exit
@@ -53,12 +56,13 @@ fn run(cli: Cli) -> Result<bool, Vec<String>> {
     let threshold = cli.threshold.or(config.threshold);
 
     let files = walk::files(&paths, &config.exclude).map_err(|e| vec![e.to_string()])?;
-    let (reports, errors): (Vec<_>, Vec<_>) =
-        files.par_iter().map(|path| scan_file(path, scope)).partition(Result::is_ok);
+    let (reports, errors): (Vec<_>, Vec<_>) = files.par_iter().partition_map(|path| match scan_file(path, scope) {
+        Ok(report) => Either::Left(report),
+        Err(e) => Either::Right(e.to_string()),
+    });
     if !errors.is_empty() {
-        return Err(errors.into_iter().filter_map(Result::err).map(|e| e.to_string()).collect());
+        return Err(errors);
     }
-    let reports: Vec<FileReport> = reports.into_iter().filter_map(Result::ok).collect();
     report::write(cli.format, &reports, &mut io::stdout().lock()).map_err(|e| vec![e.to_string()])?;
 
     let percent = Totals::of(&reports).percent();

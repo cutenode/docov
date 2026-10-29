@@ -345,24 +345,28 @@ fn scans_find_what_modules_declare(tc: TestCase) {
 }
 
 /// A module read from a file has the items its text does. One that doesn't parse fails with its
-/// path and the line of the error.
+/// path and the line of the error, and one that isn't UTF-8 with its path.
 #[hegel::test(test_cases = 100)]
 fn files_scan_as_their_text(tc: TestCase) {
+    const SYNTAX_ERROR: &[u8] = b"export function (";
     let Module { source, .. } = Module::generate(&tc);
-    let broken = tc.draw(gs::booleans());
-    let text = if broken { format!("{source}export function (") } else { source.clone() };
+    let tail = tc.draw(gs::sampled_from(vec![&b""[..], SYNTAX_ERROR, b"// caf\xe9"]));
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join(format!("m.{}", tc.draw(gs::sampled_from(vec!["ts", "mts", "cts"]))));
-    fs::write(&path, &text).unwrap();
+    fs::write(&path, [source.as_bytes(), tail].concat()).unwrap();
 
     match scan_file(&path, Scope::All) {
         Ok(report) => {
-            assert!(!broken);
+            assert!(tail.is_empty());
             assert_eq!((report.path, report.items), (path, scan(&source, SourceType::ts(), Scope::All).unwrap()));
         }
         Err(collect::Error::Syntax { path: at, line, .. }) => {
-            assert!(broken);
+            assert_eq!(tail, SYNTAX_ERROR);
             assert_eq!((at, line), (path, source.matches('\n').count() + 1));
+        }
+        Err(collect::Error::Read { path: at, source }) => {
+            assert!(std::str::from_utf8(tail).is_err());
+            assert_eq!((at, source.kind()), (path, std::io::ErrorKind::InvalidData));
         }
         Err(e) => panic!("{e}"),
     }
@@ -509,7 +513,7 @@ enum Settings {
     Flags,
     /// `--config` naming a file that isn't there.
     Missing,
-    /// docov.json with a misspelled key.
+    /// docov.json with a misspelled key, or a threshold that isn't a number or is over 100.
     Invalid,
     /// docov.json with an exclude glob that doesn't parse, or is too big to build.
     BadGlob,
@@ -538,6 +542,14 @@ fn the_cli_counts_the_project_and_fails_by_the_threshold(tc: TestCase) {
         Settings::BadGlob,
     ]));
     let huge_glob = settings == Settings::BadGlob && tc.draw(gs::weighted_booleans(0.2));
+    // An invalid docov.json, and what its error names.
+    let invalid = (settings == Settings::Invalid).then(|| {
+        tc.draw(gs::sampled_from(vec![
+            (r#"{ "treshold": 1 }"#, "treshold"),
+            (r#"{ "threshold": "80" }"#, "invalid type"),
+            (r#"{ "threshold": 150 }"#, "expected a number from 0 to 100"),
+        ]))
+    });
     // Each file's path, documented and total items, and whether .gitignore (0) or the config's
     // excludes (1) leave it out.
     let mut files = Vec::new();
@@ -591,7 +603,7 @@ fn the_cli_counts_the_project_and_fails_by_the_threshold(tc: TestCase) {
             args.extend(["--config".into(), "custom.json".into()]);
         }
         Settings::Missing => args.extend(["--config".into(), "missing.json".into()]),
-        Settings::Invalid => write(dir.path(), "docov.json", r#"{ "treshold": 1 }"#),
+        Settings::Invalid => write(dir.path(), "docov.json", invalid.unwrap().0),
         Settings::BadGlob => {
             // Big enough that globset can't build it (it fails from about 30,000 alternatives).
             let glob = if huge_glob {
@@ -639,7 +651,7 @@ fn the_cli_counts_the_project_and_fails_by_the_threshold(tc: TestCase) {
     let culprit = match settings {
         _ if out_of_range => Some("150"),
         Settings::Missing => Some("missing.json"),
-        Settings::Invalid => Some("treshold"),
+        Settings::Invalid => invalid.map(|(_, culprit)| culprit),
         Settings::BadGlob => Some(if huge_glob { "NFA" } else { "[z" }),
         _ if gone => Some("gone"),
         _ => broken.map(|p| Path::new(p).file_name().unwrap().to_str().unwrap()),
