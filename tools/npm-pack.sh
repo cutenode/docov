@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Packs docov's npm packages into OUT as tarballs: an @docov/<platform> package for each folder in
-# BINS, holding the docov binary built for that platform, then docov itself (npm/docov), whose
+# BINS, holding the docov binary built for that platform, then @docov/cli (npm/docov), whose
 # launcher runs whichever of them npm installed. BINS' folders are named for Node's
 # `<process.platform>-<process.arch>` (darwin-arm64, win32-x64). Every package gets Cargo.toml's
-# version, and docov depends on that exact version of each, the way Biome and esbuild pin theirs.
+# version, and @docov/cli depends on that exact version of each, the way Biome and esbuild pin theirs.
 #
 #   tools/npm-pack.sh BINS OUT
 set -euo pipefail
