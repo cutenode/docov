@@ -5,7 +5,8 @@
 #
 #   tools/npm-publish.sh DIR
 set -euo pipefail
-dir=$1
+# Absolute, since npm reads a relative `npm-packages/x.tgz` as the GitHub repository npm-packages/x.tgz.
+dir=$(cd "$1" && pwd)
 
 manifest() {
   tar -xOzf "$1" package/package.json
