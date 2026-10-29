@@ -10,7 +10,7 @@ if (!binary) {
     binary = require.resolve(`${pkg}/docov${process.platform === "win32" ? ".exe" : ""}`);
   } catch {
     console.error(
-      `docov: ${pkg} isn't installed. npm installs it with docov unless optional dependencies are left out (--omit=optional). ` +
+      `docov: ${pkg} isn't installed. npm installs it with @docov/cli unless optional dependencies are left out (--omit=optional). ` +
         "If docov has no binary for this platform, run `cargo install docov` and set DOCOV_BINARY to its path.",
     );
     process.exit(2);
