@@ -1,7 +1,7 @@
 use std::{io, path::PathBuf, process::ExitCode};
 
 use clap::Parser;
-use docov::{Config, FileReport, Format, Scope, Totals, report, scan_file, walk};
+use docov::{Config, FileReport, Format, Scope, Totals, config, report, scan_file, walk};
 use rayon::prelude::*;
 
 /// Checks how much of a JavaScript or TypeScript project's API has JSDoc.
@@ -28,11 +28,9 @@ struct Cli {
     print_schema: bool,
 }
 
-fn percent(value: &str) -> Result<f64, String> {
-    match value.parse::<f64>() {
-        Ok(p) if (0.0..=100.0).contains(&p) => Ok(p),
-        _ => Err("expected a number from 0 to 100".into()),
-    }
+fn percent(value: &str) -> Result<f64, &'static str> {
+    // Something that isn't a number fails the range check as NaN.
+    config::percent(value.parse().unwrap_or(f64::NAN))
 }
 
 fn main() -> ExitCode {

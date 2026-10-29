@@ -1,7 +1,7 @@
 use std::{fs, io, path::Path, path::PathBuf};
 
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de};
 
 /// The file `docov` reads its settings from when no `--config` is given, if it's there.
 pub const DEFAULT_PATH: &str = "docov.json";
@@ -30,6 +30,7 @@ pub struct Config {
     pub exclude: Vec<String>,
     /// The lowest documented percentage that passes.
     #[schemars(range(min = 0, max = 100))]
+    #[serde(deserialize_with = "threshold")]
     pub threshold: Option<f64>,
     /// Which declarations count.
     pub scope: Scope,
@@ -41,6 +42,16 @@ pub enum Error {
     Read { path: PathBuf, source: io::Error },
     #[error("{}: {source}", path.display())]
     Parse { path: PathBuf, source: serde_json::Error },
+}
+
+/// `value`, if it's a percentage from 0 to 100. `--threshold` and the config's `threshold` both
+/// check with this.
+pub fn percent(value: f64) -> Result<f64, &'static str> {
+    if (0.0..=100.0).contains(&value) { Ok(value) } else { Err("expected a number from 0 to 100") }
+}
+
+fn threshold<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<f64>, D::Error> {
+    Option::<f64>::deserialize(deserializer)?.map(percent).transpose().map_err(de::Error::custom)
 }
 
 impl Config {
