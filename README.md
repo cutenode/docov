@@ -53,7 +53,7 @@ Some things never count: constructors (their class's doc covers them), private m
 
 ```jsonc
 {
-  "$schema": "https://raw.githubusercontent.com/cutenode/docov/v0.1.0/docov.schema.json",
+  "$schema": "https://raw.githubusercontent.com/cutenode/docov/v0.1.1/docov.schema.json",
   // Relative to this file's folder, wherever docov runs from.
   "paths": ["src"],
   "exclude": ["**/*.test.ts", "src/generated/**"],
