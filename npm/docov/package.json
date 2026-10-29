@@ -1,5 +1,5 @@
 {
-  "name": "docov",
+  "name": "@docov/cli",
   "description": "JSDoc coverage for JavaScript and TypeScript",
   "keywords": ["jsdoc", "coverage", "documentation", "javascript", "typescript"],
   "license": "MIT",
@@ -9,5 +9,6 @@
     "directory": "npm/docov"
   },
   "bin": { "docov": "bin/docov" },
-  "files": ["bin/docov"]
+  "files": ["bin/docov"],
+  "publishConfig": { "access": "public" }
 }

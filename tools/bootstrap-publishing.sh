@@ -48,7 +48,7 @@ fi
 packages=$(mktemp -d)
 trap 'rm -rf "$packages"' EXIT
 gh run download "$run" -R $owner/$repo -n npm-packages -D "$packages"
-if [[ ! -f $packages/docov-$version.tgz ]]; then
+if [[ ! -f $packages/docov-cli-$version.tgz ]]; then
   echo "$workflow's latest run on main didn't pack docov $version. Start one with \`gh workflow run $workflow -R $owner/$repo --ref main\` and run this again when it's done." >&2
   exit 1
 fi
