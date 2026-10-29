@@ -2,6 +2,7 @@
 # and regions. Test modules live in their own `tests.rs` files, left out by the regex (either
 # separator: Windows names files with backslashes). `cargo coverage --test props` is the Hegel
 # properties alone, held to the same thresholds. Run both with HEGEL_DERANDOMIZE=true, as
-# tools/check.sh does, so Hegel draws the same cases every run and the numbers don't move.
+# tools/check.sh does, so Hegel draws the same cases every run and the numbers don't move. The
+# report lists any uncovered lines, so a failure on CI says where.
 [alias]
-coverage = "llvm-cov nextest --no-fail-fast --fail-under-lines 100 --fail-under-functions 100 --fail-under-regions 100 --ignore-filename-regex (^|[/\\\\])tests\\.rs$"
+coverage = "llvm-cov nextest --no-fail-fast --show-missing-lines --fail-under-lines 100 --fail-under-functions 100 --fail-under-regions 100 --ignore-filename-regex (^|[/\\\\])tests\\.rs$"
