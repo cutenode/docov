@@ -65,6 +65,27 @@ fn the_config_file_sets_paths_exclude_threshold_and_scope() {
 }
 
 #[test]
+fn the_config_file_is_found_from_subfolders_and_takes_comments() {
+    let dir = project();
+    let config =
+        "// From src/ too.\n{\n  \"paths\": [\"./src\"], /* its folder's */\n  \"exclude\": [\"src/*.js\"],\n}\n";
+    fs::write(dir.path().join(".docovrc"), config).unwrap();
+    let (code, out, err) = docov(&dir.path().join("src/gen"), &[]);
+    let a = Path::new("..").join("..").join("src").join("a.ts");
+    assert_eq!((code, err.as_str()), (0, ""));
+    assert_eq!(out, format!("  50.0%  1/2  {0}\n         {0}:3:1  variable b\n  50.0%  1/2  total\n", a.display()));
+
+    // docov.jsonc wins over .docovrc, docov.json over both, and a config nearer the current folder
+    // over all of them.
+    fs::write(dir.path().join("docov.jsonc"), r#"{ "threshold": 100 }"#).unwrap();
+    assert_eq!(docov(&dir.path().join("src"), &[]).0, 1);
+    fs::write(dir.path().join("docov.json"), "{}").unwrap();
+    assert_eq!(docov(&dir.path().join("src"), &[]).0, 0);
+    fs::write(dir.path().join("src/.docovrc"), r#"{ "threshold": 100 }"#).unwrap();
+    assert_eq!(docov(&dir.path().join("src"), &[]).0, 1);
+}
+
+#[test]
 fn bad_configs_and_files_fail_with_their_paths() {
     let dir = project();
     let (code, _, err) = docov(dir.path(), &["--config", "missing.json"]);
@@ -85,6 +106,15 @@ fn bad_configs_and_files_fail_with_their_paths() {
     let (code, _, err) = docov(dir.path(), &[]);
     assert_eq!(code, 2);
     assert!(err.contains("invalid type: string \"80\""), "{err}");
+    // Stripped comments leave the lines and columns where they were.
+    fs::write(dir.path().join("docov.json"), "// settings\n{ /* a typo */ \"treshold\": 1, }").unwrap();
+    let (code, _, err) = docov(dir.path(), &[]);
+    assert_eq!(code, 2);
+    assert!(err.ends_with("unknown field `treshold`, expected one of `$schema`, `paths`, `exclude`, `threshold`, `scope` at line 2 column 25\n"), "{err}");
+    // A slash that starts no comment would otherwise vanish.
+    fs::write(dir.path().join("docov.json"), r#"{ "threshold": 5 / }"#).unwrap();
+    let (code, _, err) = docov(dir.path(), &[]);
+    assert_eq!((code, err.as_str()), (2, "docov: docov.json: a `/` that doesn't start a comment\n"));
     fs::remove_file(dir.path().join("docov.json")).unwrap();
 
     fs::write(dir.path().join("src/broken.ts"), "export function (").unwrap();
@@ -115,4 +145,12 @@ fn the_checked_in_schema_is_current() {
     let checked_in = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("docov.schema.json")).unwrap();
     assert_eq!(code, 0);
     assert_eq!(out, checked_in, "regenerate it: cargo run -- --print-schema > docov.schema.json");
+}
+
+#[test]
+fn the_readme_points_at_this_versions_schema() {
+    let readme = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("README.md")).unwrap();
+    let url =
+        format!("https://raw.githubusercontent.com/cutenode/docov/v{}/docov.schema.json", env!("CARGO_PKG_VERSION"));
+    assert!(readme.contains(&url), "point the README's $schema at {url}");
 }

@@ -14,7 +14,7 @@ use rayon::{iter::Either, prelude::*};
 struct Cli {
     /// Files and folders to scan [default: the config's `paths`, or the current folder]
     paths: Vec<PathBuf>,
-    /// The config file [default: docov.json, if there is one]
+    /// The config file [default: docov.json, docov.jsonc or .docovrc here or in the nearest folder above]
     #[arg(long, value_name = "FILE")]
     config: Option<PathBuf>,
     /// Fail under this documented percentage
@@ -51,11 +51,14 @@ fn main() -> ExitCode {
 /// Scans and reports, and says whether coverage met the threshold.
 fn run(cli: Cli) -> Result<bool, Vec<String>> {
     let config = Config::load(cli.config.as_deref()).map_err(|e| vec![e.to_string()])?;
-    let paths = if cli.paths.is_empty() { config.paths } else { cli.paths };
+    // The config's paths are relative to its folder. Collecting the components drops `.` parts after
+    // the first (`.././src` is `../src`), which would keep the excludes from matching.
+    let config_paths = config.paths.iter().map(|p| config.dir.join(p).components().collect());
+    let paths = if cli.paths.is_empty() { config_paths.collect() } else { cli.paths };
     let scope = cli.scope.unwrap_or(config.scope);
     let threshold = cli.threshold.or(config.threshold);
 
-    let files = walk::files(&paths, &config.exclude).map_err(|e| vec![e.to_string()])?;
+    let files = walk::files(&paths, &config.dir, &config.exclude).map_err(|e| vec![e.to_string()])?;
     let (reports, errors): (Vec<_>, Vec<_>) = files.par_iter().partition_map(|path| match scan_file(path, scope) {
         Ok(report) => Either::Left(report),
         Err(e) => Either::Right(e.to_string()),

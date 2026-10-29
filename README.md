@@ -46,19 +46,22 @@ Some things never count: constructors (their class's doc covers them), private m
 
 ### docov.json
 
-`docov.json`, in the folder docov runs from, holds the same settings. Flags win over it. [`docov.schema.json`](docov.schema.json) is its JSON Schema (`docov --print-schema` prints it).
+`docov.json` (or `docov.jsonc`, or `.docovrc`) holds the same settings. Flags win over it. docov reads the one in the folder it runs from, or else the nearest folder above that has one, so it finds the project's config from a subfolder too. In one folder, `docov.json` comes first and `.docovrc` last. `--config FILE` names one instead.
 
-```json
+```jsonc
 {
-  "$schema": "https://raw.githubusercontent.com/cutenode/docov/main/docov.schema.json",
+  "$schema": "https://raw.githubusercontent.com/cutenode/docov/v0.1.0/docov.schema.json",
+  // Relative to this file's folder, wherever docov runs from.
   "paths": ["src"],
   "exclude": ["**/*.test.ts", "src/generated/**"],
   "threshold": 80,
-  "scope": "exports"
+  "scope": "exports",
 }
 ```
 
-`exclude` takes gitignore-style globs, relative to that folder.
+`paths` and `exclude` (gitignore-style globs) are relative to the config's folder. Comments and trailing commas are fine in any of the three. Editors don't know `.docovrc` is JSON, so tell yours (in VS Code, `"files.associations": { ".docovrc": "jsonc" }`).
+
+[`docov.schema.json`](docov.schema.json) is its JSON Schema, which editors use for completion and checking. The URL above is pinned to a release so it matches the docov you have; `docov --print-schema > docov.schema.json` writes your own copy to point at instead.
 
 ### Formats
 
