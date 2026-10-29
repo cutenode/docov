@@ -35,3 +35,30 @@ jobs:
           tool: cargo-nextest,cargo-llvm-cov
       - run: tools/check.sh
         shell: bash
+        env:
+          LCOV_DIR: coverage
+      # Each coverage run's per-file table in the job summary. A run under its thresholds still
+      # writes its lcov, so this shows where it fell short.
+      - uses: danielpalme/ReportGenerator-GitHub-Action@861674232075b2c6bd1405a04c4bb9b150653e81 # 5.5.12
+        if: ${{ !cancelled() && hashFiles('coverage/suite.lcov') != '' }}
+        with:
+          reports: coverage/suite.lcov
+          targetdir: coverage/suite
+          reporttypes: MarkdownSummaryGithub
+          title: Coverage, whole suite (${{ matrix.os }})
+      - uses: danielpalme/ReportGenerator-GitHub-Action@861674232075b2c6bd1405a04c4bb9b150653e81 # 5.5.12
+        if: ${{ !cancelled() && hashFiles('coverage/props.lcov') != '' }}
+        with:
+          reports: coverage/props.lcov
+          targetdir: coverage/props
+          reporttypes: MarkdownSummaryGithub
+          title: Coverage, Hegel properties (${{ matrix.os }})
+      - if: ${{ !cancelled() && hashFiles('coverage/*/SummaryGithub.md') != '' }}
+        run: cat coverage/*/SummaryGithub.md >> "$GITHUB_STEP_SUMMARY"
+        shell: bash
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() }}
+        with:
+          name: coverage-${{ matrix.os }}
+          path: coverage/*.lcov
+          if-no-files-found: ignore
