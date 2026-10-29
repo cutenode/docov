@@ -69,17 +69,20 @@ fn the_config_file_is_found_from_subfolders_and_takes_comments() {
     let dir = project();
     let config =
         "// From src/ too.\n{\n  \"paths\": [\"./src\"], /* its folder's */\n  \"exclude\": [\"src/*.js\"],\n}\n";
-    fs::write(dir.path().join("docov.jsonc"), config).unwrap();
+    fs::write(dir.path().join(".docovrc"), config).unwrap();
     let (code, out, err) = docov(&dir.path().join("src/gen"), &[]);
     let a = Path::new("..").join("..").join("src").join("a.ts");
     assert_eq!((code, err.as_str()), (0, ""));
     assert_eq!(out, format!("  50.0%  1/2  {0}\n         {0}:3:1  variable b\n  50.0%  1/2  total\n", a.display()));
 
-    // docov.json wins over docov.jsonc, and a config nearer the current folder over both.
-    fs::write(dir.path().join("docov.json"), r#"{ "threshold": 100 }"#).unwrap();
+    // docov.jsonc wins over .docovrc, docov.json over both, and a config nearer the current folder
+    // over all of them.
+    fs::write(dir.path().join("docov.jsonc"), r#"{ "threshold": 100 }"#).unwrap();
     assert_eq!(docov(&dir.path().join("src"), &[]).0, 1);
-    fs::write(dir.path().join("src/docov.json"), "{}").unwrap();
+    fs::write(dir.path().join("docov.json"), "{}").unwrap();
     assert_eq!(docov(&dir.path().join("src"), &[]).0, 0);
+    fs::write(dir.path().join("src/.docovrc"), r#"{ "threshold": 100 }"#).unwrap();
+    assert_eq!(docov(&dir.path().join("src"), &[]).0, 1);
 }
 
 #[test]

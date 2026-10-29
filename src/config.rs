@@ -1,4 +1,4 @@
-//! docov.json (or docov.jsonc), the settings file.
+//! docov.json (or docov.jsonc, or .docovrc), the settings file.
 
 use std::{env, fs, io, iter, path::Path, path::PathBuf};
 
@@ -7,7 +7,7 @@ use serde::{Deserialize, Deserializer, Serialize, de};
 
 /// The files `docov` reads its settings from when no `--config` is given: the first of these in
 /// the current folder, or else in the nearest folder above it that has one.
-pub const FILE_NAMES: [&str; 2] = ["docov.json", "docov.jsonc"];
+pub const FILE_NAMES: [&str; 3] = ["docov.json", "docov.jsonc", ".docovrc"];
 
 /// Which declarations count toward coverage.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema, clap::ValueEnum)]

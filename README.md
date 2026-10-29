@@ -46,7 +46,7 @@ Some things never count: constructors (their class's doc covers them), private m
 
 ### docov.json
 
-`docov.json` (or `docov.jsonc`) holds the same settings. Flags win over it. docov reads the one in the folder it runs from, or else the nearest folder above that has one, so it finds the project's config from a subfolder too. `--config FILE` names one instead.
+`docov.json` (or `docov.jsonc`, or `.docovrc`) holds the same settings. Flags win over it. docov reads the one in the folder it runs from, or else the nearest folder above that has one, so it finds the project's config from a subfolder too. In one folder, `docov.json` comes first and `.docovrc` last. `--config FILE` names one instead.
 
 ```jsonc
 {
@@ -59,7 +59,7 @@ Some things never count: constructors (their class's doc covers them), private m
 }
 ```
 
-`paths` and `exclude` (gitignore-style globs) are relative to the config's folder. Comments and trailing commas are fine in either name.
+`paths` and `exclude` (gitignore-style globs) are relative to the config's folder. Comments and trailing commas are fine in any of the three. Editors don't know `.docovrc` is JSON, so tell yours (in VS Code, `"files.associations": { ".docovrc": "jsonc" }`).
 
 [`docov.schema.json`](docov.schema.json) is its JSON Schema, which editors use for completion and checking. The URL above is pinned to a release so it matches the docov you have; `docov --print-schema > docov.schema.json` writes your own copy to point at instead.
 

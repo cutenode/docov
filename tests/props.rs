@@ -505,7 +505,7 @@ fn write(dir: &Path, path: &str, text: &str) {
 /// Where a generated project's settings come from.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Settings {
-    /// docov.json or docov.jsonc, found without a flag, sometimes from a subfolder.
+    /// docov.json, docov.jsonc or .docovrc, found without a flag, sometimes from a subfolder.
     Default,
     /// Another file, named by `--config`.
     Named,
@@ -551,7 +551,7 @@ fn the_cli_counts_the_project_and_fails_by_the_threshold(tc: TestCase) {
         ]))
     });
     // A found config's name, whether it has comments and a trailing comma, and whether docov runs
-    // from a subfolder, finding it one folder up (its `paths` then lead back to the project).
+    // from a subfolder, finding it one folder up.
     let name = tc.draw(gs::sampled_from(config::FILE_NAMES.to_vec()));
     let commented = tc.draw(gs::booleans());
     let from_sub = settings == Settings::Default && tc.draw(gs::booleans());
@@ -601,10 +601,9 @@ fn the_cli_counts_the_project_and_fails_by_the_threshold(tc: TestCase) {
     let format = tc.draw(gs::sampled_from(vec!["text", "json", "lcov"]));
     let mut args = vec!["--format".to_owned(), format.into()];
     let scope_name = if scope == Scope::All { "all" } else { "exports" };
-    let mut config = serde_json::json!({ "exclude": excluded, "scope": scope_name, "threshold": threshold });
-    if from_sub {
-        config["paths"] = serde_json::json!(["."]);
-    }
+    // `paths` is the config's own folder, the project's, from wherever docov runs.
+    let config =
+        serde_json::json!({ "paths": ["."], "exclude": excluded, "scope": scope_name, "threshold": threshold });
     let config = config.to_string();
     let config =
         if commented { format!("// docov\n{}, /* end */ }}\n", config.strip_suffix('}').unwrap()) } else { config };

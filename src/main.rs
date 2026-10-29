@@ -14,7 +14,7 @@ use rayon::{iter::Either, prelude::*};
 struct Cli {
     /// Files and folders to scan [default: the config's `paths`, or the current folder]
     paths: Vec<PathBuf>,
-    /// The config file [default: docov.json or docov.jsonc here or in the nearest folder above]
+    /// The config file [default: docov.json, docov.jsonc or .docovrc here or in the nearest folder above]
     #[arg(long, value_name = "FILE")]
     config: Option<PathBuf>,
     /// Fail under this documented percentage
