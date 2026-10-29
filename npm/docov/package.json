@@ -1,0 +1,13 @@
+{
+  "name": "docov",
+  "description": "JSDoc coverage for JavaScript and TypeScript",
+  "keywords": ["jsdoc", "coverage", "documentation", "javascript", "typescript"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cutenode/docov.git",
+    "directory": "npm/docov"
+  },
+  "bin": { "docov": "bin/docov" },
+  "files": ["bin/docov"]
+}

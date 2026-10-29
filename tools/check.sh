@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # What CI checks: formatting, clippy (for Windows too when its target is installed), the tests
-# under coverage, and the Hegel properties' own coverage. Hegel runs derandomized, so it draws the
-# same cases every run and the coverage numbers don't move.
+# under coverage, the Hegel properties' own coverage, and the npm launcher's tests under coverage.
+# Hegel runs derandomized, so it draws the same cases every run and the coverage numbers don't move.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -13,3 +13,7 @@ fi
 export HEGEL_DERANDOMIZE=true
 cargo coverage
 cargo coverage --test props
+# No branch threshold: the launcher's one branch V8 counts is the Windows `.exe` name, and each OS
+# only takes one side of it.
+node --test --experimental-test-coverage --test-coverage-include='npm/docov/**' \
+  --test-coverage-lines=100 --test-coverage-functions=100 npm/launcher.test.mjs

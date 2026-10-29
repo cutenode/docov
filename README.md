@@ -16,8 +16,11 @@ Each undocumented item is listed as `path:line:column`, the spot its JSDoc goes,
 ## Install
 
 ```bash
-cargo install --git https://github.com/cutenode/docov
+npm install --save-dev docov   # or pnpm, yarn, bun
+cargo install docov
 ```
+
+The npm package runs a prebuilt binary for macOS, Linux or Windows on x64 or arm64, from the `@docov/<platform>-<arch>` package npm installs alongside it. `DOCOV_BINARY` runs a different one.
 
 ## Usage
 
@@ -71,12 +74,14 @@ Some things never count: constructors (their class's doc covers them), private m
 
 ## Working on it
 
-The toolchain is pinned in `rust-toolchain.toml`. The checks need [cargo-nextest](https://nexte.st) and [cargo-llvm-cov](https://github.com/taiki-e/cargo-llvm-cov).
+The toolchain is pinned in `rust-toolchain.toml`, and Node in `.node-version`. The checks need [cargo-nextest](https://nexte.st) and [cargo-llvm-cov](https://github.com/taiki-e/cargo-llvm-cov).
 
 ```bash
 cargo run -- [PATHS]...   # docov on a project
-tools/check.sh            # what CI runs: format, clippy, and coverage for the whole suite and for the Hegel properties alone
-cargo publish             # publish to crates.io
+tools/check.sh            # what CI runs: format, clippy, coverage for the whole suite and for the Hegel properties alone, and the npm launcher's tests
+git tag v1.2.3 && git push origin v1.2.3   # release Cargo.toml's version 1.2.3 to crates.io and npm
 ```
+
+Pushing a version tag runs `.github/workflows/release.yml`, which builds the binaries and publishes with trusted publishing, so there are no registry tokens. The npm packages are `docov` (`npm/docov`, a launcher) and an `@docov/<platform>-<arch>` package per binary. `tools/bootstrap-publishing.sh` publishes the first version by hand and sets up the trust, which both registries only allow for a package they already have.
 
 `cargo coverage` fails under the thresholds in `.cargo/config.toml`. The property tests (`tests/props.rs`) use [Hegel](https://github.com/hegeldev/hegel-rust). They check scans against a model of generated modules, and the binary against generated projects.
