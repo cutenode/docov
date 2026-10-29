@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Config",
+  "description": "docov's settings. Flags on the command line win over them.",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "description": "This file's JSON Schema, for editors.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null
+    },
+    "exclude": {
+      "description": "Gitignore-style globs of files to leave out, on top of what .gitignore leaves out.",
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
+    "paths": {
+      "description": "Files and folders to scan, relative to where docov runs. Defaults to the current folder.",
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
+    "scope": {
+      "description": "Which declarations count.",
+      "$ref": "#/$defs/Scope",
+      "default": "exports"
+    },
+    "threshold": {
+      "description": "The lowest documented percentage that passes.",
+      "type": [
+        "number",
+        "null"
+      ],
+      "format": "double",
+      "default": null,
+      "maximum": 100,
+      "minimum": 0
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "Scope": {
+      "description": "Which declarations count toward coverage.",
+      "oneOf": [
+        {
+          "description": "What a module exports, with the public members of exported classes and interfaces.",
+          "type": "string",
+          "const": "exports"
+        },
+        {
+          "description": "Every module-level declaration, exported or not.",
+          "type": "string",
+          "const": "all"
+        }
+      ]
+    }
+  }
+}

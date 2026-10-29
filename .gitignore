@@ -1,0 +1,5 @@
+/target
+# Hegel keeps failing examples here to replay them first next time.
+.hegel/
+.DS_Store
+.claude/

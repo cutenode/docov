@@ -1,0 +1,5 @@
+disallowed-types = [
+    { path = "std::collections::BTreeMap", reason = "use IndexMap", replacement = "indexmap::IndexMap" },
+    { path = "std::collections::HashMap", reason = "use rustc_hash", replacement = "rustc_hash::FxHashMap" },
+    { path = "std::collections::HashSet", reason = "use rustc_hash", replacement = "rustc_hash::FxHashSet" },
+]

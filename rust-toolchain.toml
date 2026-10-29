@@ -1,0 +1,6 @@
+# The toolchain CI uses (rustup picks it up in this folder). The oldest supported Rust is
+# `rust-version` in Cargo.toml.
+[toolchain]
+channel = "1.99.1"
+components = ["clippy", "llvm-tools", "rustfmt"]
+profile = "minimal"
