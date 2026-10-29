@@ -1,3 +1,5 @@
+//! docov.json, the settings file.
+
 use std::{fs, io, path::Path, path::PathBuf};
 
 use schemars::JsonSchema;
@@ -36,10 +38,14 @@ pub struct Config {
     pub scope: Scope,
 }
 
+/// Why the config file couldn't be loaded. Each variant's `path` is the file's.
 #[derive(Debug, thiserror::Error)]
+#[expect(missing_docs, reason = "the variants document their fields")]
 pub enum Error {
+    /// It couldn't be read.
     #[error("{}: {source}", path.display())]
     Read { path: PathBuf, source: io::Error },
+    /// It isn't valid JSON, or doesn't match the schema.
     #[error("{}: {source}", path.display())]
     Parse { path: PathBuf, source: serde_json::Error },
 }

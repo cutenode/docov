@@ -18,21 +18,32 @@ use crate::{Scope, Totals};
 /// What kind of declaration an item is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
+    /// `function f() {}`, or a function assigned to an export.
     Function,
+    /// `class C {}`, or a class assigned to an export.
     Class,
+    /// A class method or an interface method signature.
     Method,
+    /// A getter (with its setter, if any), a lone setter, or an `accessor` property.
     Accessor,
+    /// A class field or an interface property signature.
     Property,
+    /// `const`, `let` or `var`, or another value CommonJS exports by name.
     Variable,
+    /// `interface I {}`.
     Interface,
+    /// `type T = …`.
     Type,
+    /// `enum E {}`.
     Enum,
+    /// `namespace N {}`.
     Namespace,
-    /// `export default` of an expression.
+    /// `export default` or `module.exports =` of an expression.
     Default,
 }
 
 impl Kind {
+    /// The kind's name in reports.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Function => "function",
@@ -61,34 +72,44 @@ impl Serialize for Kind {
 pub struct Item {
     /// The declared name, `Class.member` for members, `default` for an unnamed default export.
     pub name: String,
+    /// What kind of declaration it is.
     pub kind: Kind,
     /// Where the JSDoc goes: the start of the declaration, at its `export` or first decorator if
     /// it has them. 1-based.
     pub line: usize,
     /// 1-based, in characters.
     pub column: usize,
+    /// Whether a JSDoc block with something in it comes right before it.
     pub documented: bool,
 }
 
 /// One file's items, in source order.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct FileReport {
+    /// The file, as the walk or the command line named it.
     pub path: PathBuf,
+    /// Its items.
     pub items: Vec<Item>,
 }
 
 impl FileReport {
+    /// How many of its items are documented.
     pub fn totals(&self) -> Totals {
         Totals { documented: self.items.iter().filter(|i| i.documented).count(), total: self.items.len() }
     }
 }
 
+/// Why a file couldn't be scanned. Each variant's `path` is the file's.
 #[derive(Debug, thiserror::Error)]
+#[expect(missing_docs, reason = "the variants document their fields")]
 pub enum Error {
+    /// The file couldn't be read, or isn't UTF-8.
     #[error("{}: {source}", path.display())]
     Read { path: PathBuf, source: io::Error },
+    /// The file's extension isn't one oxc parses.
     #[error("{}: not a JavaScript or TypeScript file", path.display())]
     Language { path: PathBuf },
+    /// The file doesn't parse, at this 1-based line and column.
     #[error("{}:{line}:{column}: {message}", path.display())]
     Syntax { path: PathBuf, line: usize, column: usize, message: String },
 }
@@ -96,7 +117,9 @@ pub enum Error {
 /// A syntax error, at a byte offset into the source.
 #[derive(Debug, PartialEq, Eq)]
 pub struct SyntaxError {
+    /// Where it is, in bytes.
     pub offset: usize,
+    /// The parser's message.
     pub message: String,
 }
 
