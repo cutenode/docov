@@ -3,6 +3,7 @@
 use std::{fs, io, path::Path, path::PathBuf};
 
 mod doc;
+mod ignore;
 mod rules;
 
 use oxc_allocator::Allocator;
@@ -17,7 +18,8 @@ use oxc_span::{GetSpan, SourceType, Span};
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::Serialize;
 
-pub use self::rules::Rules;
+use self::ignore::Ignores;
+pub use self::{ignore::Ignore, rules::Rules};
 use crate::Totals;
 
 /// What kind of declaration an item is.
@@ -87,6 +89,17 @@ pub struct Item {
     /// Whether a JSDoc block with something in it comes right before it (and, by the rules, says
     /// enough).
     pub documented: bool,
+    /// The `docov-ignore` comment that covers it, if one does. The JSON report shapes it.
+    #[serde(skip)]
+    pub ignore: Option<Ignore>,
+}
+
+impl Item {
+    /// Whether it's out of the total: undocumented, and covered by a `docov-ignore` comment. A
+    /// documented item counts as documented, ignore or not.
+    pub fn ignored(&self) -> bool {
+        !self.documented && self.ignore.is_some()
+    }
 }
 
 /// One file's items, in source order.
@@ -99,9 +112,14 @@ pub struct FileReport {
 }
 
 impl FileReport {
-    /// How many of its items are documented.
+    /// Its items that aren't [ignored](Item::ignored).
+    pub fn counted(&self) -> impl Iterator<Item = &Item> {
+        self.items.iter().filter(|i| !i.ignored())
+    }
+
+    /// How many of its counted items are documented.
     pub fn totals(&self) -> Totals {
-        Totals { documented: self.items.iter().filter(|i| i.documented).count(), total: self.items.len() }
+        Totals { documented: self.items.iter().filter(|i| i.documented).count(), total: self.counted().count() }
     }
 }
 
@@ -167,12 +185,13 @@ pub fn scan(source: &str, source_type: SourceType, rules: &Rules) -> Result<Vec<
             text.chars().any(|ch| !ch.is_whitespace() && ch != '*').then(|| (c.attached_to, JSDoc::new(text, span)))
         })
         .collect();
+    let lines = Lines::new(source);
+    let ignores = Ignores::find(&parsed.program, &lines);
     let mut collector = Collector { source, docs, found: Vec::new(), exported: FxHashSet::default(), overload: None };
     for statement in &parsed.program.body {
         collector.statement(statement);
     }
 
-    let lines = Lines::new(source);
     let Collector { found, exported, .. } = collector;
     Ok(found
         .into_iter()
@@ -180,7 +199,7 @@ pub fn scan(source: &str, source_type: SourceType, rules: &Rules) -> Result<Vec<
         .map(|f| {
             let (line, column) = lines.position(f.at as usize);
             let documented = rules.documents(&f);
-            Item { name: f.name, kind: f.kind, line, column, documented }
+            Item { name: f.name, kind: f.kind, line, column, documented, ignore: ignores.covering(line) }
         })
         .collect())
 }

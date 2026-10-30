@@ -65,7 +65,7 @@ fn run(cli: Cli, matches: &clap::ArgMatches) -> Result<bool, Vec<String>> {
     report::write(cli.format, &reports, &mut io::stdout().lock()).map_err(|e| vec![e.to_string()])?;
 
     let failures = settings.gates(&reports);
-    for failure in &failures {
+    for failure in failures.iter().flat_map(|f| f.lines()) {
         eprintln!("docov: {failure}");
     }
     Ok(failures.is_empty())
