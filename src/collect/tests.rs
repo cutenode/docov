@@ -1,7 +1,7 @@
 use oxc_span::SourceType;
 
 use super::*;
-use crate::Scope;
+use crate::{Scope, feature::access::Access};
 
 /// `(name, kind, documented)` for each item `source` has, as TypeScript.
 fn items(source: &str, scope: Scope) -> Vec<(String, Kind, bool)> {
@@ -390,4 +390,29 @@ function g() {
     let ignore = Ignore { reason: Some("generated".into()), line: 3, column: 8, file: true };
     assert_eq!([items[0].ignored(), items[1].ignored()], [true, false]);
     assert_eq!([&items[0].ignore, &items[1].ignore], [&Some(ignore.clone()), &Some(ignore)]);
+}
+
+#[test]
+fn access_levels_pick_what_counts() {
+    let source = "
+/** @private */
+export function a() {}
+/** @access package */
+export function b() {}
+export class C {
+    protected d = 1;
+    /** @protected */
+    e() {}
+    /** @access public */
+    protected f = 1;
+}
+";
+    let names = |access: &[Access]| -> Vec<String> {
+        let rules = Rules { access: Some(access.to_vec()), ..Rules::default() };
+        scan(source, SourceType::ts(), &rules).unwrap().into_iter().map(|i| i.name).collect()
+    };
+    assert_eq!(items(source, Scope::Exports).len(), 6, "every level counts without access");
+    assert_eq!(names(&[Access::Public]), ["C", "C.f"]);
+    assert_eq!(names(&[Access::Protected, Access::Package]), ["b", "C.d", "C.e"]);
+    assert_eq!(names(&[Access::Private]), ["a"]);
 }

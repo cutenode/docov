@@ -4,7 +4,7 @@ use regex::Regex;
 use rustc_hash::FxHashSet;
 
 use super::{Found, doc};
-use crate::{Kind, Scope};
+use crate::{Kind, Scope, feature::access::Access};
 
 /// Which items count, and when one is documented. The default is docov's out of the box.
 #[derive(Clone, Debug, Default)]
@@ -19,6 +19,8 @@ pub struct Rules {
     pub kinds: Option<Vec<Kind>>,
     /// Regexes that take an item out of the total when its name, or a member's own name, matches.
     pub ignore_names: Vec<Regex>,
+    /// The access levels that count, or `None` to look at no access tags.
+    pub access: Option<Vec<Access>>,
 }
 
 impl From<Scope> for Rules {
@@ -38,7 +40,10 @@ impl Rules {
         let member = matches!(found.kind, Kind::Method | Kind::Accessor | Kind::Property);
         let own_name = found.name.split_once('.').filter(|_| member).map(|(_, name)| name);
         let named = |re: &Regex| re.is_match(&found.name) || own_name.is_some_and(|name| re.is_match(name));
-        in_scope && kind && !self.exclude_tags.iter().any(tagged) && !self.ignore_names.iter().any(named)
+        let level = found.doc.as_ref().and_then(doc::access);
+        let level = level.unwrap_or(if found.protected { Access::Protected } else { Access::Public });
+        let access = self.access.as_ref().is_none_or(|levels| levels.contains(&level));
+        in_scope && kind && access && !self.exclude_tags.iter().any(tagged) && !self.ignore_names.iter().any(named)
     }
 
     /// Whether `found` is documented.

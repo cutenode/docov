@@ -1,5 +1,30 @@
 {
   "$defs": {
+    "Access": {
+      "description": "An item's access level: its JSDoc's `@public`, `@protected`, `@package`, `@private` or\n`@access` tag, or else `protected` for a TypeScript `protected` member and `public` for the rest.",
+      "oneOf": [
+        {
+          "const": "public",
+          "description": "No access tag, or `@public`.",
+          "type": "string"
+        },
+        {
+          "const": "protected",
+          "description": "`@protected`, or a TypeScript `protected` member.",
+          "type": "string"
+        },
+        {
+          "const": "package",
+          "description": "`@package`.",
+          "type": "string"
+        },
+        {
+          "const": "private",
+          "description": "`@private`.",
+          "type": "string"
+        }
+      ]
+    },
     "Ignore": {
       "additionalProperties": false,
       "description": "What to leave out.",
@@ -101,6 +126,17 @@
       "description": "This file's JSON Schema, for editors.",
       "type": [
         "string",
+        "null"
+      ]
+    },
+    "access": {
+      "default": null,
+      "description": "Count only items with these access levels, by their access tags. Without it, access tags change nothing.",
+      "items": {
+        "$ref": "#/$defs/Access"
+      },
+      "type": [
+        "array",
         "null"
       ]
     },
