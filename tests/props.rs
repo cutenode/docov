@@ -1634,6 +1634,13 @@ fn write(dir: &Path, path: &str, text: &str) {
     fs::write(path, text).unwrap();
 }
 
+/// An exclude glob globset reads but can't build: its alternates nest deeper than the regex parser
+/// allows (it fails from 125 deep). A glob too big to build fails at the same step, but takes about
+/// a second under coverage, enough over ten cases to trip Hegel's TooSlow check on a loaded machine.
+fn unbuildable_glob() -> String {
+    format!("{}b{}", "{a,".repeat(200), "}".repeat(200))
+}
+
 /// Where a generated project's settings come from.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Settings {
@@ -1647,7 +1654,7 @@ enum Settings {
     Missing,
     /// docov.json with a misspelled key, or a threshold that isn't a number or is over 100.
     Invalid,
-    /// docov.json with an exclude glob that doesn't parse, or is too big to build.
+    /// docov.json with an exclude glob that doesn't parse, or can't be built.
     BadGlob,
 }
 
@@ -1673,7 +1680,7 @@ fn the_cli_counts_the_project_and_fails_by_the_threshold(tc: TestCase) {
         Settings::Invalid,
         Settings::BadGlob,
     ]));
-    let huge_glob = settings == Settings::BadGlob && tc.draw(gs::weighted_booleans(0.2));
+    let unbuildable = settings == Settings::BadGlob && tc.draw(gs::weighted_booleans(0.2));
     // An invalid docov.json, and what its error names.
     let invalid = (settings == Settings::Invalid).then(|| {
         tc.draw(gs::sampled_from(vec![
@@ -1750,12 +1757,7 @@ fn the_cli_counts_the_project_and_fails_by_the_threshold(tc: TestCase) {
         Settings::Missing => args.extend(["--config".into(), "missing.json".into()]),
         Settings::Invalid => write(dir.path(), name, invalid.unwrap().0),
         Settings::BadGlob => {
-            // Big enough that globset can't build it (it fails from about 30,000 alternatives).
-            let glob = if huge_glob {
-                format!("{{{}}}", (0..40_000).map(|i| format!("x{i}[a-z][0-9]?")).collect::<Vec<_>>().join(","))
-            } else {
-                "src/[z".into()
-            };
+            let glob = if unbuildable { unbuildable_glob() } else { "src/[z".into() };
             write(dir.path(), "docov.json", &serde_json::json!({ "exclude": [glob] }).to_string());
         }
         Settings::Flags => {
@@ -1804,7 +1806,7 @@ fn the_cli_counts_the_project_and_fails_by_the_threshold(tc: TestCase) {
         _ if out_of_range => Some("150"),
         Settings::Missing => Some("missing.json"),
         Settings::Invalid => invalid.map(|(_, culprit)| culprit),
-        Settings::BadGlob => Some(if huge_glob { "NFA" } else { "[z" }),
+        Settings::BadGlob => Some(if unbuildable { "parsing pattern" } else { "[z" }),
         _ if gone => Some("gone"),
         _ => broken.map(|p| Path::new(p).file_name().unwrap().to_str().unwrap()),
     };
@@ -1873,15 +1875,13 @@ fn each_bad_input_fails_naming_itself(tc: TestCase) {
     }
     // Bad files, each removed after its run, and what the error names.
     let config = |value: serde_json::Value| value.to_string().into_bytes();
-    // Big enough that globset can't build it (it fails from about 30,000 alternatives).
-    let huge_glob = format!("{{{}}}", (0..40_000).map(|i| format!("x{i}[a-z][0-9]?")).collect::<Vec<_>>().join(","));
     let bad_files = [
         ("docov.json", br#"{ "treshold": 1 }"#.to_vec(), "treshold"),
         ("docov.json", br#"{ "threshold": "80" }"#.to_vec(), "invalid type"),
         ("docov.json", br#"{ "threshold": 150 }"#.to_vec(), "expected a number from 0 to 100"),
         ("docov.jsonc", br#"{ "threshold": 5 / }"#.to_vec(), "doesn't start a comment"),
         ("docov.json", config(serde_json::json!({ "exclude": ["src/[z"] })), "[z"),
-        ("docov.json", config(serde_json::json!({ "exclude": [huge_glob] })), "NFA"),
+        ("docov.json", config(serde_json::json!({ "exclude": [unbuildable_glob()] })), "parsing pattern"),
         ("src/broken.ts", b"export function (".to_vec(), "broken.ts"),
         ("src/latin1.js", b"// caf\xe9\n".to_vec(), "latin1.js"),
     ];
