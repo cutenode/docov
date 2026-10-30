@@ -2589,3 +2589,90 @@ fn complete_items_are_a_metric_when_asked(tc: TestCase) {
         .map(|t| format!("{percent:.1}% with complete, under the {t}% complete threshold"));
     assert_eq!(feature.gate(&files), failure);
 }
+
+/// Tag lines a generated block has, past its description, and the tags they give.
+const RETURN_TAGS: [(&str, &str); 6] = [
+    ("", ""),
+    (" * @returns The thing.\n", "returns"),
+    (" * @return The thing.\n", "returns"),
+    (" * @yields A thing.\n", "yields"),
+    (" * @yield A thing.\n", "yields"),
+    (" * @inheritDoc\n", "inherits"),
+];
+
+/// `require-returns` finds a function or method whose own body returns a value (`return x;`, or an
+/// arrow function's expression body, past the functions and classes inside it) with no `@returns`
+/// or `@return`, unless its return type is `void`, `undefined` or `Promise<void>` or its block has
+/// `@inheritdoc`. `require-yields` finds a generator that yields a value with no `@yields` or
+/// `@yield`.
+#[hegel::test(test_cases = 100)]
+fn returned_and_yielded_values_are_documented(tc: TestCase) {
+    let ((returns_level, returns_on), (yields_level, yields_on)) = (level(&tc), level(&tc));
+    // Each statement, whether it returns a value, and whether it yields one.
+    let statements = vec![
+        ("return 1;", true, false),
+        ("return;", false, false),
+        ("return undefined;", false, false),
+        ("return void 0;", false, false),
+        ("if (x) { return x; }", true, false),
+        ("const g = () => 1;", false, false),
+        ("function inner() { return 1; }", false, false),
+        ("class K { m() { return 1; } }", false, false),
+        ("yield 1;", false, true),
+        ("yield;", false, false),
+        ("const h = function* () { yield 1; };", false, false),
+    ];
+    let annotations = vec![
+        ("", false),
+        (": void", true),
+        (": undefined", true),
+        (": Promise<void>", true),
+        (": number", false),
+        (": Promise<number>", false),
+        (": Array<void>", false),
+    ];
+    let mut source = String::new();
+    let mut wanted = Vec::new();
+    for owner in ["function", "method", "arrow"] {
+        let generator = owner != "arrow" && tc.draw(gs::booleans());
+        let body = tc.draw(gs::vecs(gs::sampled_from(statements.clone())).max_size(3));
+        let body: Vec<_> = body.into_iter().filter(|(text, _, _)| generator || !text.starts_with("yield")).collect();
+        let (annotation, void) = tc.draw(gs::sampled_from(annotations.clone()));
+        let (tag, gives) = tc.draw(gs::sampled_from(RETURN_TAGS.to_vec()));
+        let indent = if owner == "method" { "  " } else { "" };
+        let line = source.matches('\n').count() + usize::from(owner == "method") + 1;
+        if owner == "method" {
+            source += "export class C {\n";
+        }
+        source += &format!("{indent}/**\n{indent} * Docs.\n{tag}{indent} */\n");
+        let star = if generator { "*" } else { "" };
+        let text = body.iter().map(|(t, _, _)| *t).collect::<Vec<_>>().join(" ");
+        let returns = match owner {
+            "function" => {
+                source += &format!("export function{star} f(x){annotation} {{ {text} }}\n");
+                body.iter().any(|(_, r, _)| *r)
+            }
+            "method" => {
+                source += &format!("  {star}m(x){annotation} {{ {text} }}\n}}\n");
+                body.iter().any(|(_, r, _)| *r)
+            }
+            _ => {
+                let expressions =
+                    vec![("1", true), ("undefined", false), ("void 0", false), ("{ return 2; }", true), ("{}", false)];
+                let (expression, returns) = tc.draw(gs::sampled_from(expressions));
+                source += &format!("exports.g = (x){annotation} => {expression};\n");
+                returns
+            }
+        };
+        let column = indent.len() + 1;
+        if returns && !void && !matches!(gives, "returns" | "inherits") {
+            wanted.extend(returns_on.map(|e| (line, column, "require-returns", "missing @returns".to_owned(), e)));
+        }
+        if body.iter().any(|(_, _, y)| *y) && !matches!(gives, "yields" | "inherits") {
+            wanted.extend(yields_on.map(|e| (line, column, "require-yields", "missing @yields".to_owned(), e)));
+        }
+    }
+    wanted.sort();
+    let on = [("require-returns", returns_level), ("require-yields", yields_level)];
+    assert_eq!(diagnose(&source, &on, Rules::default()), wanted, "{source}");
+}

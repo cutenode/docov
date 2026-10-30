@@ -95,8 +95,10 @@ Each finding prints to stderr as `docov: path:line:column: rule-id: message`, an
 
 - `require-param`: each parameter of a function or method has a matching `@param`, by name, or for a destructured one, at its place (as `paramsDocumented` counts them).
 - `param-names`: each `@param` names a parameter, so none is left over from a rename. A destructured parameter takes the name of the `@param` at its place, and `@param options.a` belongs to `options`.
+- `require-returns`: a function or method whose own body returns a value has `@returns`, unless its return type is `void`, `undefined` or `Promise<void>`.
+- `require-yields`: a generator that yields a value has `@yields`.
 
-`const f = () => …` is a variable to docov, so the checks on parameters don't look at it.
+`const f = () => …` is a variable to docov, so the checks on parameters and returns don't look at it.
 
 ### docov.json
 

@@ -240,6 +240,48 @@
             }
           ],
           "description": "Each parameter of a function or method has a matching @param."
+        },
+        "require-returns": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Level"
+            },
+            {
+              "items": false,
+              "minItems": 1,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Level"
+                },
+                {
+                  "$ref": "#/$defs/NoOptions"
+                }
+              ],
+              "type": "array"
+            }
+          ],
+          "description": "A function or method that returns a value has @returns, unless its return type is void."
+        },
+        "require-yields": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Level"
+            },
+            {
+              "items": false,
+              "minItems": 1,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Level"
+                },
+                {
+                  "$ref": "#/$defs/NoOptions"
+                }
+              ],
+              "type": "array"
+            }
+          ],
+          "description": "A generator that yields a value has @yields."
         }
       },
       "type": "object"

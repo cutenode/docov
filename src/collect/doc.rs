@@ -59,7 +59,7 @@ pub(super) fn typed(doc: &JSDoc) -> bool {
 }
 
 /// Whether `doc` has the tag `name` (without its `@`).
-pub(super) fn has_tag(doc: &JSDoc, name: &str) -> bool {
+pub(crate) fn has_tag(doc: &JSDoc, name: &str) -> bool {
     doc.tags().iter().any(|tag| tag.kind.parsed() == name)
 }
 

@@ -14,7 +14,7 @@ impl Collected<'_> {
         let Some(checks) = &rules.checks else { return };
         for found in self.found.iter().filter(|f| rules.counts(f, &self.exported, reached)) {
             let Some(doc) = &found.doc else { continue };
-            let subject = Subject { doc, params: found.params.as_deref() };
+            let subject = Subject { doc, params: found.params.as_deref(), shape: &found.shape };
             checks.run(path, &subject, |at| self.lines.position(at as usize));
         }
     }

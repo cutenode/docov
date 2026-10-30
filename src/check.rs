@@ -19,6 +19,8 @@ use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
+use crate::collect::{Shape, doc};
+
 /// A check's rule id, and what makes its entry.
 type Registered = (&'static str, fn() -> Entry);
 
@@ -73,6 +75,8 @@ pub struct Subject<'a, 's> {
     pub doc: &'a JSDoc<'s>,
     /// For a function or method, each parameter's name, or `None` for a destructured one.
     pub params: Option<&'a [Option<&'s str>]>,
+    /// What its code says.
+    pub shape: &'a Shape,
 }
 
 impl Subject<'_, '_> {
@@ -80,6 +84,11 @@ impl Subject<'_, '_> {
     pub fn block(&self) -> u32 {
         // The block's span starts past its `/**`.
         self.doc.span.start - 3
+    }
+
+    /// Whether it has any of the tags `names` (without their `@`).
+    pub fn has(&self, names: &[&str]) -> bool {
+        names.iter().any(|name| doc::has_tag(self.doc, name))
     }
 
     /// Whether its block inherits its docs with `@inheritdoc` (in any case), so the checks that
