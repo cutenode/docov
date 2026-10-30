@@ -56,7 +56,15 @@
     },
     "extends": {
       "$ref": "#/$defs/Extends",
-      "description": "Config files whose settings this one builds on, relative to this file's folder. This file's\nkeys win over theirs, and in a list each file's win over the ones before it."
+      "description": "Config files this one builds on, relative to its folder. Its keys win over theirs, and a later one's over an earlier one's."
+    },
+    "jsdocConfig": {
+      "default": null,
+      "description": "A jsdoc.json, relative to this file's folder, whose `source` picks the files: its `include` is the paths unless `paths` is set, and its `exclude`, `includePattern` and `excludePattern` leave files out.",
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "nested": {
       "default": false,

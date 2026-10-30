@@ -7,8 +7,8 @@ use std::{
 };
 
 use docov::{
-    FileReport, Format, Item, Kind, Scope, Settings, Totals, batch, config, config::Config, feature, init, nested,
-    packages, walk, walk::Exclude,
+    FileReport, Format, Item, Kind, Scope, Settings, Totals, batch, config, config::Config, feature, init, jsdoc,
+    nested, packages, walk, walk::Exclude,
 };
 use hegel::{TestCase, generators as gs};
 
@@ -572,4 +572,95 @@ fn the_cli_scans_nested_configs_and_packages(tc: TestCase) {
     let (code, out, err) = docov(root, &[], false);
     assert_eq!((code, out.as_str()), (2, ""));
     assert!(err.contains("expected a number from 0 to 100"), "{err}");
+}
+
+/// A jsdoc.json's `source.include` becomes the paths (unless docov.json has its own),
+/// `source.exclude` leaves out those files and folders, and `includePattern` and `excludePattern`
+/// filter the rest only when written, all relative to the jsdoc.json. One that's JavaScript, isn't
+/// there, or doesn't parse fails naming it.
+#[hegel::test(test_cases = 40)]
+fn jsdoc_configs_pick_the_files(tc: TestCase) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let names = ["src/a.ts", "src/_b.ts", "src/legacy/c.ts", "src/d.js", "lib/e.ts", "other/f.ts"];
+    for name in names {
+        write(root, name, "export const a = 1;\n");
+    }
+    let include_pattern = tc.draw(gs::booleans());
+    let exclude_pattern = tc.draw(gs::booleans());
+    let mut source =
+        serde_json::json!({ "include": ["../src", "../lib"], "exclude": ["../src/legacy", "../lib/e.ts", ".."] });
+    if include_pattern {
+        source["includePattern"] = r"\.ts$".into();
+    }
+    if exclude_pattern {
+        // Of the file's name: the temporary folder's path can have a `/_` in it.
+        source["excludePattern"] = r"(^|\/|\\)_[^\/\\]*$".into();
+    }
+    // Comments are fine, as they are for jsdoc.
+    write(root, "docs/jsdoc.json", &format!("// jsdoc\n{}", serde_json::json!({ "source": source })));
+    // From the flag, or from docov.json's key, relative to it.
+    let by_flag = tc.draw(gs::booleans());
+    let own_paths = tc.draw(gs::booleans());
+    let mut docov = serde_json::json!({});
+    if !by_flag {
+        docov["jsdocConfig"] = "docs/jsdoc.json".into();
+    }
+    if own_paths {
+        docov["paths"] = vec!["other"].into();
+    }
+    write(root, "docov.json", &docov.to_string());
+    let mut config = Config::load(Some(&root.join("docov.json"))).unwrap();
+    let keys = std::mem::take(&mut config.keys);
+    let jsdoc = root.join("docs/jsdoc.json");
+    config.read_jsdoc(by_flag.then_some(jsdoc.as_path())).unwrap();
+    let files = walk::files(&config.paths, &config.exclude).unwrap();
+    let plan = nested::Plan::new(&config, Settings::new(&matches(&[]), keys), &matches(&[]), files).unwrap();
+    let found: Vec<_> = plan.files().into_iter().map(|(path, _)| path.to_owned()).collect();
+    let expected: Vec<_> = if own_paths {
+        vec![root.join("other/f.ts")]
+    } else {
+        let mut kept = vec!["src/a.ts", "src/_b.ts", "src/d.js"];
+        kept.retain(|n| !(include_pattern && n.ends_with(".js")) && !(exclude_pattern && n.contains("/_")));
+        kept.iter().map(|n| root.join("docs/../").join(n).components().collect()).collect()
+    };
+    let mut expected = expected;
+    expected.sort();
+    assert_eq!(found, expected);
+
+    // What doesn't read, and what its error names.
+    let (name, text, culprit) = tc.draw(gs::sampled_from(vec![
+        ("jsdoc.js", "module.exports = {};", "not JavaScript"),
+        ("jsdoc.cjs", "module.exports = {};", "not JavaScript"),
+        ("gone.json", "", "gone.json"),
+        ("bad.json", "{ / }", "doesn't start a comment"),
+        ("bad.json", "{ \"source\": 1 }", "invalid type"),
+        ("bad.json", r#"{ "source": { "includePattern": "(" } }"#, "regex parse error"),
+        ("bad.json", r#"{ "source": { "excludePattern": "(" } }"#, "regex parse error"),
+    ]));
+    if name != "gone.json" {
+        write(root, name, text);
+    }
+    let error = jsdoc::read(&root.join(name)).unwrap_err();
+    assert!(error.contains(culprit) && error.contains(name), "{error}");
+}
+
+/// The binary scans what `--jsdoc-config` or `jsdocConfig` documents, and fails naming a jsdoc
+/// config that doesn't read.
+#[hegel::test(test_cases = 2)]
+fn the_cli_reads_jsdoc_configs(tc: TestCase) {
+    let dir = tempfile::tempdir().unwrap();
+    write(dir.path(), "lib/a.ts", "export const a = 1;\n");
+    write(dir.path(), "other.ts", "export const other = 1;\n");
+    write(dir.path(), "jsdoc.json", r#"{ "source": { "include": ["lib"] } }"#);
+    let by_flag = tc.draw(gs::booleans());
+    let args: &[&str] = if by_flag { &["--jsdoc-config", "jsdoc.json"] } else { &[] };
+    if !by_flag {
+        write(dir.path(), "docov.json", r#"{ "jsdocConfig": "jsdoc.json" }"#);
+    }
+    let (code, out, _) = docov(dir.path(), args, false);
+    assert_eq!((code, out.lines().last()), (0, Some("   0.0%  0/1  total")));
+    let (code, out, err) = docov(dir.path(), &["--jsdoc-config", "missing.json"], false);
+    assert_eq!((code, out.as_str()), (2, ""));
+    assert!(err.starts_with("docov: missing.json: "), "{err}");
 }

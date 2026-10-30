@@ -9,7 +9,11 @@ use serde::{
 };
 use serde_json::{Map, Value};
 
-use crate::{feature, walk::Exclude};
+use crate::{
+    feature,
+    jsdoc::{self, Patterns},
+    walk::Exclude,
+};
 
 /// The files `docov` reads its settings from when no `--config` is given: the first of these in
 /// the current folder, or else in the nearest folder above it that has one.
@@ -25,6 +29,10 @@ pub struct Config {
     pub paths: Vec<PathBuf>,
     /// Files to leave out, on top of .gitignore.
     pub exclude: Vec<Exclude>,
+    /// The jsdoc.json whose files to scan, as a path from the current folder.
+    pub jsdoc_config: Option<PathBuf>,
+    /// The patterns a file's path has to match, and not match, from a jsdoc.json.
+    pub patterns: Patterns,
     /// Each feature's keys, which the features' own files define.
     pub keys: feature::Keys,
     /// The same keys as JSON, for nested configs to merge over.
@@ -44,13 +52,15 @@ struct File {
     /// This file's JSON Schema, for editors.
     #[serde(rename = "$schema")]
     schema: Option<String>,
-    /// Config files whose settings this one builds on, relative to this file's folder. This file's
-    /// keys win over theirs, and in a list each file's win over the ones before it.
+    /// Config files this one builds on, relative to its folder. Its keys win over theirs, and a later one's over an earlier one's.
     extends: Extends,
     /// Files and folders to scan, relative to this file's folder. Defaults to the folder docov runs in.
     paths: Vec<PathBuf>,
     /// Gitignore-style globs of files to leave out, relative to this file's folder, on top of .gitignore.
     exclude: Vec<String>,
+    /// A jsdoc.json, relative to this file's folder, whose `source` picks the files: its `include` is the paths unless `paths` is set, and its `exclude`, `includePattern` and `excludePattern` leave files out.
+    #[serde(rename = "jsdocConfig")]
+    jsdoc_config: Option<PathBuf>,
 }
 
 /// A config file to extend, or a list of them.
@@ -87,6 +97,8 @@ struct Layer {
     paths: Option<Vec<PathBuf>>,
     /// `exclude`, if a file has it.
     exclude: Option<Exclude>,
+    /// `jsdocConfig`, if a file has it.
+    jsdoc_config: Option<PathBuf>,
     /// The files, the topmost first.
     files: Vec<PathBuf>,
 }
@@ -97,6 +109,7 @@ impl Layer {
         self.keys.extend(top.keys);
         self.paths = top.paths.or(self.paths.take());
         self.exclude = top.exclude.or(self.exclude.take());
+        self.jsdoc_config = top.jsdoc_config.or(self.jsdoc_config.take());
         self.files = [top.files, std::mem::take(&mut self.files)].concat();
     }
 }
@@ -224,10 +237,26 @@ impl Config {
             files: layer.files,
             paths: layer.paths.unwrap_or_default(),
             exclude: layer.exclude.into_iter().collect(),
+            jsdoc_config: layer.jsdoc_config,
+            patterns: Patterns::default(),
             keys,
             json: layer.keys,
             dir: path.parent().map(Path::to_path_buf).unwrap_or_default(),
         }
+    }
+
+    /// Reads the jsdoc.json at `flag`, or else at `jsdocConfig`: its `source.include` is the paths
+    /// if there are none, its `source.exclude` adds to the excludes, and its patterns filter the
+    /// files.
+    pub fn read_jsdoc(&mut self, flag: Option<&Path>) -> Result<(), String> {
+        let Some(path) = flag.map(Path::to_path_buf).or(self.jsdoc_config.take()) else { return Ok(()) };
+        let sources = jsdoc::read(&path)?;
+        if self.paths.is_empty() {
+            self.paths = sources.paths;
+        }
+        self.exclude.extend(sources.exclude);
+        self.patterns = sources.patterns;
+        Ok(())
     }
 
     /// The JSON Schema for this file, as `docov --print-schema` prints it.
@@ -267,6 +296,8 @@ fn layer(path: &Path, chain: &mut Vec<(PathBuf, PathBuf)>) -> Result<Layer, Erro
     // would keep the excludes from matching.
     let paths = keys.remove("paths").map(|_| file.paths.iter().map(|p| dir.join(p).components().collect()).collect());
     let exclude = keys.remove("exclude").map(|_| Exclude { root: dir.clone(), globs: file.exclude });
+    let jsdoc_config = file.jsdoc_config.map(|path| dir.join(path));
+    keys.remove("jsdocConfig");
 
     chain.push((real, path.to_owned()));
     let mut merged = Layer::default();
@@ -274,6 +305,6 @@ fn layer(path: &Path, chain: &mut Vec<(PathBuf, PathBuf)>) -> Result<Layer, Erro
         merged.over(layer(&dir.join(base), chain)?);
     }
     chain.pop();
-    merged.over(Layer { keys, paths, exclude, files: vec![path.to_owned()] });
+    merged.over(Layer { keys, paths, exclude, jsdoc_config, files: vec![path.to_owned()] });
     Ok(merged)
 }

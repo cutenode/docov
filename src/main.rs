@@ -11,6 +11,7 @@ use docov::{
     Config, Format, Settings, batch,
     feature::{
         self,
+        jsdoc_config::JsdocConfig,
         list_files::{self, ListFiles},
         print_config::{self, PrintConfig},
     },
@@ -81,6 +82,7 @@ fn exit(result: Result<bool, Vec<String>>) -> ExitCode {
 fn run(cli: Cli, matches: &clap::ArgMatches) -> Result<bool, Vec<String>> {
     let mut config = Config::load(cli.config.as_deref()).map_err(|e| vec![e.to_string()])?;
     let settings = Settings::new(matches, std::mem::take(&mut config.keys));
+    config.read_jsdoc(settings.get::<JsdocConfig>().0.as_deref()).map_err(|e| vec![e])?;
     let paths = if cli.paths.is_empty() { std::mem::take(&mut config.paths) } else { cli.paths };
     if settings.get::<PrintConfig>().0 {
         return wrote(writeln!(io::stdout(), "{:#}", print_config::json(&config, &paths, &settings)));

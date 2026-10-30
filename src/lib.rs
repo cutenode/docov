@@ -5,6 +5,7 @@ pub mod collect;
 pub mod config;
 pub mod feature;
 pub mod init;
+pub mod jsdoc;
 pub mod nested;
 pub mod packages;
 pub mod report;

@@ -30,8 +30,15 @@ pub struct Plan {
 
 impl Plan {
     /// Puts each of `files`, sorted, in the group of the config it's scanned with, leaving out
-    /// those its nested config excludes. Without `nested`, that's the root config for all of them.
-    pub fn new(root: &Config, settings: Settings, matches: &ArgMatches, files: Vec<PathBuf>) -> Result<Self, String> {
+    /// those the jsdoc config's patterns or the file's nested config excludes. Without `nested`,
+    /// that's the root config for all of them.
+    pub fn new(
+        root: &Config,
+        settings: Settings,
+        matches: &ArgMatches,
+        mut files: Vec<PathBuf>,
+    ) -> Result<Self, String> {
+        files.retain(|file| root.patterns.keep(file));
         if !settings.get::<Nested>().0 {
             return Ok(Self { groups: vec![Group { config: None, settings, files }] });
         }
