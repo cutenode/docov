@@ -48,19 +48,25 @@ impl Rules {
     }
 
     fn in_scope(&self, found: &Found, exported: &FxHashSet<(&str, Via)>) -> bool {
+        // A value assigned to a global is an item only when globals count.
+        if found.via == Some(Via::Global) && !self.exports.globals {
+            return false;
+        }
+        self.scope == Scope::All || self.exported(found, exported)
+    }
+
+    /// Whether `found` is exported by a way of exporting that counts, where it's declared or apart
+    /// from that.
+    pub(super) fn exported(&self, found: &Found, exported: &FxHashSet<(&str, Via)>) -> bool {
         let counts = |via: Via| match via {
             Via::Esm => self.exports.esm,
             Via::Cjs => self.exports.cjs,
             Via::Global => self.exports.globals,
         };
-        // A value assigned to a global is an item only when globals count.
-        if found.via == Some(Via::Global) && !self.exports.globals {
-            return false;
-        }
         let apart = |binding| {
             [Via::Esm, Via::Cjs, Via::Global].into_iter().any(|via| counts(via) && exported.contains(&(binding, via)))
         };
-        self.scope == Scope::All || found.via.is_some_and(counts) || found.binding.is_some_and(apart)
+        found.via.is_some_and(counts) || found.binding.is_some_and(apart)
     }
 
     /// Whether its kind, name, access level or tags leave `found` out.

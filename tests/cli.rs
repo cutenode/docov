@@ -341,3 +341,33 @@ fn the_config_leaves_out_deprecated_items_and_generated_files() {
     fs::write(dir.path().join("docov.json"), r#"{ "ignoreDeprecated": true, "skipGenerated": true }"#).unwrap();
     assert_eq!(total(), "   0.0%  0/1  total");
 }
+
+#[test]
+fn json_items_say_what_their_docs_have_and_priority_sorts_the_text() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = "/**\n * Adds.\n * @param a The a.\n * @example add(1, 2)\n * @since 1.2.0\n * @deprecated\n */
+export function add(a, b) {}
+export const v = 1;
+export class C {}
+export function one(a) {}
+export function two(a, b) {}
+";
+    fs::write(dir.path().join("a.js"), source).unwrap();
+    let (_, out, _) = docov(dir.path(), &["--format", "json"]);
+    let json: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let add = &json["files"][0]["items"][0];
+    let facts = |item: &serde_json::Value| -> [serde_json::Value; 5] {
+        ["hasDescription", "hasExample", "paramsDocumented", "deprecated", "since"].map(|key| item[key].clone())
+    };
+    assert_eq!(facts(add), serde_json::json!([true, true, false, true, "1.2.0"]).as_array().unwrap().as_slice());
+    let v = serde_json::json!([false, false, null, false, null]);
+    assert_eq!(facts(&json["files"][0]["items"][1]), v.as_array().unwrap().as_slice());
+
+    let listed = |args: &[&str]| -> Vec<String> {
+        let (_, out, _) = docov(dir.path(), args);
+        let items = out.lines().filter(|l| l.starts_with("         "));
+        items.map(|l| l.trim_start().split_once("  ").unwrap().1.to_owned()).collect()
+    };
+    assert_eq!(listed(&[]), ["variable v", "class C", "function one", "function two"]);
+    assert_eq!(listed(&["--sort", "priority"]), ["function two", "function one", "class C", "variable v"]);
+}

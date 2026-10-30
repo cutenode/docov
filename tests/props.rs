@@ -4,11 +4,11 @@ use std::{fs, path::Path, path::PathBuf, process::Command};
 
 use docov::feature::{
     Feature, access::Access, add_ignore::AddIgnore, exports::Exports, inherit::Inherit, kinds::Kinds,
-    report_unused_ignores::ReportUnusedIgnores,
+    report_unused_ignores::ReportUnusedIgnores, sort::Sort,
 };
 use docov::{
-    FileReport, Format, Item, Kind, Rules, Scope, Totals, collect, collect::Ignore, config, feature, report, rewrite,
-    scan, scan_file,
+    FileReport, Format, Item, Kind, Rules, Scope, Totals, collect, collect::Facts, collect::Ignore, config, feature,
+    report, rewrite, scan, scan_file,
 };
 use hegel::{TestCase, generators as gs};
 use oxc_span::SourceType;
@@ -62,6 +62,8 @@ struct Expected {
     protected: bool,
     /// Whether it's a TypeScript `override` member.
     overrides: bool,
+    /// For a function or method, its parameters' names.
+    params: Option<&'static [&'static str]>,
 }
 
 impl Expected {
@@ -102,7 +104,17 @@ impl Expected {
         let described = |b: Block| if self.item.kind == Kind::Class { b.class_described } else { b.described };
         let inherits = rules.inherit == Inherit::Override && self.overrides;
         let documented = inherits || self.doc.is_some_and(|b| !rules.require_description || described(b));
-        Some(Item { documented, ..self.item.clone() })
+        let doc = self.doc;
+        let facts = Facts {
+            has_description: doc.is_some_and(described),
+            has_example: doc.is_some_and(|b| b.example),
+            params_documented: self.params.map(|ps| ps.iter().all(|p| doc.is_some_and(|b| b.params.contains(p)))),
+            deprecated: tags.contains(&"deprecated"),
+            since: doc.and_then(|b| b.since).map(String::from),
+            params: self.params.map_or(0, <[_]>::len),
+            exported: self.via.is_some_and(counts),
+        };
+        Some(Item { documented, facts, ..self.item.clone() })
     }
 }
 
@@ -118,19 +130,41 @@ struct Block {
     tags: &'static [&'static str],
     /// The access level its tags give.
     access: Option<Access>,
+    /// Whether it has an `@example`.
+    example: bool,
+    /// Its `@since` text.
+    since: Option<&'static str>,
+    /// The parameters its `@param` tags name, leaving out dotted names.
+    params: &'static [&'static str],
 }
 
 const fn block(text: &'static str, described: bool, class_described: bool, tags: &'static [&'static str]) -> Block {
-    Block { text, described, class_described, tags, access: None }
+    Block { text, described, class_described, tags, access: None, example: false, since: None, params: &[] }
 }
 
 const fn access(text: &'static str, tags: &'static [&'static str], level: Access) -> Block {
     Block { access: Some(level), ..block(text, true, true, tags) }
 }
 
-const BLOCKS: [Block; 18] = [
+const BLOCKS: [Block; 21] = [
     block("/** Docs. */", true, true, &[]),
-    block("/**\n * Docs.\n * @param a The a.\n */", true, true, &["param"]),
+    Block { params: &["a"], ..block("/**\n * Docs.\n * @param a The a.\n */", true, true, &["param"]) },
+    Block {
+        example: true,
+        since: Some("1.2"),
+        params: &["a"],
+        ..block(
+            "/**\n * Docs.\n * @param {string} [a=1] The a.\n * @example\n * f()\n * @since 1.2\n */",
+            true,
+            true,
+            &["param", "example", "since"],
+        )
+    },
+    Block {
+        params: &["b"],
+        ..block("/** Docs.\n * @arg b Not a.\n * @param a.x Part of a.\n */", true, true, &["arg", "param"])
+    },
+    block("/** @since */", false, false, &["since"]),
     block("/** Mail me@example.com. */", true, true, &[]),
     block("/** @type {string} */", false, false, &["type"]),
     block("/** @deprecated */", false, false, &["deprecated"]),
@@ -223,8 +257,9 @@ impl Module {
     fn expect(&mut self, via: Option<Via>, name: String, kind: Kind, doc: Option<Block>) {
         let line = self.line();
         let ignore = self.next_ignore.take().filter(|ignore| ignore.line + 1 == line);
-        let item = Item { name, kind, line, column: 1, documented: doc.is_some(), ignore };
-        self.expected.push(Expected { via, value: false, item, doc, protected: false, overrides: false });
+        let item = Item { name, kind, line, column: 1, documented: doc.is_some(), facts: Facts::default(), ignore };
+        let params = matches!(kind, Kind::Function | Kind::Method).then_some(&[][..]);
+        self.expected.push(Expected { via, value: false, item, doc, protected: false, overrides: false, params });
     }
 
     /// A statement that exports and declares nothing.
@@ -378,6 +413,7 @@ impl Module {
         match kind {
             Kind::Function => {
                 self.expect(via, name.clone(), kind, doc);
+                self.expected.last_mut().unwrap().params = Some(&["a"]);
                 if export != Export::DefaultInline && tc.draw(gs::booleans()) {
                     // Only the signature counts; the implementation after it doesn't.
                     self.write(&format!("{prefix}function {name}(a: string): void;"));
@@ -482,6 +518,7 @@ impl Module {
                 }
                 7 => {
                     item(self, format!("v{j}"), Kind::Method);
+                    self.expected.last_mut().unwrap().params = Some(&["a"]);
                     self.write(&format!("v{j}(a: string): void;\nv{j}(a: unknown) {{}}"));
                 }
                 8 if !constructed => {
@@ -664,6 +701,12 @@ fn reports(tc: &TestCase, ignores: bool) -> Vec<FileReport> {
                     line: i / 2 + 1,
                     column: 1,
                     documented: drawn[1] % 2 == 0,
+                    facts: Facts {
+                        has_example: drawn[2] / 2 % 2 == 0,
+                        params: i % 3,
+                        exported: drawn[1] / 2 % 2 == 0,
+                        ..Facts::default()
+                    },
                     // The comment on the line before, the same for the items that share a line.
                     ignore: (ignores && drawn[2] % 2 == 0).then(|| Ignore {
                         reason: (i / 2 % 2 == 1).then(|| "why".into()),
@@ -757,6 +800,88 @@ fn formats_agree_on_totals(tc: TestCase) {
         item.documented = true;
         assert!(Totals::of(&files).percent() > totals.percent());
     }
+}
+
+/// `--sort priority` lists each file's undocumented items with exported functions and methods
+/// first, more parameters before fewer, then classes, then the rest, each group in file order, and
+/// changes nothing else. The JSON report has each item's facts.
+#[hegel::test(test_cases = 100)]
+fn priority_puts_exported_functions_with_more_parameters_first(tc: TestCase) {
+    let mut files = reports(&tc, true);
+    // The kinds that sort apart, so a file often has several of each.
+    for item in files.iter_mut().flat_map(|f| &mut f.items) {
+        let at = ALL_KINDS.iter().position(|k| *k == item.kind).unwrap();
+        item.kind = [Kind::Function, Kind::Method, Kind::Class, Kind::Variable][at % 4];
+    }
+    let options = report::Options { sort: Sort::Priority };
+    let mut out = Vec::new();
+    report::write_with(Format::Text, &files, &options, &mut out).unwrap();
+    let text = String::from_utf8(out).unwrap();
+    let mut wanted = Vec::new();
+    for file in &files {
+        let undocumented = file.items.iter().filter(|i| !i.documented && i.ignore.is_none());
+        let tier = |i: &&Item| match i.kind {
+            Kind::Function | Kind::Method if i.facts.exported => i.facts.params,
+            Kind::Class => 100,
+            _ => 101,
+        };
+        let mut tiers: Vec<_> = undocumented.collect();
+        // Fewer parameters sort later: a tier for each count, highest first.
+        tiers.sort_by_key(|i| match tier(i) {
+            n @ 0..100 => 99 - n,
+            n => n,
+        });
+        wanted.extend(
+            tiers
+                .iter()
+                .map(|i| format!("         {}:{}:1  {} {}", file.path.display(), i.line, i.kind.as_str(), i.name)),
+        );
+    }
+    let listed: Vec<&str> = text.lines().filter(|l| l.starts_with("         ")).collect();
+    assert_eq!(listed, wanted);
+    let lines = |text: &str| text.lines().filter(|l| !l.starts_with("         ")).map(String::from).collect::<Vec<_>>();
+    assert_eq!(lines(&text), lines(&render(Format::Text, &files)));
+
+    let json: serde_json::Value = serde_json::from_str(&render(Format::Json, &files)).unwrap();
+    let shown = json["files"].as_array().unwrap().iter().flat_map(|f| f["items"].as_array().unwrap().clone());
+    let facts = files.iter().flat_map(|f| &f.items).map(|i| serde_json::json!([i.facts.has_example, i.facts.since]));
+    assert!(shown.map(|i| serde_json::json!([i["hasExample"], i["since"]])).eq(facts));
+}
+
+/// A function's parameters are documented when each has an `@param` (or `@arg`, or `@argument`)
+/// with its name, or for a destructured one, any at its place. Dotted names document parts.
+#[hegel::test(test_cases = 100)]
+fn parameters_are_documented_by_name_or_place(tc: TestCase) {
+    let params = tc.draw(gs::vecs(gs::sampled_from(vec!["a", "b", "{ c }", "[d]"])).max_size(3));
+    let rest = tc.draw(gs::sampled_from(vec!["", "...e", "...{ length }"]));
+    let tags = tc.draw(gs::vecs(gs::sampled_from(vec!["a", "b", "e", "[b=1]", "a.x", "z"])).max_size(4));
+    let tag = tc.draw(gs::sampled_from(vec!["param", "arg", "argument", "returns"]));
+    let documented = tc.draw(gs::booleans());
+    let doc: String = tags.iter().map(|name| format!(" * @{tag} {{string}} {name} Docs.\n")).collect();
+    let mut list: Vec<&str> = params.clone();
+    list.extend(Some(rest).filter(|r| !r.is_empty()));
+    let source = format!(
+        "{}export function f({}) {{}}\nexport class C {{ m({}) {{}} }}\n",
+        if documented { format!("/**\n{doc} */\n") } else { String::new() },
+        list.join(", "),
+        list.join(", "),
+    );
+    let names: Vec<&str> = if documented && tag != "returns" {
+        tags.iter()
+            .filter(|n| !n.contains('.'))
+            .map(|n| n.trim_matches(['[', ']']).split('=').next().unwrap())
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let wanted = list.iter().enumerate().all(|(i, p)| match p.trim_start_matches("...") {
+        name if name.starts_with(['{', '[']) => i < names.len(),
+        name => names.contains(&name),
+    });
+    let items = scan(&source, SourceType::ts(), &Rules::default()).unwrap();
+    let facts: Vec<_> = items.iter().map(|i| (i.facts.params_documented, i.facts.params)).collect();
+    // The class has no JSDoc, so its method's parameters are documented only when it has none.
+    assert_eq!(facts, [(Some(wanted), list.len()), (None, 0), (Some(list.is_empty()), list.len())], "{source}");
 }
 
 fn render(format: Format, files: &[FileReport]) -> String {
@@ -1321,6 +1446,8 @@ fn rules_come_from_flags_over_the_config(tc: TestCase) {
         run.keys.insert("exports".into(), keys.clone());
     }
 
+    let sort = tc.draw(gs::sampled_from(vec![Sort::Position, Sort::Priority]));
+    run.args.extend(["--sort".into(), if sort == Sort::Priority { "priority" } else { "position" }.into()]);
     let ignore_deprecated = run.set(&tc, "ignoreDeprecated", vec![false, true], |_| vec![]);
     let skip_generated = run.set(&tc, "skipGenerated", vec![false, true], |_| vec![]);
 
@@ -1336,6 +1463,7 @@ fn rules_come_from_flags_over_the_config(tc: TestCase) {
     let patterns: Vec<&str> = rules.ignore_names.iter().map(regex::Regex::as_str).collect();
     assert_eq!(patterns, names.unwrap_or_default());
     assert_eq!(settings.get::<Kinds>().by_kind, by_kind);
+    assert_eq!(settings.report().sort, sort);
     assert_eq!(rules.kinds, kinds);
     assert_eq!(*settings.get::<Scope>(), scope.unwrap_or_default());
     assert_eq!(rules.scope, scope.unwrap_or_default());
@@ -1408,7 +1536,15 @@ fn adding_ignores_covers_every_undocumented_item(tc: TestCase) {
     assert_eq!(AddIgnore(None).edit(std::slice::from_ref(&after)), None);
 
     // An undocumented item in a file that's gone, or can't be written.
-    let item = Item { name: "a".into(), kind: Kind::Variable, line: 1, column: 1, documented: false, ignore: None };
+    let item = Item {
+        name: "a".into(),
+        kind: Kind::Variable,
+        line: 1,
+        column: 1,
+        documented: false,
+        facts: Facts::default(),
+        ignore: None,
+    };
     let gone = FileReport { path: dir.path().join("gone.ts"), items: vec![item.clone()] };
     let locked = FileReport { path: dir.path().join("locked.ts"), items: vec![item] };
     fs::write(&locked.path, "export const a = 1;\n").unwrap();

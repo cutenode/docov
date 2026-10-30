@@ -23,6 +23,26 @@ pub(super) fn has_tag(doc: &JSDoc, name: &str) -> bool {
     doc.tags().iter().any(|tag| tag.kind.parsed() == name)
 }
 
+/// The text of `doc`'s first `name` tag (without its `@`), if it has one with text.
+pub(super) fn text(doc: &JSDoc, name: &str) -> Option<String> {
+    let tag = doc.tags().iter().find(|tag| tag.kind.parsed() == name)?;
+    Some(tag.comment().parsed()).filter(|text| !text.is_empty())
+}
+
+/// Whether each of `params` (a parameter's name, or `None` for a destructured one) has a matching
+/// `@param` in `doc`: one with its name, or for a destructured one, one at its place. A dotted name
+/// (`@param options.a`) documents a part of a parameter, not one of its own.
+pub(super) fn documents(doc: Option<&JSDoc>, params: &[Option<&str>]) -> bool {
+    let tags = doc.map_or(&[][..], |doc| doc.tags().as_slice());
+    let names: Vec<&str> = tags
+        .iter()
+        .filter(|tag| matches!(tag.kind.parsed(), "param" | "arg" | "argument"))
+        .filter_map(|tag| tag.type_name_comment().1.map(|name| name.parsed()))
+        .filter(|name| !name.contains('.'))
+        .collect();
+    params.iter().enumerate().all(|(i, param)| param.map_or(i < names.len(), |param| names.contains(&param)))
+}
+
 /// The access level `doc`'s first access tag gives: `@public`, `@protected`, `@package`,
 /// `@private`, or `@access` with one of those.
 pub(super) fn access(doc: &JSDoc) -> Option<Access> {

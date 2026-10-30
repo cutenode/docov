@@ -3,14 +3,15 @@
 use std::{fs, io, path::Path, path::PathBuf};
 
 mod doc;
+mod facts;
 mod ignore;
 mod rules;
 
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
     AssignmentExpression, Class, ClassElement, CommentContent, Declaration, ExportDefaultDeclarationKind, Expression,
-    Function, MemberExpression, MethodDefinitionKind, ObjectPropertyKind, PropertyKey, Statement, TSAccessibility,
-    TSInterfaceDeclaration, TSSignature,
+    FormalParameters, Function, MemberExpression, MethodDefinitionKind, ObjectPropertyKind, PropertyKey, Statement,
+    TSAccessibility, TSInterfaceDeclaration, TSSignature,
 };
 use oxc_jsdoc::JSDoc;
 use oxc_parser::Parser;
@@ -20,7 +21,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use self::ignore::Ignores;
-pub use self::{ignore::Ignore, rules::Rules};
+pub use self::{facts::Facts, ignore::Ignore, rules::Rules};
 use crate::Totals;
 
 /// What kind of declaration an item is.
@@ -91,6 +92,9 @@ pub struct Item {
     /// Whether a JSDoc block with something in it comes right before it (and, by the rules, says
     /// enough).
     pub documented: bool,
+    /// What its JSDoc says past that.
+    #[serde(flatten)]
+    pub facts: Facts,
     /// The `docov-ignore` comment that covers it, if one does. The JSON report shapes it.
     #[serde(skip)]
     pub ignore: Option<Ignore>,
@@ -205,8 +209,8 @@ pub fn scan(source: &str, source_type: SourceType, rules: &Rules) -> Result<Vec<
         .filter(|f| rules.counts(f, &exported))
         .map(|f| {
             let (line, column) = lines.position(f.at as usize);
-            let documented = rules.documents(&f);
-            Item { name: f.name, kind: f.kind, line, column, documented, ignore: ignores.covering(line) }
+            let (documented, facts) = (rules.documents(&f), Facts::of(&f, rules.exported(&f, &exported)));
+            Item { name: f.name, kind: f.kind, line, column, documented, facts, ignore: ignores.covering(line) }
         })
         .collect())
 }
@@ -225,6 +229,8 @@ struct Found<'s> {
     protected: bool,
     /// Whether it's a TypeScript `override` member.
     overrides: bool,
+    /// For a function or method, each parameter's name, or `None` for a destructured one.
+    params: Option<Vec<Option<&'s str>>>,
 }
 
 struct Collector<'s> {
@@ -265,7 +271,8 @@ impl<'s> Collector<'s> {
         // A decorator before `export` starts the declaration, and is where its doc goes.
         let at = site.at.min(start);
         let via = site.via;
-        self.found.push(Found { name, kind, at, doc, binding: site.binding, via, protected: false, overrides: false });
+        let (binding, protected, overrides, params) = (site.binding, false, false, None);
+        self.found.push(Found { name, kind, at, doc, binding, via, protected, overrides, params });
         self.found.last_mut().expect("just pushed")
     }
 
@@ -372,7 +379,7 @@ impl<'s> Collector<'s> {
         }
         if !is_module_exports {
             if let Some(name) = target.static_property_name().and_then(|name| name.as_str()) {
-                self.push(site, at, name.to_owned(), value_kind(value));
+                self.push(site, at, name.to_owned(), value_kind(value)).params = value_params(value);
             }
             return;
         }
@@ -386,7 +393,7 @@ impl<'s> Collector<'s> {
                 Kind::Variable => Kind::Default,
                 kind => kind,
             };
-            self.push(site, at, name.unwrap_or("default").to_owned(), kind);
+            self.push(site, at, name.unwrap_or("default").to_owned(), kind).params = value_params(value);
             return;
         };
         for property in &object.properties {
@@ -397,7 +404,7 @@ impl<'s> Collector<'s> {
             }
             let start = p.span.start;
             let key = self.key(&p.key);
-            self.push(Site { at: start, ..site }, start, key, value_kind(&p.value));
+            self.push(Site { at: start, ..site }, start, key, value_kind(&p.value)).params = value_params(&p.value);
         }
     }
 
@@ -408,7 +415,7 @@ impl<'s> Collector<'s> {
         } else if overload == Some(name) {
             return;
         }
-        self.push(site, f.span.start, name.to_owned(), Kind::Function);
+        self.push(site, f.span.start, name.to_owned(), Kind::Function).params = Some(params(&f.params));
     }
 
     fn class(&mut self, class: &Class<'s>, site: Site<'s>) {
@@ -430,7 +437,7 @@ impl<'s> Collector<'s> {
         let mut overload = None;
         for element in &class.body.body {
             let previous = overload.take();
-            let (start, key, kind, accessibility, overrides) = match element {
+            let (start, key, kind, accessibility, overrides, method_params) = match element {
                 ClassElement::MethodDefinition(m) => {
                     if m.kind.is_constructor() || is_private(&m.key, m.accessibility) {
                         continue;
@@ -444,20 +451,22 @@ impl<'s> Collector<'s> {
                     } else if previous.as_ref() == Some(&key) {
                         continue;
                     }
-                    let kind = if m.kind == MethodDefinitionKind::Method { Kind::Method } else { Kind::Accessor };
-                    (m.span.start, key, kind, m.accessibility, m.r#override)
+                    let method = m.kind == MethodDefinitionKind::Method;
+                    let kind = if method { Kind::Method } else { Kind::Accessor };
+                    (m.span.start, key, kind, m.accessibility, m.r#override, method.then(|| params(&m.value.params)))
                 }
                 ClassElement::PropertyDefinition(p) if !is_private(&p.key, p.accessibility) => {
-                    (p.span.start, self.key(&p.key), Kind::Property, p.accessibility, p.r#override)
+                    (p.span.start, self.key(&p.key), Kind::Property, p.accessibility, p.r#override, None)
                 }
                 ClassElement::AccessorProperty(a) if !is_private(&a.key, a.accessibility) => {
-                    (a.span.start, self.key(&a.key), Kind::Accessor, a.accessibility, a.r#override)
+                    (a.span.start, self.key(&a.key), Kind::Accessor, a.accessibility, a.r#override, None)
                 }
                 _ => continue,
             };
             let found = self.push(Site { at: start, ..site }, start, format!("{class_name}.{key}"), kind);
             found.protected = accessibility == Some(TSAccessibility::Protected);
             found.overrides = overrides;
+            found.params = method_params;
         }
     }
 
@@ -465,12 +474,14 @@ impl<'s> Collector<'s> {
         let name = interface.id.name.as_str();
         self.push(site, interface.span.start, name.to_owned(), Kind::Interface);
         for signature in &interface.body.body {
-            let (start, key, kind) = match signature {
-                TSSignature::TSPropertySignature(p) => (p.span.start, self.key(&p.key), Kind::Property),
-                TSSignature::TSMethodSignature(m) => (m.span.start, self.key(&m.key), Kind::Method),
+            let (start, key, kind, method_params) = match signature {
+                TSSignature::TSPropertySignature(p) => (p.span.start, self.key(&p.key), Kind::Property, None),
+                TSSignature::TSMethodSignature(m) => {
+                    (m.span.start, self.key(&m.key), Kind::Method, Some(params(&m.params)))
+                }
                 _ => continue,
             };
-            self.push(Site { at: start, ..site }, start, format!("{name}.{key}"), kind);
+            self.push(Site { at: start, ..site }, start, format!("{name}.{key}"), kind).params = method_params;
         }
     }
 
@@ -494,6 +505,22 @@ fn value_kind(value: &Expression) -> Kind {
         _ if value.is_function() => Kind::Function,
         Expression::ClassExpression(_) => Kind::Class,
         _ => Kind::Variable,
+    }
+}
+
+/// Each of a function's parameters' names, or `None` for a destructured one.
+fn params<'s>(params: &FormalParameters<'s>) -> Vec<Option<&'s str>> {
+    let name = |pattern: &oxc_ast::ast::BindingPattern<'s>| pattern.get_binding_identifier().map(|id| id.name.as_str());
+    let rest = params.rest.as_ref().map(|rest| name(&rest.rest.argument));
+    params.items.iter().map(|p| name(&p.pattern)).chain(rest).collect()
+}
+
+/// A function value's parameters, or `None` for a value that isn't a function.
+fn value_params<'s>(value: &Expression<'s>) -> Option<Vec<Option<&'s str>>> {
+    match value {
+        Expression::FunctionExpression(f) => Some(params(&f.params)),
+        Expression::ArrowFunctionExpression(f) => Some(params(&f.params)),
+        _ => None,
     }
 }
 

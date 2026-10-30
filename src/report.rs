@@ -9,7 +9,7 @@ use std::io::{self, Write};
 use rustc_hash::FxHashMap;
 use serde::Serialize;
 
-use crate::{FileReport, Kind};
+use crate::{FileReport, Kind, feature::sort::Sort};
 
 /// An output format.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
@@ -60,10 +60,22 @@ impl Totals {
     }
 }
 
+/// How to write a report, past its format: what features ask for.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Options {
+    /// The order of each file's undocumented items in the text report.
+    pub sort: Sort,
+}
+
 /// Writes `files` to `out` in `format`.
 pub fn write(format: Format, files: &[FileReport], out: &mut impl Write) -> io::Result<()> {
+    write_with(format, files, &Options::default(), out)
+}
+
+/// Writes `files` to `out` in `format`, with `options`.
+pub fn write_with(format: Format, files: &[FileReport], options: &Options, out: &mut impl Write) -> io::Result<()> {
     match format {
-        Format::Text => text::write(files, out),
+        Format::Text => text::write(files, options, out),
         Format::Json => json::write(files, out),
         Format::Lcov => lcov::write(files, out),
     }

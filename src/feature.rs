@@ -12,7 +12,7 @@ use clap::{ArgMatches, Args, Command, FromArgMatches};
 use schemars::{JsonSchema, Schema};
 use serde::de::DeserializeOwned;
 
-use crate::{FileReport, Format, Rules};
+use crate::{FileReport, Format, Rules, report};
 
 include!(concat!(env!("OUT_DIR"), "/features.rs"));
 
@@ -33,6 +33,9 @@ pub trait Feature: Sized + Send + Sync + 'static {
 
     /// Sets its part of what counts and when an item is documented.
     fn rules(&self, _rules: &mut Rules) {}
+
+    /// Sets its part of how the report is written.
+    fn report(&self, _options: &mut report::Options) {}
 
     /// Why the scan fails, when this setting fails it (exit 1). Each line is a message of its own.
     fn gate(&self, _reports: &[FileReport]) -> Option<String> {
@@ -142,6 +145,7 @@ impl PartialEq for Keys {
 trait Loaded: Send + Sync {
     fn as_any(&self) -> &dyn Any;
     fn rules(&self, rules: &mut Rules);
+    fn report(&self, options: &mut report::Options);
     fn gate(&self, reports: &[FileReport]) -> Option<String>;
     fn append(&self, format: Format, reports: &[FileReport], out: &mut dyn Write) -> io::Result<()>;
     fn edit(&self, reports: &[FileReport]) -> Option<Result<String, String>>;
@@ -153,6 +157,9 @@ impl<F: Feature> Loaded for F {
     }
     fn rules(&self, rules: &mut Rules) {
         Feature::rules(self, rules);
+    }
+    fn report(&self, options: &mut report::Options) {
+        Feature::report(self, options);
     }
     fn gate(&self, reports: &[FileReport]) -> Option<String> {
         Feature::gate(self, reports)
@@ -186,6 +193,15 @@ impl Settings {
             feature.rules(&mut rules);
         }
         rules
+    }
+
+    /// How to write the report, with each feature's part set.
+    pub fn report(&self) -> report::Options {
+        let mut options = report::Options::default();
+        for feature in &self.0 {
+            feature.report(&mut options);
+        }
+        options
     }
 
     /// Writes what each feature adds to the report in `format`, after it.

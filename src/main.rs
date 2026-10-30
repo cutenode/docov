@@ -67,7 +67,7 @@ fn run(cli: Cli, matches: &clap::ArgMatches) -> Result<bool, Vec<String>> {
         return Ok(true);
     }
     let mut out = io::stdout().lock();
-    report::write(cli.format, &reports, &mut out)
+    report::write_with(cli.format, &reports, &settings.report(), &mut out)
         .and_then(|()| settings.append(cli.format, &reports, &mut out))
         .map_err(|e| vec![e.to_string()])?;
 

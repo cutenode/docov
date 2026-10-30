@@ -84,8 +84,8 @@ Some things never count: constructors (their class's doc covers them), private m
 
 ### Formats
 
-- `text` (the default): each file's percentage and its undocumented items, then the total.
-- `json`: every item, documented or not, with its kind, line and column, and totals per file, per kind and overall.
+- `text` (the default): each file's percentage and its undocumented items, then the total. `--sort priority` lists each file's undocumented items by what to document first: exported functions and methods (more parameters first), then classes, then the rest.
+- `json`: every item, documented or not, with its kind, line and column, and totals per file, per kind and overall. Each item also says whether its JSDoc describes it (`hasDescription`) and has an `@example` (`hasExample`), whether each parameter has a matching `@param` (`paramsDocumented`, `null` for what isn't a function or method), whether it's `deprecated`, and its `since` text (or `null`).
 - `lcov`: a line record for each line with items on it, hit when all of them are documented. Coverage services and editor gutters read it.
 
 ## Working on it
