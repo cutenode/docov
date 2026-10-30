@@ -26,6 +26,8 @@ mod combined;
 mod config_cli;
 #[path = "props/fix.rs"]
 mod fix;
+#[path = "props/lsp.rs"]
+mod lsp;
 
 /// The docov binary, without the environment it reads to change its output: GitHub Actions'
 /// annotations and color. Properties that want them set them again.
