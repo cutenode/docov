@@ -4,7 +4,7 @@
 use std::{
     io::{BufReader, Write},
     path::Path,
-    process::{Command, Stdio},
+    process::Stdio,
     sync::Arc,
     thread::{self, JoinHandle},
     time::Duration,
@@ -402,7 +402,7 @@ fn the_binary_serves_on_stdio(tc: TestCase) {
 /// and checks that it exited with `code`, saying why on stderr when that's 2, and otherwise
 /// published that item.
 fn serve_stdio(root: &Path, input: &str, code: i32) {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_docov"))
+    let mut child = super::docov_command()
         .arg("lsp")
         .current_dir(root)
         .stdin(Stdio::piped())
