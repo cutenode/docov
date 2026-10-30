@@ -3,13 +3,14 @@
 use std::{fs, path::Path, path::PathBuf, process::Command};
 
 use docov::feature::{
-    Feature, access::Access, add_ignore::AddIgnore, commonjs_members::CommonjsMembers, examples::Examples,
-    exports::Exports, file_docs::FileDocs, inherit::Inherit, kinds::Kinds, members::Members, release_tags::ReleaseTags,
-    report_unused_ignores::ReportUnusedIgnores, sort::Sort, types::Types, virtual_types::VirtualTypes,
+    Feature, access::Access, add_ignore::AddIgnore, commonjs_members::CommonjsMembers, complete::Complete,
+    examples::Examples, exports::Exports, file_docs::FileDocs, inherit::Inherit, kinds::Kinds, members::Members,
+    release_tags::ReleaseTags, report_unused_ignores::ReportUnusedIgnores, rules::DocChecks, sort::Sort, types::Types,
+    virtual_types::VirtualTypes,
 };
 use docov::{
-    FileReport, Format, Item, Kind, Rules, Scope, Totals, collect, collect::Facts, collect::Ignore, config, feature,
-    report, rewrite, scan, scan_file,
+    FileReport, Format, Item, Kind, Rules, Scope, Totals, check, collect, collect::Facts, collect::Ignore, config,
+    feature, report, rewrite, scan, scan_file,
 };
 use hegel::{TestCase, generators as gs};
 use oxc_span::SourceType;
@@ -2345,4 +2346,246 @@ fn add_ignore_runs_from_the_command_line(tc: TestCase) {
     let stderr = String::from_utf8(out.stderr).unwrap();
     assert_eq!(out.status.code(), Some(2), "{stderr}");
     assert!(stderr.starts_with("docov: locked.ts: "), "{stderr}");
+}
+
+/// What the doc checks `on` (each rule id and its docov.json setting) find in `source`, a
+/// TypeScript module scanned by `rules`: each finding's line, column, rule and message, and whether
+/// it's an error.
+fn diagnose(
+    source: &str,
+    on: &[(&str, serde_json::Value)],
+    mut rules: Rules,
+) -> Vec<(usize, usize, &'static str, String, bool)> {
+    let settings: Vec<(&str, check::Setting)> =
+        on.iter().map(|(id, value)| (*id, check::Setting::parse(id, value).unwrap())).collect();
+    let Some(checks) = check::Checks::new(settings.iter().map(|(id, setting)| (*id, setting))) else {
+        assert!(settings.iter().all(|(_, setting)| setting.level == check::Level::Off));
+        return Vec::new();
+    };
+    let checks = std::sync::Arc::new(checks);
+    rules.checks = Some(checks.clone());
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("m.ts");
+    fs::write(&path, source).unwrap();
+    scan_file(&path, &rules).unwrap();
+    let found = checks.take();
+    assert!(checks.take().is_empty());
+    found
+        .into_iter()
+        .map(|d| {
+            assert_eq!(d.path, path);
+            assert_ne!(d.severity, check::Level::Off);
+            (d.line, d.column, d.rule, d.message, d.severity == check::Level::Error)
+        })
+        .collect()
+}
+
+/// A level for a rule, drawn, as docov.json writes it, and whether it's on and an error.
+fn level(tc: &TestCase) -> (serde_json::Value, Option<bool>) {
+    let (name, on) = tc.draw(gs::sampled_from(vec![("off", None), ("warn", Some(false)), ("error", Some(true))]));
+    let value = if tc.draw(gs::booleans()) { serde_json::json!(name) } else { serde_json::json!([name]) };
+    (value, on)
+}
+
+/// `findings`, each at `level`, or none when it's off, in the order diagnostics sort in.
+fn at_level(
+    findings: Vec<(usize, usize, &'static str, String)>,
+    level: Option<bool>,
+) -> Vec<(usize, usize, &'static str, String, bool)> {
+    let Some(error) = level else { return Vec::new() };
+    let mut all: Vec<_> = findings.into_iter().map(|(l, c, r, m)| (l, c, r, m, error)).collect();
+    all.sort();
+    all
+}
+
+/// `require-param` finds each parameter with no matching `@param` (by name, or for a destructured
+/// one, by place), unless the block has `@inheritdoc`, and `param-names` each `@param` whose name,
+/// or a dotted name's root, is no parameter's, nor the name of the `@param` at a destructured
+/// one's place. Only counted functions and methods with a block are checked.
+#[hegel::test(test_cases = 100)]
+fn parameters_and_their_tags_match(tc: TestCase) {
+    let mut params: Vec<&str> = Vec::new();
+    for param in tc.draw(gs::vecs(gs::sampled_from(vec!["a", "b", "{ c }", "[d]"])).max_size(3)) {
+        if !params.contains(&param) {
+            params.push(param);
+        }
+    }
+    params.extend(tc.draw(gs::optional(gs::sampled_from(vec!["...e", "...{ length }"]))));
+    let tags = tc.draw(
+        gs::vecs(gs::sampled_from(vec!["a", "b", "c", "e", "z", "[b=1]", "a.x", "z.y", "opts", "opts.v"])).max_size(4),
+    );
+    let kind = tc.draw(gs::sampled_from(vec!["param", "arg", "argument"]));
+    let inherits = tc.draw(gs::booleans());
+    let ((require, require_on), (names, names_on)) = (level(&tc), level(&tc));
+    let doc: String = tags.iter().map(|name| format!(" * @{kind} {{string}} {name} Docs.\n")).collect();
+    let source = format!(
+        "/**\n * Docs.\n{doc}{} */\nexport function f({}) {{}}\n/** Docs. */\nfunction hidden(z) {{}}\nexport function bare(q) {{}}\n/** @param a Not a function's. */\nexport const v = 1;\n",
+        if inherits { " * @inheritDoc\n" } else { "" },
+        params.join(", "),
+    );
+
+    let name = |tag: &str| tag.trim_matches(['[', ']']).split('=').next().unwrap().to_owned();
+    let tops: Vec<String> = tags.iter().filter(|t| !t.contains('.')).map(|t| name(t)).collect();
+    let mut wanted = Vec::new();
+    let destructured = |p: &str| p.trim_start_matches("...").starts_with(['{', '[']);
+    for (i, param) in params.iter().enumerate() {
+        let own = param.trim_start_matches("...");
+        let documented = if destructured(param) { i < tops.len() } else { tops.iter().any(|t| t == own) };
+        if !documented && !inherits {
+            let what = if destructured(param) { format!("parameter {}", i + 1) } else { format!("`{own}`") };
+            wanted.push((1, 1, "require-param", format!("missing @param for {what}")));
+        }
+    }
+    let mut found = at_level(wanted, require_on);
+    let roots: Vec<String> = params
+        .iter()
+        .filter(|p| !destructured(p))
+        .map(|p| p.trim_start_matches("...").to_owned())
+        .chain(
+            tops.iter()
+                .enumerate()
+                .filter(|(i, _)| params.get(*i).is_some_and(|p| destructured(p)))
+                .map(|(_, t)| t.clone()),
+        )
+        .collect();
+    let stale =
+        tags.iter().enumerate().filter(|(_, t)| !roots.contains(&name(t).split('.').next().unwrap().to_owned()));
+    let stale = stale.map(|(i, t)| {
+        (i + 3, 15 + kind.len(), "param-names", format!("@param `{}` doesn't match a parameter", name(t)))
+    });
+    found.extend(at_level(stale.collect(), names_on));
+    found.sort();
+    let on = [("require-param", require), ("param-names", names)];
+    assert_eq!(diagnose(&source, &on, Rules::default()), found, "{source}");
+}
+
+/// Each rule's level comes from `--rule ID=LEVEL` over docov.json's `rules`, with none on unless
+/// one of them turns it on. The gate fails the scan with each error-level finding, and passes with
+/// warnings alone, which it prints.
+#[hegel::test(test_cases = 50)]
+fn rule_levels_come_from_flags_over_the_config(tc: TestCase) {
+    let dir = tempfile::tempdir().unwrap();
+    let mut run = Run::default();
+    let mut keys = serde_json::Map::new();
+    let mut wanted: Vec<(&str, check::Level)> = Vec::new();
+    let levels = vec![check::Level::Off, check::Level::Warn, check::Level::Error];
+    let named = |level: check::Level| serde_json::to_value(level).unwrap().as_str().unwrap().to_owned();
+    for id in check::ids() {
+        let from_key = tc.draw(gs::optional(gs::sampled_from(levels.clone())));
+        let from_flag = tc.draw(gs::optional(gs::sampled_from(levels.clone())));
+        if let Some(level) = from_key {
+            let value =
+                if tc.draw(gs::booleans()) { named(level).into() } else { serde_json::json!([named(level), {}]) };
+            keys.insert(id.to_owned(), value);
+        }
+        if let Some(level) = from_flag {
+            run.args.extend(["--rule".to_owned(), format!("{id}={}", named(level))]);
+        }
+        wanted.extend(from_flag.or(from_key).filter(|&level| level != check::Level::Off).map(|level| (id, level)));
+    }
+    if !keys.is_empty() || tc.draw(gs::booleans()) {
+        run.keys.insert("rules".into(), keys.into());
+    }
+    let settings = run.settings(dir.path());
+    let checks = settings.get::<DocChecks>().0.clone();
+    let mut levels: Vec<_> = checks.iter().flat_map(|c| c.levels()).collect();
+    levels.sort();
+    wanted.sort();
+    assert_eq!(levels, wanted);
+    let rules = settings.rules();
+    assert_eq!(rules.checks.is_some(), !wanted.is_empty());
+    assert_eq!(format!("{:?}", rules.checks), format!("{:?}", checks));
+
+    let path = dir.path().join("m.ts");
+    fs::write(&path, "/** Docs. */\nexport function f(a) {}\n").unwrap();
+    let reports = vec![scan_file(&path, &rules).unwrap()];
+    let failure = wanted
+        .contains(&("require-param", check::Level::Error))
+        .then(|| format!("{}:1:1: require-param: missing @param for `a`", path.display()));
+    assert_eq!(settings.gates(&reports), Vec::from_iter(failure));
+}
+
+/// A `rules` key or `--rule` flag that names no rule, or gives a rule a level or options it
+/// doesn't have, fails to load, naming what's wrong.
+#[hegel::test(test_cases = 30)]
+fn bad_rule_settings_fail_naming_the_rule(tc: TestCase) {
+    let dir = tempfile::tempdir().unwrap();
+    let known = check::ids().collect::<Vec<_>>().join(", ");
+    let unknown = format!("unknown rule `nope`, expected one of {known}");
+    let level = "param-names: expected \"off\", \"warn\" or \"error\", or [level, options]";
+    let (text, message) = tc.draw(gs::sampled_from(vec![
+        (r#"{ "rules": { "nope": "warn" } }"#, unknown.clone()),
+        (r#"{ "rules": { "param-names": "loud" } }"#, level.to_owned()),
+        (r#"{ "rules": { "param-names": [] } }"#, level.to_owned()),
+        (r#"{ "rules": { "param-names": ["warn", {}, 1] } }"#, level.to_owned()),
+        (
+            r#"{ "rules": { "param-names": ["warn", { "x": 1 }] } }"#,
+            "param-names: unknown field `x`, there are no fields".to_owned(),
+        ),
+        (r#"{ "rules": [] }"#, "invalid type: sequence, expected a map".to_owned()),
+    ]));
+    let path = dir.path().join("docov.json");
+    fs::write(&path, text).unwrap();
+    match config::Config::load(Some(&path)) {
+        Err(config::Error::Parse { source, .. }) => {
+            assert!(source.to_string().starts_with(&format!("{message} at line 1 column ")), "{source}");
+        }
+        other => panic!("{other:?}"),
+    }
+    let (flag, message) = tc.draw(gs::sampled_from(vec![
+        ("param-names", "expected ID=LEVEL".to_owned()),
+        ("nope=warn", unknown),
+        ("param-names=loud", "param-names: expected off, warn or error".to_owned()),
+    ]));
+    assert_eq!(check::flag(flag), Err(message));
+    assert_eq!(check::flag("param-names=warn"), Ok(("param-names".to_owned(), check::Level::Warn)));
+}
+
+/// Complete coverage is over every counted item: one is complete when it's documented and, for a
+/// function or method, each parameter has a matching `@param`. With `--complete` (or a threshold)
+/// the JSON report has it and the text report gets a line of it, and its threshold fails the scan
+/// under it.
+#[hegel::test(test_cases = 100)]
+fn complete_items_are_a_metric_when_asked(tc: TestCase) {
+    let mut files = reports(&tc, true);
+    for item in files.iter_mut().flat_map(|f| f.items.iter_mut()) {
+        item.facts.params_documented = tc.draw(gs::optional(gs::booleans()));
+    }
+    let of = |f: &FileReport| {
+        let over: Vec<_> = f.items.iter().filter(|i| i.documented || i.ignore.is_none()).collect();
+        let complete = over.iter().filter(|i| i.documented && i.facts.params_documented != Some(false)).count();
+        Totals { documented: complete, total: over.len() }
+    };
+    let all = files
+        .iter()
+        .map(of)
+        .fold(Totals::default(), |a, b| Totals { documented: a.documented + b.documented, total: a.total + b.total });
+    let threshold = tc.draw(gs::optional(gs::integers::<u8>().max_value(100))).map(f64::from);
+    let on = threshold.is_some() || tc.draw(gs::booleans());
+    let feature = Complete { on, threshold };
+
+    let mut options = report::Options::default();
+    feature.report(&mut options);
+    let mut out = Vec::new();
+    report::write_with(Format::Json, &files, &options, &mut out).unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    let shown = |v: &serde_json::Value| (v["complete"].as_u64(), v["completePercent"].as_f64());
+    let wanted = |t: Totals| if on { (Some(t.documented as u64), Some(t.percent())) } else { (None, None) };
+    assert_eq!(shown(&json), wanted(all));
+    assert!(json["files"].as_array().unwrap().iter().map(shown).eq(files.iter().map(|f| wanted(of(f)))));
+
+    let append = |format| {
+        let mut out = Vec::new();
+        feature.append(format, &files, &mut out).unwrap();
+        String::from_utf8(out).unwrap()
+    };
+    let line = format!("{:>6.1}%  {}/{}  complete\n", all.percent(), all.documented, all.total);
+    assert_eq!(append(Format::Text), if on { line } else { String::new() });
+    assert_eq!(append(Format::Json), "");
+
+    let percent = all.percent();
+    let failure = threshold
+        .filter(|&t| percent < t)
+        .map(|t| format!("{percent:.1}% with complete, under the {t}% complete threshold"));
+    assert_eq!(feature.gate(&files), failure);
 }

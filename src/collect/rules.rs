@@ -8,6 +8,7 @@ use rustc_hash::FxHashSet;
 use super::{Found, Via, doc};
 use crate::{
     Kind, Scope,
+    check::Checks,
     feature::{access::Access, exports::Exports, file_docs::FileDocs, inherit::Inherit, members::Members},
     public::Api,
 };
@@ -46,6 +47,8 @@ pub struct Rules {
     pub commonjs_members: bool,
     /// What the package's entry points reach, for the public scope.
     pub public: Option<Arc<Api>>,
+    /// The doc checks that are on, if any are, which each scanned file's items go through.
+    pub checks: Option<Arc<Checks>>,
 }
 
 impl From<Scope> for Rules {

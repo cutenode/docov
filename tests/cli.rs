@@ -523,3 +523,25 @@ fn explain_says_why_for_each_item_in_a_file() {
     ];
     assert_eq!((code, out), (0, lines.map(|l| format!("{l}\n")).concat()));
 }
+
+#[test]
+fn doc_checks_print_what_they_find_and_fail_on_errors() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("a.ts"), "/**\n * A.\n * @param b B.\n */\nexport function a(c) {}\n").unwrap();
+    let (code, out, err) = docov(dir.path(), &[]);
+    assert_eq!((code, err.as_str()), (0, ""));
+    let (_, plain, _) = docov(dir.path(), &["--rule", "require-param=warn", "--rule", "param-names=warn"]);
+    assert_eq!(plain, out);
+
+    let found = "docov: a.ts:1:1: require-param: missing @param for `c`\ndocov: a.ts:3:11: param-names: @param `b` doesn't match a parameter\n";
+    let (code, _, err) = docov(dir.path(), &["--rule", "require-param=warn", "--rule", "param-names=warn"]);
+    assert_eq!((code, err.as_str()), (0, found));
+    fs::write(dir.path().join("docov.json"), r#"{ "rules": { "param-names": "error", "require-param": "warn" } }"#)
+        .unwrap();
+    let (code, _, err) = docov(dir.path(), &[]);
+    assert_eq!((code, err.as_str()), (1, found));
+    let (code, _, err) = docov(dir.path(), &["--rule", "param-names=off", "--rule", "require-param=off"]);
+    assert_eq!((code, err.as_str()), (0, ""));
+    let (code, _, err) = docov(dir.path(), &["--rule", "nope=warn"]);
+    assert_eq!(code, 2, "{err}");
+}

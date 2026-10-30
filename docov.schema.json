@@ -156,6 +156,26 @@
         }
       ]
     },
+    "Level": {
+      "description": "How much a check's findings matter.",
+      "oneOf": [
+        {
+          "const": "off",
+          "description": "The check doesn't run.",
+          "type": "string"
+        },
+        {
+          "const": "warn",
+          "description": "Its findings are printed, and the scan still passes.",
+          "type": "string"
+        },
+        {
+          "const": "error",
+          "description": "Its findings are printed, and fail the scan.",
+          "type": "string"
+        }
+      ]
+    },
     "Members": {
       "description": "Which members count.",
       "oneOf": [
@@ -170,6 +190,59 @@
           "type": "string"
         }
       ]
+    },
+    "NoOptions": {
+      "additionalProperties": false,
+      "description": "The options of a check that has none.",
+      "type": "object"
+    },
+    "Rules": {
+      "additionalProperties": false,
+      "properties": {
+        "param-names": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Level"
+            },
+            {
+              "items": false,
+              "minItems": 1,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Level"
+                },
+                {
+                  "$ref": "#/$defs/NoOptions"
+                }
+              ],
+              "type": "array"
+            }
+          ],
+          "description": "Each @param names a parameter of its function or method."
+        },
+        "require-param": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Level"
+            },
+            {
+              "items": false,
+              "minItems": 1,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Level"
+                },
+                {
+                  "$ref": "#/$defs/NoOptions"
+                }
+              ],
+              "type": "array"
+            }
+          ],
+          "description": "Each parameter of a function or method has a matching @param."
+        }
+      },
+      "type": "object"
     },
     "Scope": {
       "description": "Which declarations count toward coverage.",
@@ -221,6 +294,17 @@
       "default": false,
       "description": "Count `X.prototype.m = …` and `X.m = …` at the top level as members of X, a function or class declared there, and `this.a = …` in a CommonJS file as an export.",
       "type": "boolean"
+    },
+    "completeThreshold": {
+      "default": null,
+      "description": "The lowest percentage of counted items documented with a @param for each parameter that passes.",
+      "format": "double",
+      "maximum": 100,
+      "minimum": 0,
+      "type": [
+        "number",
+        "null"
+      ]
     },
     "examplesThreshold": {
       "default": null,
@@ -316,6 +400,10 @@
       "default": false,
       "description": "Count a JSDoc block only with text before its first tag, or @description, @summary, @classdesc or @inheritdoc.",
       "type": "boolean"
+    },
+    "rules": {
+      "$ref": "#/$defs/Rules",
+      "description": "Doc checks to turn on, by rule id: \"off\", \"warn\" or \"error\", or that level with the check's options, as [\"warn\", { … }]. Every check is off by default."
     },
     "scope": {
       "$ref": "#/$defs/Scope",

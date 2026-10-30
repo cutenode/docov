@@ -2,7 +2,8 @@
 
 use std::{fs, io, path::Path, path::PathBuf};
 
-mod doc;
+mod diagnose;
+pub(crate) mod doc;
 mod explain;
 mod facts;
 mod ignore;
@@ -173,7 +174,10 @@ pub struct SyntaxError {
 pub fn scan_file(path: &Path, rules: &Rules) -> Result<FileReport, Error> {
     let (source, source_type) = read(path)?;
     let reached = rules.public.as_ref().and_then(|api| api.reach(path));
-    let items = collect(&source, source_type, rules, Some(path), false, |c| c.items(rules, source_type, reached));
+    let items = collect(&source, source_type, rules, Some(path), false, |c| {
+        c.diagnose(rules, reached, path);
+        c.items(rules, source_type, reached)
+    });
     Ok(FileReport { path: path.to_owned(), items: items.map_err(|e| e.at(path, &source))? })
 }
 

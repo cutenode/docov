@@ -1,5 +1,6 @@
 //! How much of a JavaScript or TypeScript project's API has JSDoc.
 
+pub mod check;
 pub mod collect;
 pub mod config;
 pub mod feature;

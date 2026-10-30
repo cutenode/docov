@@ -79,7 +79,24 @@ Example coverage is a second figure: the share of counted items whose JSDoc has 
 
 `--types` adds type coverage for JavaScript (`.js`, `.mjs`, `.cjs` and `.jsx` files): the share of counted functions and methods whose JSDoc gives each `@param` a `{type}`, and its `@returns` one when it has one. An undocumented function isn't typed. It's a line after the text report's total and `typed` and `typesPercent` in the JSON report, and `--types-threshold PERCENT` (`"typesThreshold"`, which turns it on too) fails the scan under it.
 
+`--complete` adds complete coverage: the share of counted items that are documented with a matching `@param` for each parameter. It's a line after the text report's total and `complete` and `completePercent` in the JSON report, and `--complete-threshold PERCENT` (`"completeThreshold"`, which turns it on too) fails the scan under it.
+
 `"ignoreDeprecated": true` leaves out items whose JSDoc has `@deprecated`, and `"skipGenerated": true` leaves out every item in a file whose first comment has `@generated`.
+
+### Doc checks
+
+Checks on what each counted item's JSDoc block says. Each is off until `--rule ID=LEVEL` (repeatable) or docov.json's `rules` turns it on, at `warn` or `error`, with its options if it has some:
+
+```jsonc
+"rules": { "require-param": "error", "param-names": ["warn"] }
+```
+
+Each finding prints to stderr as `docov: path:line:column: rule-id: message`, and one at `error` fails the scan (exit 1). A flag's level wins over the config's, which keeps its options. The checks that want a tag leave a block with `@inheritdoc` alone.
+
+- `require-param`: each parameter of a function or method has a matching `@param`, by name, or for a destructured one, at its place (as `paramsDocumented` counts them).
+- `param-names`: each `@param` names a parameter, so none is left over from a rename. A destructured parameter takes the name of the `@param` at its place, and `@param options.a` belongs to `options`.
+
+`const f = () => …` is a variable to docov, so the checks on parameters don't look at it.
 
 ### docov.json
 
@@ -110,7 +127,7 @@ Example coverage is a second figure: the share of counted items whose JSDoc has 
 
 The toolchain is pinned in `rust-toolchain.toml`, and Node in `.node-version`. The checks need [cargo-nextest](https://nexte.st) and [cargo-llvm-cov](https://github.com/taiki-e/cargo-llvm-cov).
 
-Each flag and docov.json key belongs to a feature, one file in `src/feature/` that implements `Feature`. `build.rs` registers every file there, so a new feature is a new file and nothing else.
+Each flag and docov.json key belongs to a feature, one file in `src/feature/` that implements `Feature`, and each doc check is one file in `src/check/` that implements `Check`, its rule id the file name in kebab case. `build.rs` registers every file in both, so a new feature or check is a new file and nothing else.
 
 ```bash
 cargo run -- [PATHS]...   # docov on a project
