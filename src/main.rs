@@ -22,7 +22,7 @@ use rayon::{iter::Either, prelude::*};
 
 /// Checks how much of a JavaScript or TypeScript project's API has JSDoc.
 ///
-/// Exits 1 when coverage is under the threshold, 2 when a file or the config can't be read.
+/// Exits 1 when a gate fails (a threshold, say), 2 when a file or the config can't be read.
 #[derive(Parser)]
 #[command(version)]
 struct Cli {
@@ -70,7 +70,7 @@ fn main() -> ExitCode {
     }
 }
 
-/// Scans and reports, and says whether coverage met the threshold.
+/// Scans and reports, and says whether every gate passed.
 fn run(cli: Cli, matches: &clap::ArgMatches) -> Result<bool, Vec<String>> {
     let mut config = Config::load(cli.config.as_deref()).map_err(|e| vec![e.to_string()])?;
     let settings = Settings::new(matches, std::mem::take(&mut config.keys));
