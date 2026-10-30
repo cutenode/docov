@@ -594,7 +594,7 @@ fn doc_checks_go_by_each_nested_config(tc: TestCase) {
         let level = flagged.or_else(|| rules.get(id).and_then(serde_json::Value::as_str))?;
         (level != "off").then_some(level == "error")
     };
-    let pkg = format!("{}: ", root.join("pkg/docov.json").display());
+    let pkg = format!("{}: ", root.join("pkg").join("docov.json").display());
     let mut failures = Vec::new();
     for (g, count) in counts.into_iter().enumerate() {
         let rules = if g == 1 { pkg_rules.as_ref().unwrap_or(&top_rules) } else { &top_rules };
