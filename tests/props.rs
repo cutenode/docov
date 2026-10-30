@@ -2676,3 +2676,54 @@ fn returned_and_yielded_values_are_documented(tc: TestCase) {
     let on = [("require-returns", returns_level), ("require-yields", yields_level)];
     assert_eq!(diagnose(&source, &on, Rules::default()), wanted, "{source}");
 }
+
+/// `require-throws` finds an exported function or method whose own body throws (outside a `try`
+/// with a `catch`, and past the functions inside it) with no `@throws` or `@exception`, unless its
+/// block has `@inheritdoc`.
+#[hegel::test(test_cases = 100)]
+fn thrown_errors_are_documented(tc: TestCase) {
+    let (throws_level, throws_on) = level(&tc);
+    // Each statement, and whether it throws.
+    let statements = vec![
+        ("throw new Error('no');", true),
+        ("if (x) { throw x; }", true),
+        ("try { throw x; } catch { }", false),
+        ("try { throw x; } finally { }", true),
+        ("try { } catch (e) { throw e; }", true),
+        ("try { } finally { throw x; }", true),
+        ("try { try { throw x; } finally { } } catch { }", false),
+        ("function inner() { throw x; }", false),
+        ("const g = () => { throw x; };", false),
+        ("return 1;", false),
+    ];
+    let tags = vec![
+        ("", false),
+        (" * @throws {Error} When it fails.\n", true),
+        (" * @exception When it fails.\n", true),
+        (" * @inheritdoc\n", true),
+    ];
+    let mut source = String::new();
+    let mut wanted = Vec::new();
+    for (owner, exported) in [("f", true), ("g", false), ("C", true), ("h", true)] {
+        let body = tc.draw(gs::vecs(gs::sampled_from(statements.clone())).max_size(3));
+        let (tag, documented) = tc.draw(gs::sampled_from(tags.clone()));
+        let text = body.iter().map(|(t, _)| *t).collect::<Vec<_>>().join(" ");
+        let (mut line, mut column) = (source.matches('\n').count() + 1, 1);
+        match owner {
+            "C" => {
+                source += &format!("export class C {{\n  /**\n   * Docs.\n{tag}   */\n  m(x) {{ {text} }}\n}}\n");
+                (line, column) = (line + 1, 3);
+            }
+            "h" => source += &format!("/**\n * Docs.\n{tag} */\nexports.h = (x) => {{ {text} }};\n"),
+            name => {
+                let export = if exported { "export " } else { "" };
+                source += &format!("/**\n * Docs.\n{tag} */\n{export}function {name}(x) {{ {text} }}\n");
+            }
+        }
+        if exported && !documented && body.iter().any(|(_, throws)| *throws) {
+            wanted.push((line, column, "require-throws", "missing @throws".to_owned()));
+        }
+    }
+    let on = [("require-throws", throws_level)];
+    assert_eq!(diagnose(&source, &on, Rules::from(Scope::All)), at_level(wanted, throws_on), "{source}");
+}

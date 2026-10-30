@@ -71,6 +71,8 @@ impl fmt::Display for Diagnostic {
 
 /// An item with a JSDoc block, as a check sees it.
 pub struct Subject<'a, 's> {
+    /// Whether it's exported, by the ways of exporting that count.
+    pub exported: bool,
     /// Its block.
     pub doc: &'a JSDoc<'s>,
     /// For a function or method, each parameter's name, or `None` for a destructured one.

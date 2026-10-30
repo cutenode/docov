@@ -262,6 +262,27 @@
           ],
           "description": "A function or method that returns a value has @returns, unless its return type is void."
         },
+        "require-throws": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Level"
+            },
+            {
+              "items": false,
+              "minItems": 1,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Level"
+                },
+                {
+                  "$ref": "#/$defs/NoOptions"
+                }
+              ],
+              "type": "array"
+            }
+          ],
+          "description": "An exported function or method that throws has @throws."
+        },
         "require-yields": {
           "anyOf": [
             {
