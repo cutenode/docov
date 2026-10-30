@@ -2777,3 +2777,40 @@ fn type_parameters_are_documented(tc: TestCase) {
     let on = [("require-template", template_level)];
     assert_eq!(diagnose(&source, &on, Rules::default()), at_level(wanted, template_on), "{source}");
 }
+
+/// `empty-tag-description` finds each `@param`, `@returns`, `@throws` and `@yields` tag (or one of
+/// their other names) that says nothing past its type and name, except a `@returns` of a function
+/// that returns nothing, by its return type or the tag's.
+#[hegel::test(test_cases = 100)]
+fn tags_have_descriptions(tc: TestCase) {
+    let (empty_level, empty_on) = level(&tc);
+    let (annotation, void) = tc.draw(gs::sampled_from(vec![("", false), (": void", true), (": number", false)]));
+    // Each tag line, its name, what it names, whether it says nothing, and whether it's a
+    // `@returns` of nothing by its type.
+    let tags = vec![
+        ("@param {string} a The a.", "param", None, false, false),
+        ("@param {string} a", "param", Some("a"), true, false),
+        ("@arg b", "arg", Some("b"), true, false),
+        ("@argument", "argument", None, true, false),
+        ("@returns {number} The count.", "returns", None, false, false),
+        ("@returns {number}", "returns", None, true, false),
+        ("@return", "return", None, true, false),
+        ("@returns {void}", "returns", None, true, true),
+        ("@returns {Promise<void>}", "returns", None, true, true),
+        ("@throws {Error}", "throws", None, true, false),
+        ("@exception When it fails.", "exception", None, false, false),
+        ("@yields", "yields", None, true, false),
+        ("@yield {number} A number.", "yield", None, false, false),
+        ("@since", "since", None, true, false),
+    ];
+    let drawn = tc.draw(gs::vecs(gs::sampled_from(tags)).max_size(4));
+    let lines: String = drawn.iter().map(|(text, ..)| format!(" * {text}\n")).collect();
+    let source = format!("/**\n * Docs.\n{lines} */\nexport function f(a, b){annotation} {{}}\n");
+    let wanted = drawn.iter().enumerate().filter_map(|(i, (_, kind, name, empty, nothing))| {
+        let counts = *kind != "since" && !(matches!(*kind, "returns" | "return") && (void || *nothing));
+        let name = name.map(|n| format!(" `{n}`")).unwrap_or_default();
+        (counts && *empty).then(|| (i + 3, 4, "empty-tag-description", format!("@{kind}{name} has no description")))
+    });
+    let on = [("empty-tag-description", empty_level)];
+    assert_eq!(diagnose(&source, &on, Rules::default()), at_level(wanted.collect(), empty_on), "{source}");
+}

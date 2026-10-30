@@ -99,6 +99,7 @@ Each finding prints to stderr as `docov: path:line:column: rule-id: message`, an
 - `require-yields`: a generator that yields a value has `@yields`.
 - `require-throws`: an exported function or method with a `throw` of its own (outside a `try` that catches it) has `@throws`.
 - `require-template`: each type parameter of a declaration has a `@template`.
+- `empty-tag-description`: each `@param`, `@returns`, `@throws` and `@yields` says something past its type and name, except a `@returns` of nothing.
 
 `const f = () => …` is a variable to docov, so the checks on parameters, returns and throws don't look at it.
 

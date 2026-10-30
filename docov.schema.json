@@ -199,6 +199,27 @@
     "Rules": {
       "additionalProperties": false,
       "properties": {
+        "empty-tag-description": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Level"
+            },
+            {
+              "items": false,
+              "minItems": 1,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Level"
+                },
+                {
+                  "$ref": "#/$defs/NoOptions"
+                }
+              ],
+              "type": "array"
+            }
+          ],
+          "description": "Each @param, @returns, @throws and @yields tag has a description."
+        },
         "param-names": {
           "anyOf": [
             {
