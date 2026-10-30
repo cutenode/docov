@@ -311,20 +311,29 @@ fn print_config_describes_every_setting(tc: TestCase) {
     }
 }
 
-/// A jsdoc.json's excluded path whose name ends in a `\`, which escapes nothing in a glob, fails
-/// naming the jsdoc.json. On Windows that's a separator, and the path has another name.
-#[hegel::test(test_cases = 2)]
-fn a_jsdoc_exclude_that_is_no_glob_fails(tc: TestCase) {
+/// A jsdoc.json's excluded path leaves out the file with just that name, whatever glob syntax is in
+/// it: `\`, which escapes the next character in a glob, included. On Windows a `\` is a
+/// separator, so the name is what follows the last one.
+#[hegel::test(test_cases = 10)]
+fn a_jsdoc_exclude_matches_just_its_name(tc: TestCase) {
     let dir = tempfile::tempdir().unwrap();
-    let name = tc.draw(gs::sampled_from(vec!["a", "b"]));
-    write(dir.path(), "jsdoc.json", &json!({ "source": { "exclude": [format!("{name}\\")] } }).to_string());
-    let read = jsdoc::read(&dir.path().join("jsdoc.json"));
-    if cfg!(unix) {
-        let error = read.unwrap_err();
-        assert!(error.contains("jsdoc.json") && error.contains(name), "{error}");
-    } else {
-        assert_eq!(read.unwrap().exclude.len(), 1);
-    }
+    // Each with a name it would match as a glob, unescaped.
+    let (excluded, globbed) = tc.draw(gs::sampled_from(vec![
+        ("a\\", "a"),
+        ("a\\b", "ab"),
+        ("\\a", "a"),
+        ("a*b", "axb"),
+        ("a[b]", "ab"),
+        ("a{b,c}", "ac"),
+        ("a?", "ax"),
+    ]));
+    write(dir.path(), "jsdoc.json", &json!({ "source": { "exclude": [excluded] } }).to_string());
+    let sources = jsdoc::read(&dir.path().join("jsdoc.json")).unwrap();
+    let [exclude] = sources.exclude.as_slice() else { panic!("{:?}", sources.exclude) };
+    let name = Path::new(excluded).file_name().unwrap();
+    assert!(exclude.globs.matches(Path::new(name), false), "{excluded}");
+    let separated = name != excluded;
+    assert!(separated || !exclude.globs.matches(Path::new(globbed), false), "{excluded} matched {globbed}");
 }
 
 /// The binary with features from different lanes at once: stdin scans by the rules and refuses

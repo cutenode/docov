@@ -89,11 +89,13 @@ pub fn read(path: &Path) -> Result<Sources, String> {
         .filter_map(|p| {
             // Collected, the root shows in `--print-config` with the OS's separators.
             let path: PathBuf = dir.join(p).components().collect();
-            let name = globset::escape(&path.file_name()?.to_string_lossy());
+            // A `\` escapes the next character in a glob, so it's escaped as well, and any name
+            // makes a glob that matches just that name.
+            let name = globset::escape(&path.file_name()?.to_string_lossy()).replace('\\', r"\\");
             let root = path.parent().expect("a path with a file name is in a folder").to_owned();
-            // A name can still end in a `\`, which escapes nothing.
-            Some(Globs::new(vec![format!("/{name}")]).map(|globs| Exclude { root, globs }).map_err(|e| failed(&e)))
+            let globs = Globs::new(vec![format!("/{name}")]).expect("an escaped name is a glob");
+            Some(Exclude { root, globs })
         })
-        .collect::<Result<_, _>>()?;
+        .collect();
     Ok(Sources { paths, exclude, patterns })
 }
