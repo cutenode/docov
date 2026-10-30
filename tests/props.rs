@@ -1,14 +1,19 @@
 //! Properties over generated modules, projects and reports.
 
-use std::{fs, path::Path, path::PathBuf, process::Command};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+    time::{Duration, UNIX_EPOCH},
+};
 
 use docov::feature::{
-    Feature, access::Access, add_ignore::AddIgnore, exports::Exports, inherit::Inherit, kinds::Kinds,
+    Feature, access::Access, add_ignore::AddIgnore, exports::Exports, inherit::Inherit,
     report_unused_ignores::ReportUnusedIgnores,
 };
 use docov::{
-    FileReport, Format, Item, Kind, Rules, Scope, Totals, collect, collect::Ignore, config, feature, report, rewrite,
-    scan, scan_file,
+    Context, FileReport, Item, Kind, Output, Rules, Scope, Totals, collect, collect::Ignore, config, feature, report,
+    rewrite, scan, scan_file,
 };
 use hegel::{TestCase, generators as gs};
 use oxc_span::SourceType;
@@ -646,7 +651,13 @@ const ALL_KINDS: [Kind; 11] = [
     Kind::Default,
 ];
 
-/// Generated reports, with `docov-ignore` comments over some items when `ignores` is on.
+/// Names and paths with what each format has to escape: separators, markup and quotes.
+const NAMES: [&str; 5] = ["n", "C.m", "`k``", "[a, b]", "p|q*_<&>%:\"'"];
+const FOLDERS: [&str; 4] = ["", "src/", "src/deep/", "a b/"];
+const FILE_NAMES: [&str; 4] = ["", ",%:", "<&>'\"", "`|`"];
+
+/// Up to four files of up to six items, two to a line, with names and paths to escape, and
+/// `docov-ignore` comments over some items when `ignores` is on.
 fn reports(tc: &TestCase, ignores: bool) -> Vec<FileReport> {
     let item = gs::vecs(gs::integers::<usize>().max_value(ALL_KINDS.len() - 1)).min_size(3).max_size(3);
     let files = tc.draw(gs::vecs(gs::vecs(item).max_size(6)).max_size(4));
@@ -654,12 +665,16 @@ fn reports(tc: &TestCase, ignores: bool) -> Vec<FileReport> {
         .into_iter()
         .enumerate()
         .map(|(f, items)| FileReport {
-            path: PathBuf::from(format!("f{f}.ts")),
+            path: PathBuf::from(format!(
+                "{}f{f}{}.ts",
+                tc.draw(gs::sampled_from(FOLDERS.to_vec())),
+                tc.draw(gs::sampled_from(FILE_NAMES.to_vec()))
+            )),
             items: items
                 .into_iter()
                 .enumerate()
                 .map(|(i, drawn)| Item {
-                    name: format!("n{i}"),
+                    name: format!("{}{i}", NAMES[drawn[2] % NAMES.len()]),
                     kind: ALL_KINDS[drawn[0]],
                     line: i / 2 + 1,
                     column: 1,
@@ -675,6 +690,49 @@ fn reports(tc: &TestCase, ignores: bool) -> Vec<FileReport> {
                 .collect(),
         })
         .collect()
+}
+
+/// Messages from failed gates, with what formats have to escape.
+const FAILURES: [&str; 4] = [
+    "66.7% documented, under the 80% threshold",
+    "two\nlines\r\n",
+    "100%: a, b",
+    "*bold* _it_ <b> | `c` [l](u) & # ~ \\",
+];
+
+/// What a format reports from, drawn.
+struct Drawn {
+    files: Vec<FileReport>,
+    failures: Vec<String>,
+    /// When the scan ran, in milliseconds since 1970.
+    now_ms: u64,
+    threshold: Option<f64>,
+    text: report::Text,
+}
+
+impl Drawn {
+    fn draw(tc: &TestCase) -> Self {
+        let failures = tc.draw(gs::vecs(gs::sampled_from(FAILURES.to_vec())).max_size(2));
+        let now_ms = tc.draw(gs::integers::<u64>().max_value(4_000_000_000_000));
+        let threshold = tc.draw(gs::optional(gs::integers::<u8>().max_value(100))).map(f64::from);
+        Self {
+            files: reports(tc, false),
+            failures: failures.into_iter().map(String::from).collect(),
+            now_ms,
+            threshold,
+            text: report::Text::default(),
+        }
+    }
+
+    fn context(&self) -> Context<'_> {
+        Context {
+            files: &self.files,
+            failures: &self.failures,
+            now: UNIX_EPOCH + Duration::from_millis(self.now_ms),
+            threshold: self.threshold,
+            text: self.text,
+        }
+    }
 }
 
 /// A writer with room for this many bytes, failing a write that doesn't fit.
@@ -706,6 +764,537 @@ fn thresholds_are_percentages(tc: TestCase) {
     }
 }
 
+/// `--format` takes each format's name, and nothing else, listing the names when it fails. No two
+/// formats share one.
+#[hegel::test(test_cases = 50)]
+fn formats_are_found_by_name(tc: TestCase) {
+    let names: Vec<&str> = report::FORMATS.iter().map(|f| f.name).collect();
+    assert!(names.iter().enumerate().all(|(i, name)| !names[..i].contains(name)), "{names:?}");
+    let name =
+        if tc.draw(gs::booleans()) { tc.draw(gs::sampled_from(names.clone())).to_owned() } else { tc.draw(gs::text()) };
+    match report::format(&name) {
+        Ok(format) => assert_eq!(format.name, name),
+        Err(e) => {
+            assert!(!names.contains(&name.as_str()), "{name}");
+            assert_eq!(e, format!("unknown format `{name}`, expected one of: {}", names.join(", ")));
+        }
+    }
+}
+
+/// `--format` takes a format's name, then maybe `=FILE`, and nothing else.
+#[hegel::test(test_cases = 100)]
+fn format_flags_name_a_format_and_maybe_a_file(tc: TestCase) {
+    let names: Vec<&str> = report::FORMATS.iter().map(|f| f.name).collect();
+    let name =
+        if tc.draw(gs::booleans()) { tc.draw(gs::sampled_from(names.clone())).to_owned() } else { tc.draw(gs::text()) };
+    let file = tc.draw(gs::optional(gs::sampled_from(vec!["", "x.lcov", "a=b", "deep/x.json"])));
+    let value = file.map_or(name.clone(), |file| format!("{name}={file}"));
+    let (name, file) = value.split_once('=').map_or((&*value, None), |(name, file)| (name, Some(file)));
+    match Output::parse(&value) {
+        Ok(output) => assert_eq!((output.format.name, output.path), (name, file.map(PathBuf::from))),
+        Err(e) if file == Some("") => assert_eq!(e, format!("expected a file after `{name}=`")),
+        Err(e) => assert_eq!(Err(e), report::format(name).map(|f| f.name)),
+    }
+}
+
+/// Each format goes to its file, folders made, or else to stdout, one after another; `--output` is
+/// the file for the one format without its own, and an error without exactly one. With no
+/// `--format`, it's text, and GitHub annotations too in GitHub Actions. A file that can't be written fails, naming it.
+#[hegel::test(test_cases = 50)]
+fn outputs_go_where_the_flags_send_them(tc: TestCase) {
+    let dir = tempfile::tempdir().unwrap();
+    let drawn = Drawn::draw(&tc);
+    let context = drawn.context();
+    let names: Vec<&str> = report::FORMATS.iter().map(|f| f.name).collect();
+    let mut format = Vec::new();
+    for i in 0..tc.draw(gs::integers::<usize>().max_value(3)) {
+        let name = tc.draw(gs::sampled_from(names.clone()));
+        let file = tc.draw(gs::optional(gs::sampled_from(vec![format!("{i}.out"), format!("deep/er/{i}.out")])));
+        format.push(Output { format: report::format(name).unwrap(), path: file.map(|f| dir.path().join(f)) });
+    }
+    let output = tc.draw(gs::booleans()).then(|| dir.path().join("out/o.txt"));
+    let unnamed = if format.is_empty() { 1 } else { format.iter().filter(|o| o.path.is_none()).count() };
+    let github_actions = tc.draw(gs::booleans());
+    let badge = tc.draw(gs::booleans()).then(|| dir.path().join("badge.svg"));
+    let flags =
+        report::Flags { format: format.clone(), output: output.clone(), badge: badge.clone(), text: drawn.text };
+    let outputs = match flags.outputs(github_actions) {
+        Err(e) => {
+            assert!(output.is_some() && unnamed != 1, "{e}");
+            assert_eq!(e, "--output needs exactly one --format without a file");
+            return;
+        }
+        Ok(outputs) => outputs,
+    };
+    assert!(output.is_none() || unnamed == 1);
+    let mut named: Vec<&str> = outputs.iter().map(|o| o.format.name).collect();
+    // `--badge` adds a badge, at the end.
+    if badge.is_some() {
+        assert_eq!((named.pop(), &outputs.last().unwrap().path), (Some("badge"), &badge));
+    }
+    if format.is_empty() {
+        assert_eq!(named, if github_actions { &["text", "github"][..] } else { &["text"] });
+    } else {
+        assert_eq!(named, format.iter().map(|o| o.format.name).collect::<Vec<_>>());
+    }
+    let sent_to_output = outputs.iter().filter(|o| o.path.is_some() && o.path == output).count();
+    assert_eq!(sent_to_output, usize::from(output.is_some()));
+    // With `--output`, only GitHub's annotations still go to stdout, where the runner reads them.
+    let left = outputs.iter().filter(|o| o.path.is_none()).map(|o| o.format.name).collect::<Vec<_>>();
+    assert!(output.is_none() || left.is_empty() || (format.is_empty() && left == ["github"]), "{left:?}");
+
+    let mut stdout = Vec::new();
+    report::write(&outputs, &context, &mut stdout).unwrap();
+    let to_stdout: String = outputs.iter().filter(|o| o.path.is_none()).map(|o| o.format.render(&context)).collect();
+    assert_eq!(String::from_utf8(stdout).unwrap(), to_stdout);
+    for output in &outputs {
+        if let Some(path) = &output.path {
+            assert_eq!(fs::read_to_string(path).unwrap(), output.format.render(&context), "{}", path.display());
+        }
+    }
+
+    // A file in the way of the folder, and a folder in the way of the file.
+    write(dir.path(), "in-the-way", "");
+    let format = outputs[0].format;
+    for path in [dir.path().join("in-the-way/x.out"), dir.path().to_owned()] {
+        let e = report::write(&[Output { format, path: Some(path.clone()) }], &context, &mut Vec::new()).unwrap_err();
+        assert!(e.starts_with(&format!("{}: ", path.display())), "{e}");
+    }
+}
+
+/// Undoes GitHub's workflow command escaping.
+fn unescape_github(text: &str) -> String {
+    text.replace("%2C", ",").replace("%3A", ":").replace("%0A", "\n").replace("%0D", "\r").replace("%25", "%")
+}
+
+/// `github` writes one command per line: a warning at each undocumented item, then an error for
+/// each failed gate. Its properties and messages come back as they were once unescaped.
+#[hegel::test(test_cases = 100)]
+fn github_annotates_each_undocumented_item_and_failure(tc: TestCase) {
+    let drawn = Drawn::draw(&tc);
+    let out = report::format("github").unwrap().render(&drawn.context());
+    let undocumented = drawn.files.iter().flat_map(|f| f.items.iter().filter(|i| !i.documented).map(move |i| (f, i)));
+    let mut wanted: Vec<String> = undocumented
+        .map(|(f, i)| {
+            let path = f.path.display().to_string().replace(std::path::MAIN_SEPARATOR, "/");
+            format!(
+                "warning file={path} line={} col={} title=docov {} {} is undocumented",
+                i.line,
+                i.column,
+                i.kind.as_str(),
+                i.name
+            )
+        })
+        .collect();
+    wanted.extend(drawn.failures.iter().map(|f| format!("error title=docov {f}")));
+    let read: Vec<String> = out
+        .lines()
+        .map(|line| {
+            let (command, message) = line.strip_prefix("::").unwrap().split_once("::").unwrap();
+            let (name, properties) = command.split_once(' ').unwrap();
+            let properties: Vec<String> = properties.split(',').map(unescape_github).collect();
+            format!("{name} {} {}", properties.join(" "), unescape_github(message))
+        })
+        .collect();
+    assert_eq!(read, wanted, "{out}");
+}
+
+/// `markdown` reads back as written: the total, each failure as a line of text, a table row per
+/// file with items with its path as code, and each undocumented item's name as code, folded away
+/// under its file. Names and paths come back whole however many backticks, pipes or spaces they
+/// have, and failures as plain text whatever Markdown they look like.
+#[hegel::test(test_cases = 100)]
+fn markdown_reads_back_as_written(tc: TestCase) {
+    use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
+    let drawn = Drawn::draw(&tc);
+    let out = report::format("markdown").unwrap().render(&drawn.context());
+    let totals = Totals::of(&drawn.files);
+    let heading =
+        format!("## docov\n\n**{:.1}%** documented ({}/{})\n", totals.percent(), totals.documented, totals.total);
+    assert!(out.starts_with(&heading), "{out}");
+
+    let (mut code, mut paragraphs, mut rows, mut details) = (Vec::new(), Vec::new(), 0, 0);
+    let mut in_paragraph = false;
+    for event in Parser::new_ext(&out, Options::ENABLE_TABLES) {
+        match event {
+            Event::Code(text) => code.push(text.into_string()),
+            Event::Start(Tag::Paragraph) => {
+                in_paragraph = true;
+                paragraphs.push(String::new());
+            }
+            Event::End(TagEnd::Paragraph) => in_paragraph = false,
+            Event::Text(text) if in_paragraph => paragraphs.last_mut().unwrap().push_str(&text),
+            Event::End(TagEnd::TableRow) => rows += 1,
+            Event::Html(html) if html.starts_with("<details>") => details += 1,
+            _ => {}
+        }
+    }
+    let slash = |path: &Path| path.display().to_string().replace(std::path::MAIN_SEPARATOR, "/");
+    let with_items: Vec<_> = drawn.files.iter().filter(|f| !f.items.is_empty()).collect();
+    let mut wanted: Vec<String> = with_items.iter().map(|f| slash(&f.path)).collect();
+    wanted.extend(drawn.files.iter().flat_map(|f| f.items.iter().filter(|i| !i.documented).map(|i| i.name.clone())));
+    assert_eq!(code, wanted, "{out}");
+    let failed: Vec<String> =
+        paragraphs.into_iter().filter_map(|p| p.strip_prefix("Failed: ").map(String::from)).collect();
+    let failures: Vec<String> =
+        drawn.failures.iter().map(|f| f.replace(['\r', '\n'], " ").trim_end().to_owned()).collect();
+    assert_eq!(failed.iter().map(|f| f.trim_end()).collect::<Vec<_>>(), failures, "{out}");
+    assert_eq!(rows, with_items.len());
+    assert_eq!(details, drawn.files.iter().filter(|f| f.items.iter().any(|i| !i.documented)).count());
+}
+
+/// Each undocumented item and its file, with the file's path as CI services want it.
+fn undocumented(files: &[FileReport]) -> Vec<(String, &Item)> {
+    let slash = |path: &Path| path.display().to_string().replace(std::path::MAIN_SEPARATOR, "/");
+    files.iter().flat_map(|f| f.items.iter().filter(|i| !i.documented).map(move |i| (slash(&f.path), i))).collect()
+}
+
+/// `sarif` has the fields SARIF 2.1.0 requires, one rule, and a result at each undocumented item
+/// whose location is a URI reference that decodes to the item's file.
+#[hegel::test(test_cases = 100)]
+fn sarif_has_a_result_at_each_undocumented_item(tc: TestCase) {
+    let drawn = Drawn::draw(&tc);
+    let out = report::format("sarif").unwrap().render(&drawn.context());
+    let sarif: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(sarif["version"], "2.1.0");
+    let run = &sarif["runs"][0];
+    assert_eq!(sarif["runs"].as_array().unwrap().len(), 1);
+    assert_eq!(run["tool"]["driver"]["name"], "docov");
+    assert_eq!(run["tool"]["driver"]["rules"][0]["id"], "docov/undocumented");
+    let results = run["results"].as_array().unwrap();
+    let wanted = undocumented(&drawn.files);
+    assert_eq!(results.len(), wanted.len());
+    for (result, (path, item)) in results.iter().zip(wanted) {
+        assert_eq!(result["ruleId"], "docov/undocumented");
+        assert_eq!(result["message"]["text"], format!("{} {} is undocumented", item.kind.as_str(), item.name));
+        let location = &result["locations"][0]["physicalLocation"];
+        let uri = location["artifactLocation"]["uri"].as_str().unwrap();
+        assert!(uri.chars().all(|c| c.is_ascii_alphanumeric() || "-._~/%".contains(c)), "{uri}");
+        assert_eq!(percent_encoding::percent_decode_str(uri).decode_utf8().unwrap(), path);
+        assert_eq!(
+            (&location["region"]["startLine"], &location["region"]["startColumn"]),
+            (&item.line.into(), &item.column.into())
+        );
+    }
+}
+
+/// `gitlab`, `rdjson`, `checkstyle` and `junit` each report every undocumented item at its file,
+/// line and message, which come back whole from their JSON or XML; `junit` passes the documented
+/// items too. GitLab's fingerprints are the same for the same file, kind and name, and only then.
+#[hegel::test(test_cases = 100)]
+fn ci_formats_report_each_undocumented_item(tc: TestCase) {
+    let drawn = Drawn::draw(&tc);
+    let render = |name| report::format(name).unwrap().render(&drawn.context());
+    let wanted = undocumented(&drawn.files);
+    let message = |item: &Item| format!("{} {} is undocumented", item.kind.as_str(), item.name);
+    let slash = |path: &Path| path.display().to_string().replace(std::path::MAIN_SEPARATOR, "/");
+
+    let gitlab: serde_json::Value = serde_json::from_str(&render("gitlab")).unwrap();
+    let issues = gitlab.as_array().unwrap();
+    assert_eq!(issues.len(), wanted.len());
+    for (issue, (path, item)) in issues.iter().zip(&wanted) {
+        let read = (&issue["description"], &issue["check_name"], &issue["severity"]);
+        assert_eq!(read, (&message(item).into(), &"docov/undocumented".into(), &"minor".into()));
+        assert_eq!(
+            (&issue["location"]["path"], &issue["location"]["lines"]["begin"]),
+            (&path.as_str().into(), &item.line.into())
+        );
+        let fingerprint = issue["fingerprint"].as_str().unwrap();
+        assert!(fingerprint.len() == 16 && fingerprint.chars().all(|c| c.is_ascii_hexdigit()), "{fingerprint}");
+    }
+    for (a, (a_path, a_item)) in issues.iter().zip(&wanted) {
+        for (b, (b_path, b_item)) in issues.iter().zip(&wanted) {
+            let same = (a_path, a_item.kind, &a_item.name) == (b_path, b_item.kind, &b_item.name);
+            assert_eq!(a["fingerprint"] == b["fingerprint"], same);
+        }
+    }
+
+    let rdjson: serde_json::Value = serde_json::from_str(&render("rdjson")).unwrap();
+    assert_eq!(rdjson["source"]["name"], "docov");
+    let diagnostics = rdjson["diagnostics"].as_array().unwrap();
+    assert_eq!(diagnostics.len(), wanted.len());
+    for (diagnostic, (path, item)) in diagnostics.iter().zip(&wanted) {
+        let start = &diagnostic["location"]["range"]["start"];
+        assert_eq!(
+            (&diagnostic["message"], &diagnostic["location"]["path"]),
+            (&message(item).into(), &path.as_str().into())
+        );
+        assert_eq!((&start["line"], &start["column"]), (&item.line.into(), &item.column.into()));
+    }
+
+    let checkstyle = render("checkstyle");
+    let checkstyle = roxmltree::Document::parse(&checkstyle).unwrap();
+    let files: Vec<_> = checkstyle.root_element().children().filter(|n| n.has_tag_name("file")).collect();
+    assert_eq!(
+        files.iter().map(|f| f.attribute("name").unwrap().to_owned()).collect::<Vec<_>>(),
+        drawn.files.iter().map(|f| slash(&f.path)).collect::<Vec<_>>()
+    );
+    let errors = files
+        .iter()
+        .flat_map(|f| f.children().filter(|n| n.has_tag_name("error")).map(move |e| (f.attribute("name").unwrap(), e)));
+    let read: Vec<_> = errors
+        .map(|(path, e)| {
+            (path.to_owned(), e.attribute("line").unwrap().parse().unwrap(), e.attribute("message").unwrap().to_owned())
+        })
+        .collect();
+    assert_eq!(
+        read,
+        wanted
+            .iter()
+            .map(|(path, item)| (path.clone(), item.line, message(item)))
+            .collect::<Vec<(String, usize, String)>>()
+    );
+
+    let junit = render("junit");
+    let junit = roxmltree::Document::parse(&junit).unwrap();
+    let suites = junit.root_element();
+    let totals = Totals::of(&drawn.files);
+    let count = |node: roxmltree::Node, name| node.attribute(name).unwrap().parse::<usize>().unwrap();
+    assert_eq!((count(suites, "tests"), count(suites, "failures")), (totals.total, totals.total - totals.documented));
+    let suites: Vec<_> = suites.children().filter(|n| n.has_tag_name("testsuite")).collect();
+    assert_eq!(suites.len(), drawn.files.len());
+    for (suite, file) in suites.iter().zip(&drawn.files) {
+        assert_eq!(suite.attribute("name"), Some(slash(&file.path).as_str()));
+        let cases: Vec<_> = suite.children().filter(|n| n.has_tag_name("testcase")).collect();
+        assert_eq!(cases.len(), file.items.len());
+        for (case, item) in cases.iter().zip(&file.items) {
+            assert_eq!(case.attribute("name").unwrap(), format!("{} {}", item.kind.as_str(), item.name));
+            let failure = case.children().find(|n| n.has_tag_name("failure"));
+            assert_eq!(
+                failure.map(|f| f.attribute("message").unwrap().to_owned()),
+                (!item.documented).then(|| message(item))
+            );
+        }
+    }
+}
+
+/// `lcov` and `cobertura` agree on the lines: each line with items is a record, hit when they're
+/// all documented. `lcov` names each item as a function, hit when it's documented, and
+/// `cobertura` puts each folder's files in one package, with line rates from 0 to 1.
+#[hegel::test(test_cases = 100)]
+fn coverage_formats_agree_on_lines(tc: TestCase) {
+    let drawn = Drawn::draw(&tc);
+    let render = |name| report::format(name).unwrap().render(&drawn.context());
+    let slash = |path: &Path| path.display().to_string().replace(std::path::MAIN_SEPARATOR, "/");
+    // Each file's lines with items, and whether all of them are documented.
+    let lines = |file: &FileReport| {
+        let mut lines: Vec<(usize, bool)> = Vec::new();
+        for line in file.items.iter().map(|i| i.line) {
+            if lines.last().is_none_or(|(at, _)| *at != line) {
+                lines.push((line, file.items.iter().filter(|i| i.line == line).all(|i| i.documented)));
+            }
+        }
+        lines
+    };
+
+    let lcov = render("lcov");
+    let records: Vec<&str> = lcov.split_terminator("end_of_record\n").collect();
+    assert_eq!(records.len(), drawn.files.len());
+    for (record, file) in records.iter().zip(&drawn.files) {
+        let functions: Vec<String> = file.items.iter().map(|i| format!("FN:{},{}", i.line, i.name)).collect();
+        let hits: Vec<String> =
+            file.items.iter().map(|i| format!("FNDA:{},{}", u8::from(i.documented), i.name)).collect();
+        let records: Vec<String> =
+            lines(file).iter().map(|(line, hit)| format!("DA:{line},{}", u8::from(*hit))).collect();
+        let (totals, hit) = (file.totals(), lines(file).iter().filter(|(_, hit)| *hit).count());
+        let wanted = [
+            vec!["TN:docov".to_owned(), format!("SF:{}", file.path.display())],
+            functions,
+            hits,
+            vec![format!("FNF:{}", totals.total), format!("FNH:{}", totals.documented)],
+            records,
+            vec![format!("LH:{hit}"), format!("LF:{}", lines(file).len())],
+        ];
+        assert_eq!(record.lines().collect::<Vec<_>>(), wanted.concat(), "{lcov}");
+    }
+
+    let cobertura = render("cobertura");
+    let cobertura = roxmltree::Document::parse_with_options(
+        &cobertura,
+        roxmltree::ParsingOptions { allow_dtd: true, ..Default::default() },
+    )
+    .unwrap();
+    let coverage = cobertura.root_element();
+    let number = |node: roxmltree::Node, name| node.attribute(name).unwrap().parse::<f64>().unwrap();
+    let all: Vec<(usize, bool)> = drawn.files.iter().flat_map(lines).collect();
+    let hit = all.iter().filter(|(_, hit)| *hit).count();
+    assert_eq!((number(coverage, "lines-covered"), number(coverage, "lines-valid")), (hit as f64, all.len() as f64));
+    assert_eq!(number(coverage, "line-rate"), Totals { documented: hit, total: all.len() }.percent() / 100.0);
+    assert_eq!(number(coverage, "timestamp"), drawn.now_ms as f64);
+    let packages: Vec<_> = coverage.descendants().filter(|n| n.has_tag_name("package")).collect();
+    let names: Vec<_> = packages.iter().map(|p| p.attribute("name").unwrap()).collect();
+    assert!(names.iter().enumerate().all(|(i, name)| !names[..i].contains(name)), "{names:?}");
+    let mut classes = Vec::new();
+    for package in &packages {
+        assert!((0.0..=1.0).contains(&number(*package, "line-rate")));
+        for class in package.descendants().filter(|n| n.has_tag_name("class")) {
+            let filename = class.attribute("filename").unwrap().to_owned();
+            let folder = filename.rsplit_once('/').map_or(".", |(folder, _)| folder).to_owned();
+            assert_eq!(package.attribute("name"), Some(folder.as_str()));
+            let lines: Vec<(usize, bool)> = class
+                .descendants()
+                .filter(|n| n.has_tag_name("line"))
+                .map(|l| (number(l, "number") as usize, number(l, "hits") == 1.0))
+                .collect();
+            classes.push((filename, lines));
+        }
+    }
+    let mut wanted: Vec<(String, Vec<(usize, bool)>)> =
+        drawn.files.iter().map(|f| (slash(&f.path), lines(f))).collect();
+    classes.sort();
+    wanted.sort();
+    assert_eq!(classes, wanted);
+}
+
+/// `badge` and `shields` show the total to one decimal place, red under the threshold, yellow up
+/// to 10 points over it, green past that, and blue with no threshold to compare with.
+#[hegel::test(test_cases = 100)]
+fn badges_are_colored_by_the_threshold(tc: TestCase) {
+    let mut drawn = Drawn::draw(&tc);
+    let percent = Totals::of(&drawn.files).percent();
+    let near = tc.draw(gs::sampled_from(vec![-10.0, -0.5, 0.0, 5.0, 10.0, 10.5]));
+    drawn.threshold = match tc.draw(gs::integers::<u8>().max_value(2)) {
+        0 => None,
+        1 => Some(f64::from(tc.draw(gs::integers::<u8>().max_value(100)))),
+        _ => Some(percent - near),
+    };
+    let (name, hex) = match drawn.threshold {
+        None => ("blue", "#007ec6"),
+        Some(t) if percent < t => ("red", "#e05d44"),
+        Some(t) if percent <= t + 10.0 => ("yellow", "#dfb317"),
+        Some(_) => ("green", "#97ca00"),
+    };
+    let message = format!("{percent:.1}%");
+
+    let shields: serde_json::Value =
+        serde_json::from_str(&report::format("shields").unwrap().render(&drawn.context())).unwrap();
+    assert_eq!(shields, serde_json::json!({ "schemaVersion": 1, "label": "docs", "message": message, "color": name }));
+
+    let svg = report::format("badge").unwrap().render(&drawn.context());
+    let svg = roxmltree::Document::parse(&svg).unwrap();
+    let root = svg.root_element();
+    assert_eq!(root.attribute("aria-label"), Some(format!("docs: {message}").as_str()));
+    assert!(svg.descendants().any(|n| n.attribute("fill") == Some(hex)), "{name}");
+    let texts: Vec<_> = svg.descendants().filter(|n| n.has_tag_name("text")).filter_map(|n| n.text()).collect();
+    assert_eq!(texts, ["docs", "docs", message.as_str(), message.as_str()]);
+    // Wide enough for the message, at about 7 pixels a character.
+    let width: usize = root.attribute("width").unwrap().parse().unwrap();
+    assert!(width >= 37 + 7 * message.len(), "{width}");
+}
+
+/// `text` lists each file with items and its undocumented ones; `--omit-covered` leaves out the
+/// fully documented files, and `--quiet` everything but the total.
+#[hegel::test(test_cases = 100)]
+fn text_shows_what_its_flags_ask_for(tc: TestCase) {
+    let mut drawn = Drawn::draw(&tc);
+    drawn.text = report::Text { omit_covered: tc.draw(gs::booleans()), quiet: tc.draw(gs::booleans()), by_kind: false };
+    let out = report::format("text").unwrap().render(&drawn.context());
+    let totals = Totals::of(&drawn.files);
+    let total = format!("{:>6.1}%  {}/{}  total", totals.percent(), totals.documented, totals.total);
+    let shown: Vec<&FileReport> = drawn
+        .files
+        .iter()
+        .filter(|f| !f.items.is_empty() && !drawn.text.quiet)
+        .filter(|f| !drawn.text.omit_covered || f.items.iter().any(|i| !i.documented))
+        .collect();
+    let headers: Vec<&str> = out.lines().filter(|l| !l.starts_with("         ") && *l != total).collect();
+    let wanted: Vec<String> = shown
+        .iter()
+        .map(|f| {
+            format!(
+                "{:>6.1}%  {}/{}  {}",
+                f.totals().percent(),
+                f.totals().documented,
+                f.totals().total,
+                f.path.display()
+            )
+        })
+        .collect();
+    assert_eq!(headers, wanted, "{out}");
+    let listed = out.lines().filter(|l| l.starts_with("         ")).count();
+    assert_eq!(listed, shown.iter().map(|f| f.items.iter().filter(|i| !i.documented).count()).sum::<usize>());
+    assert!(out.ends_with(&format!("{total}\n")), "{out}");
+}
+
+/// `benchmark` is the total, to a decimal place, in github-action-benchmark's shape.
+#[hegel::test(test_cases = 50)]
+fn benchmark_is_the_total(tc: TestCase) {
+    let drawn = Drawn::draw(&tc);
+    let render = |name| report::format(name).unwrap().render(&drawn.context());
+    let percent = (Totals::of(&drawn.files).percent() * 10.0).round() / 10.0;
+    let benchmark: serde_json::Value = serde_json::from_str(&render("benchmark")).unwrap();
+    assert_eq!(benchmark, serde_json::json!([{ "name": "docov", "unit": "%", "value": percent }]));
+}
+
+/// `unix` is a line per undocumented item, the way compilers write warnings.
+#[hegel::test(test_cases = 50)]
+fn unix_is_a_line_per_undocumented_item(tc: TestCase) {
+    let drawn = Drawn::draw(&tc);
+    let undocumented = drawn.files.iter().flat_map(|f| f.items.iter().filter(|i| !i.documented).map(move |i| (f, i)));
+    let wanted: Vec<String> = undocumented
+        .map(|(f, i)| {
+            format!("{}:{}:{}: {} {} undocumented [docov]", f.path.display(), i.line, i.column, i.kind.as_str(), i.name)
+        })
+        .collect();
+    assert_eq!(report::format("unix").unwrap().render(&drawn.context()).lines().collect::<Vec<_>>(), wanted);
+}
+
+/// `html` is one page that reads back as written: a table row per file with counted items, linking
+/// to that file's source, a row per source line with the lines that have counted items marked,
+/// missed when one is undocumented and hit otherwise. A file that's gone by the time it's written says so.
+#[hegel::test(test_cases = 50)]
+fn html_shows_each_files_source_with_its_items(tc: TestCase) {
+    let dir = tempfile::tempdir().unwrap();
+    let mut drawn = Drawn::draw(&tc);
+    // Some of the drawn files are real, and scanned.
+    for f in 0..tc.draw(gs::integers::<usize>().max_value(2)) {
+        let Module { source, .. } = Module::generate(&tc);
+        let path = dir.path().join(format!("m{f}.ts"));
+        fs::write(&path, format!("{source}// <&> \"'\n")).unwrap();
+        drawn.files.push(scan_file(&path, &Scope::All.into()).unwrap());
+    }
+    let page = report::format("html").unwrap().render(&drawn.context());
+    let options = roxmltree::ParsingOptions { allow_dtd: true, ..Default::default() };
+    let html = roxmltree::Document::parse_with_options(&page, options).unwrap();
+    assert!(!html.descendants().any(|n| n.has_tag_name("script")));
+    let class =
+        |n: &roxmltree::Node, class: &str| n.attribute("class").is_some_and(|c| c.split(' ').any(|c| c == class));
+    let with_items: Vec<&FileReport> = drawn.files.iter().filter(|f| f.counted().next().is_some()).collect();
+    let table = html.descendants().find(|n| class(n, "files")).unwrap();
+    let links: Vec<String> =
+        table.descendants().filter(|n| n.has_tag_name("a")).map(|a| a.text().unwrap().to_owned()).collect();
+    assert_eq!(links, with_items.iter().map(|f| f.path.display().to_string()).collect::<Vec<_>>());
+
+    let headings: Vec<_> = html.descendants().filter(|n| n.has_tag_name("h2")).collect();
+    assert_eq!(headings.len(), with_items.len());
+    for (heading, file) in headings.iter().zip(&with_items) {
+        assert!(heading.text().unwrap().starts_with(&file.path.display().to_string()));
+        let after = heading.next_sibling_element().unwrap();
+        let Ok(text) = fs::read_to_string(&file.path) else {
+            assert!(class(&after, "missing"), "{}", file.path.display());
+            continue;
+        };
+        let rows: Vec<_> = after.descendants().filter(|n| n.has_tag_name("tr")).collect();
+        assert_eq!(rows.len(), text.lines().count());
+        for (n, (row, line)) in rows.iter().zip(text.lines()).enumerate().map(|(i, r)| (i + 1, r)) {
+            let cells: Vec<String> =
+                row.children().filter(|c| c.has_tag_name("td")).map(|c| c.text().unwrap_or("").to_owned()).collect();
+            let items: Vec<&Item> = file.counted().filter(|i| i.line == n).collect();
+            let notes: Vec<String> =
+                items.iter().filter(|i| !i.documented).map(|i| format!("{} {}", i.kind.as_str(), i.name)).collect();
+            assert_eq!(cells, [n.to_string(), line.to_owned(), notes.join(", ")]);
+            let mark = if items.is_empty() {
+                None
+            } else if notes.is_empty() {
+                Some("hit")
+            } else {
+                Some("miss")
+            };
+            assert_eq!(row.attribute("class"), mark);
+        }
+    }
+}
+
 /// Every format reports the same items and totals, and documenting one more item never lowers
 /// coverage.
 #[hegel::test(test_cases = 100)]
@@ -716,19 +1305,21 @@ fn formats_agree_on_totals(tc: TestCase) {
     assert_eq!(totals.total, files.iter().map(|f| f.items.len()).sum::<usize>());
 
     // Every format fails when its output doesn't fit where it's going, and only then.
-    for format in [Format::Text, Format::Json, Format::Lcov] {
-        let length = render(format, &files).len();
+    for format in report::FORMATS {
+        let context =
+            Context { files: &files, failures: &[], now: UNIX_EPOCH, threshold: None, text: report::Text::default() };
+        let length = format.render(&context).len();
         let room = tc.draw(gs::integers::<usize>().max_value(length + 1));
-        let result = report::write(format, &files, &mut Room(room));
-        assert_eq!(result.is_err(), room < length, "{format:?} in {room} of {length} bytes");
+        let result = report::write(&[Output { format, path: None }], &context, &mut Room(room));
+        assert_eq!(result.is_err(), room < length, "{} in {room} of {length} bytes", format.name);
     }
-    let json: serde_json::Value = serde_json::from_str(&render(Format::Json, &files)).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&render("json", &files)).unwrap();
     let json_totals = (json["documented"].as_u64(), json["total"].as_u64());
     assert_eq!(json_totals, (Some(totals.documented as u64), Some(totals.total as u64)));
     let kinds = json["files"].as_array().unwrap().iter().flat_map(|f| f["items"].as_array().unwrap());
     assert!(kinds.map(|i| i["kind"].as_str()).eq(files.iter().flat_map(|f| &f.items).map(|i| Some(i.kind.as_str()))));
 
-    let text = render(Format::Text, &files);
+    let text = render("text", &files);
     let last = format!("{:>6.1}%  {}/{}  total\n", totals.percent(), totals.documented, totals.total);
     assert!(text.ends_with(&last), "{text}");
     // Each undocumented item gets a line, with its location, kind and name.
@@ -740,7 +1331,7 @@ fn formats_agree_on_totals(tc: TestCase) {
     assert_eq!(listed, wanted);
 
     // lcov counts lines: a line is hit when everything on it is documented.
-    let lcov = render(Format::Lcov, &files);
+    let lcov = render("lcov", &files);
     let sum =
         |prefix: &str| lcov.lines().filter_map(|l| l.strip_prefix(prefix)).map(|n| n.parse::<usize>().unwrap()).sum();
     let mut lines = 0;
@@ -759,10 +1350,15 @@ fn formats_agree_on_totals(tc: TestCase) {
     }
 }
 
-fn render(format: Format, files: &[FileReport]) -> String {
-    let mut out = Vec::new();
-    report::write(format, files, &mut out).unwrap();
-    String::from_utf8(out).unwrap()
+/// `files` in the format named `name`, with nothing else to report.
+fn render(name: &str, files: &[FileReport]) -> String {
+    report::format(name).unwrap().render(&Context {
+        files,
+        failures: &[],
+        now: UNIX_EPOCH,
+        threshold: None,
+        text: report::Text::default(),
+    })
 }
 
 /// An undocumented item under a `docov-ignore` is out of every format's totals and of the text
@@ -775,7 +1371,7 @@ fn ignored_items_are_out_of_the_totals(tc: TestCase) {
     assert_eq!(totals.total, files.iter().map(counted).sum::<usize>());
     assert_eq!(totals.documented, files.iter().flat_map(|f| &f.items).filter(|i| i.documented).count());
 
-    let text = render(Format::Text, &files);
+    let text = render("text", &files);
     let listed = text.lines().filter(|l| l.starts_with("         ")).count();
     let undocumented = files.iter().flat_map(|f| &f.items).filter(|i| !i.documented && i.ignore.is_none()).count();
     assert_eq!(listed, undocumented, "{text}");
@@ -783,7 +1379,7 @@ fn ignored_items_are_out_of_the_totals(tc: TestCase) {
     let headed = text.lines().filter(|l| l.ends_with(".ts") && !l.starts_with("         ")).count();
     assert_eq!(headed, files.iter().filter(|f| counted(f) > 0).count(), "{text}");
 
-    let json: serde_json::Value = serde_json::from_str(&render(Format::Json, &files)).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&render("json", &files)).unwrap();
     let marks = json["files"].as_array().unwrap().iter().flat_map(|f| f["items"].as_array().unwrap().clone());
     let wanted = files.iter().flat_map(|f| &f.items).map(|i| {
         let ignore = i.ignore.as_ref().filter(|_| !i.documented);
@@ -792,7 +1388,7 @@ fn ignored_items_are_out_of_the_totals(tc: TestCase) {
     let marks = marks.map(|m| (m["ignored"].as_bool(), m["reason"].as_str().map(String::from)));
     assert!(marks.eq(wanted));
 
-    let lcov = render(Format::Lcov, &files);
+    let lcov = render("lcov", &files);
     let found: usize = lcov.lines().filter_map(|l| l.strip_prefix("LF:")).map(|n| n.parse::<usize>().unwrap()).sum();
     let mut lines: Vec<(usize, usize)> = Vec::new();
     for (f, file) in files.iter().enumerate() {
@@ -800,6 +1396,37 @@ fn ignored_items_are_out_of_the_totals(tc: TestCase) {
     }
     lines.dedup();
     assert_eq!(found, lines.len(), "{lcov}");
+}
+
+/// Every registered format but json reports ignored items as if they weren't there, leaving them
+/// out of what it lists, the lines it counts and its totals, whatever else it reports. json lists
+/// them too, marked, and is otherwise the same.
+#[hegel::test(test_cases = 100)]
+fn every_format_leaves_ignored_items_out(tc: TestCase) {
+    let mut drawn = Drawn::draw(&tc);
+    drawn.files = reports(&tc, true);
+    let flag = || tc.draw(gs::booleans());
+    drawn.text = report::Text { omit_covered: flag(), quiet: flag(), by_kind: flag() };
+    let counted: Vec<FileReport> = drawn
+        .files
+        .iter()
+        .map(|f| FileReport { path: f.path.clone(), items: f.counted().cloned().collect() })
+        .collect();
+    assert_eq!(Totals::of(&counted), Totals::of(&drawn.files));
+    let context = drawn.context();
+    let without = Context { files: &counted, ..context };
+    for format in report::FORMATS {
+        let (all, shown) = (format.render(&context), format.render(&without));
+        if format.name != "json" {
+            assert_eq!(all, shown, "{}", format.name);
+            continue;
+        }
+        let mut json: serde_json::Value = serde_json::from_str(&all).unwrap();
+        for file in json["files"].as_array_mut().unwrap() {
+            file["items"].as_array_mut().unwrap().retain(|i| i.get("ignored").is_none());
+        }
+        assert_eq!(json, serde_json::from_str::<serde_json::Value>(&shown).unwrap());
+    }
 }
 
 /// With `--report-unused-ignores`, each `docov-ignore-next-line` whose items are all documented
@@ -840,7 +1467,7 @@ fn totals_by_kind_add_up(tc: TestCase) {
     assert!(kinds.windows(2).all(|pair| pair[0].0 < pair[1].0));
     assert!(kinds.iter().all(|(_, totals)| totals.total > 0));
 
-    let json: serde_json::Value = serde_json::from_str(&render(Format::Json, &files)).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&render("json", &files)).unwrap();
     let by_kind = json["kinds"].as_object().unwrap();
     assert_eq!(by_kind.len(), kinds.len());
     for (kind, totals) in &kinds {
@@ -852,15 +1479,19 @@ fn totals_by_kind_add_up(tc: TestCase) {
         assert_eq!(shown["percent"].as_f64(), Some(totals.percent()));
     }
 
-    let append = |by_kind: bool, format| {
-        let mut out = Vec::new();
-        Kinds { only: None, by_kind }.append(format, &files, &mut out).unwrap();
-        String::from_utf8(out).unwrap()
+    let by_kind = |name| {
+        let text = report::Text { by_kind: true, ..report::Text::default() };
+        report::format(name).unwrap().render(&Context {
+            files: &files,
+            failures: &[],
+            now: UNIX_EPOCH,
+            threshold: None,
+            text,
+        })
     };
     let line: Vec<String> = kinds.iter().map(|(k, t)| format!("{} {}/{}", k.as_str(), t.documented, t.total)).collect();
-    assert_eq!(append(true, Format::Text), format!("by kind: {}\n", line.join(", ")));
-    assert_eq!(append(false, Format::Text), "");
-    assert_eq!(append(true, Format::Json), "");
+    assert_eq!(by_kind("text"), render("text", &files) + &format!("by kind: {}\n", line.join(", ")));
+    assert_eq!(by_kind("json"), render("json", &files));
 }
 
 /// Name patterns load as regexes, the same patterns loading the same. One that isn't a regex, or an
@@ -997,8 +1628,10 @@ fn the_cli_counts_the_project_and_fails_by_the_threshold(tc: TestCase) {
     let totals = Totals { documented: scanned.iter().map(|f| f.1).sum(), total: scanned.iter().map(|f| f.2).sum() };
     let threshold = tc.draw(gs::optional(gs::integers::<u8>().max_value(100))).map(f64::from);
     let threshold = threshold.map(|t| if tc.draw(gs::booleans()) { totals.percent() } else { t });
-    let format = tc.draw(gs::sampled_from(vec!["text", "json", "lcov"]));
-    let mut args = vec!["--format".to_owned(), format.into()];
+    // No `--format` is text, with GitHub annotations after it in GitHub Actions.
+    let format = tc.draw(gs::sampled_from(vec!["text", "json", "lcov", "default"]));
+    let github_actions = format == "default" && tc.draw(gs::booleans());
+    let mut args = if format == "default" { vec![] } else { vec!["--format".to_owned(), format.into()] };
     let scope_name = if scope == Scope::All { "all" } else { "exports" };
     // `paths` is the config's own folder, the project's, from wherever docov runs.
     let config =
@@ -1046,6 +1679,11 @@ fn the_cli_counts_the_project_and_fails_by_the_threshold(tc: TestCase) {
     fs::create_dir_all(&cwd).unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_docov"));
     command.args(&args).current_dir(cwd);
+    if github_actions {
+        command.env("GITHUB_ACTIONS", "true");
+    } else {
+        command.env_remove("GITHUB_ACTIONS");
+    }
     // A pipe whose reader has gone (`docov | head` after head exits): writes to it fail.
     let unwritable = tc.draw(gs::weighted_booleans(0.1));
     if unwritable {
@@ -1086,7 +1724,12 @@ fn the_cli_counts_the_project_and_fails_by_the_threshold(tc: TestCase) {
             );
         }
         "lcov" => assert_eq!(stdout.matches("SF:").count(), scanned.len()),
-        _ => assert!(stdout.ends_with(&format!("{documented}/{total}  total\n")), "{stdout}"),
+        _ => {
+            let (text, annotations) = stdout.split_at(stdout.find("::").unwrap_or(stdout.len()));
+            assert!(text.ends_with(&format!("{documented}/{total}  total\n")), "{stdout}");
+            let wanted = if github_actions { total - documented + usize::from(!passed) } else { 0 };
+            assert_eq!(annotations.lines().count(), wanted, "{stdout}");
+        }
     }
 }
 
@@ -1108,8 +1751,10 @@ fn each_bad_input_fails_naming_itself(tc: TestCase) {
         assert!(stderr.contains(culprit), "{culprit}: {stderr}");
     };
     // Bad arguments, and what the error names.
-    let bad_args: [(&[&str], &str); 4] = [
+    let bad_args: [(&[&str], &str); 6] = [
         (&["--config", "missing.json"], "missing.json"),
+        (&["--output", "o.txt", "--format", "lcov=x.lcov"], "--output"),
+        (&["--format", "json=README.md/x.json"], "README.md"),
         (&["--threshold", "150"], "150"),
         (&["gone"], "gone"),
         (&["README.md"], "README.md"),
@@ -1289,11 +1934,6 @@ fn rules_come_from_flags_over_the_config(tc: TestCase) {
     let kinds = run.set(&tc, "kinds", kind_lists, |kinds| {
         vec!["--kind".into(), kinds.iter().map(|k| k.as_str()).collect::<Vec<_>>().join(",")]
     });
-    let by_kind = tc.draw(gs::booleans());
-    if by_kind {
-        run.args.push("--by-kind".into());
-    }
-
     let name_lists = vec![vec!["^_".to_owned()], vec!["^a".into(), "b$".into()]];
     let names = run.set(&tc, "ignore", name_lists, |names| {
         names.iter().flat_map(|name| ["--ignore-name".to_owned(), name.clone()]).collect()
@@ -1335,7 +1975,6 @@ fn rules_come_from_flags_over_the_config(tc: TestCase) {
     assert_eq!(rules.access, access);
     let patterns: Vec<&str> = rules.ignore_names.iter().map(regex::Regex::as_str).collect();
     assert_eq!(patterns, names.unwrap_or_default());
-    assert_eq!(settings.get::<Kinds>().by_kind, by_kind);
     assert_eq!(rules.kinds, kinds);
     assert_eq!(*settings.get::<Scope>(), scope.unwrap_or_default());
     assert_eq!(rules.scope, scope.unwrap_or_default());

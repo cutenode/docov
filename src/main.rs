@@ -1,9 +1,9 @@
 //! The `docov` command.
 
-use std::{io, path::PathBuf, process::ExitCode};
+use std::{env, io, path::PathBuf, process::ExitCode, time::SystemTime};
 
 use clap::{CommandFactory, FromArgMatches, Parser};
-use docov::{Config, Format, Settings, feature, report, scan_file, walk};
+use docov::{Config, Settings, Threshold, feature, report, scan_file, walk};
 use rayon::{iter::Either, prelude::*};
 
 /// Checks how much of a JavaScript or TypeScript project's API has JSDoc.
@@ -17,9 +17,8 @@ struct Cli {
     /// The config file [default: docov.json, docov.jsonc or .docovrc here or in the nearest folder above]
     #[arg(long, value_name = "FILE")]
     config: Option<PathBuf>,
-    /// How to write the report
-    #[arg(long, value_enum, default_value_t)]
-    format: Format,
+    #[command(flatten)]
+    report: report::Flags,
     /// Print the config file's JSON Schema and exit
     #[arg(long, exclusive = true)]
     print_schema: bool,
@@ -46,6 +45,9 @@ fn main() -> ExitCode {
 
 /// Scans and reports, and says whether coverage met the threshold.
 fn run(cli: Cli, matches: &clap::ArgMatches) -> Result<bool, Vec<String>> {
+    // GitHub Actions sets it, and reads annotations from the output.
+    let github_actions = env::var_os("GITHUB_ACTIONS").is_some_and(|value| value == "true");
+    let outputs = cli.report.outputs(github_actions).map_err(|e| vec![e])?;
     let mut config = Config::load(cli.config.as_deref()).map_err(|e| vec![e.to_string()])?;
     let settings = Settings::new(matches, std::mem::take(&mut config.keys));
     // The config's paths are relative to its folder. Collecting the components drops `.` parts after
@@ -66,13 +68,13 @@ fn run(cli: Cli, matches: &clap::ArgMatches) -> Result<bool, Vec<String>> {
         eprintln!("docov: {}", edited.map_err(|e| vec![e])?);
         return Ok(true);
     }
-    let mut out = io::stdout().lock();
-    report::write(cli.format, &reports, &mut out)
-        .and_then(|()| settings.append(cli.format, &reports, &mut out))
-        .map_err(|e| vec![e.to_string()])?;
-
-    let failures = settings.gates(&reports);
-    for failure in failures.iter().flat_map(|f| f.lines()) {
+    // A gate's message can span lines, each a failure of its own.
+    let failures: Vec<String> = settings.gates(&reports).iter().flat_map(|f| f.lines()).map(String::from).collect();
+    let threshold = settings.get::<Threshold>().0;
+    let (now, text) = (SystemTime::now(), cli.report.text);
+    let context = report::Context { files: &reports, failures: &failures, now, threshold, text };
+    report::write(&outputs, &context, &mut io::stdout().lock()).map_err(|e| vec![e])?;
+    for failure in &failures {
         eprintln!("docov: {failure}");
     }
     Ok(failures.is_empty())

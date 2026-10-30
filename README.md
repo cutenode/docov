@@ -25,7 +25,7 @@ The npm package runs a prebuilt binary for macOS, Linux or Windows on x64 or arm
 ## Usage
 
 ```
-docov [PATHS]... [--config FILE] [--threshold PERCENT] [--scope exports|all] [--format text|json|lcov]
+docov [PATHS]... [--config FILE] [--threshold PERCENT] [--scope exports|all] [--format FORMAT[=FILE]]... [--output FILE] [--badge FILE] [--omit-covered] [--quiet]
 ```
 
 With no paths it scans the current folder: every `.js`, `.mjs`, `.cjs`, `.jsx`, `.ts`, `.mts`, `.cts` and `.tsx` file, leaving out hidden files and what `.gitignore` leaves out (in a git repository or not). A file named on the command line is always scanned.
@@ -47,7 +47,7 @@ An item is documented when a `/** … */` block with something in it sits right 
 
 `--exclude-tag NAME` (repeatable) or `"excludeTags": ["internal", "ignore", "hidden"]` leaves out items whose JSDoc has one of those tags: they're out of the total, not documented. `--ignore-name REGEX` (repeatable) or `"ignore": { "names": ["^_"] }` does the same for items whose name matches, a member by its own name or as `Class.member`.
 
-A `// docov-ignore-next-line` comment (with an optional reason, `// docov-ignore-next-line: legacy API`) takes the items on the line after it out of the total, and `/* docov-ignore-file */` anywhere at the top level does the same for the whole file. A documented item still counts as documented, as rustdoc does. The text report doesn't list ignored items, and the JSON report marks them with `"ignored": true` and their `reason`. `--report-unused-ignores` (`"reportUnusedIgnores": true`) fails the scan on a `docov-ignore-next-line` whose items are documented anyway.
+A `// docov-ignore-next-line` comment (with an optional reason, `// docov-ignore-next-line: legacy API`) takes the items on the line after it out of the total, and `/* docov-ignore-file */` anywhere at the top level does the same for the whole file. A documented item still counts as documented, as rustdoc does. Only the JSON report lists ignored items, marked with `"ignored": true` and their `reason`; the other formats leave them out. `--report-unused-ignores` (`"reportUnusedIgnores": true`) fails the scan on a `docov-ignore-next-line` whose items are documented anyway.
 
 To adopt docov in a project that's far from documented, `--add-ignore` (or `--add-ignore=REASON`) writes a `// docov-ignore-next-line` above every undocumented item, indented like it, and reports how many it wrote instead of the coverage. It changes no other line.
 
@@ -84,15 +84,36 @@ Some things never count: constructors (their class's doc covers them), private m
 
 ### Formats
 
-- `text` (the default): each file's percentage and its undocumented items, then the total.
+`--format` picks one, and can be given more than once: one scan feeds them all. `FORMAT=FILE` writes that one to `FILE`, making its folder if needed, and the rest go to stdout one after another. `--output FILE` writes the one format without a file of its own to `FILE`.
+
+```bash
+docov --format text --format lcov=coverage/docov.lcov
+```
+
+- `text` (the default): each file's percentage and its undocumented items, then the total. `--omit-covered` leaves out fully documented files, and `--quiet` prints only the total (failed gates still go to stderr).
 - `json`: every item, documented or not, with its kind, line and column, and totals per file, per kind and overall.
-- `lcov`: a line record for each line with items on it, hit when all of them are documented. Coverage services and editor gutters read it.
+- `lcov`: a line record for each line with items on it, hit when all of them are documented, and each item as a function, hit when it's documented. Coverage services and editor gutters read it.
+- `cobertura`: Cobertura XML (coverage-04.dtd) with the same line records, a package per folder and a class per file, for GitLab's merge request coverage and other CI coverage views.
+- `github`: GitHub Actions annotations, a warning on each undocumented item and an error for each failed gate. In GitHub Actions (`GITHUB_ACTIONS=true`) with no `--format`, docov writes these after the text, the way [oxlint](https://oxc.rs/docs/guide/usage/linter/output-formats.html) does.
+- `markdown`: the total, any failed gates, a table of the files, and each file's undocumented items in a folded `<details>` block. Made for `$GITHUB_STEP_SUMMARY` (`--format markdown=$GITHUB_STEP_SUMMARY`) and pull request comments.
+- `sarif`: SARIF 2.1.0 with one rule, `docov/undocumented`, and a result at each undocumented item, for GitHub code scanning (`github/codeql-action/upload-sarif`) and other SARIF viewers.
+- `gitlab`: a GitLab Code Quality report, an issue of severity `minor` at each undocumented item. Each fingerprint is a hash of the item's path, kind and name, so GitLab tells new issues from old ones.
+- `junit`: JUnit XML, a test suite per file and a test case per item that fails when the item is undocumented.
+- `checkstyle`: Checkstyle XML, a warning at each undocumented item.
+- `rdjson`: [reviewdog](https://github.com/reviewdog/reviewdog)'s diagnostic format (`reviewdog -f=rdjson`).
+- `unix`: `path:line:column: kind name undocumented [docov]` for each undocumented item, the way compilers write warnings, for editors' problem matchers and grep.
+- `html`: one self-contained page (`--format html=report.html`) with a table of the files and each file's source, its undocumented declarations highlighted. It has no scripts and follows the system's light or dark mode.
+- `badge`: an SVG badge of the total, drawn without a network call. `--badge FILE` is short for `--format badge=FILE`.
+- `shields`: the JSON a [shields.io endpoint badge](https://shields.io/badges/endpoint-badge) reads, for a badge from a file you publish.
+- `benchmark`: the total as `[{"name":"docov","unit":"%","value":66.7}]`, for [github-action-benchmark](https://github.com/benchmark-action/github-action-benchmark)'s `customBiggerIsBetter`, to chart it over time.
+
+Badges are red under the threshold, yellow up to 10 points over it, and green past that. With no threshold they're blue.
 
 ## Working on it
 
 The toolchain is pinned in `rust-toolchain.toml`, and Node in `.node-version`. The checks need [cargo-nextest](https://nexte.st) and [cargo-llvm-cov](https://github.com/taiki-e/cargo-llvm-cov).
 
-Each flag and docov.json key belongs to a feature, one file in `src/feature/` that implements `Feature`. `build.rs` registers every file there, so a new feature is a new file and nothing else.
+Each flag and docov.json key belongs to a feature, one file in `src/feature/` that implements `Feature`. Each output format is one file in `src/report/` with a `FORMAT` naming it, describing it for `--help`, and rendering it. `build.rs` registers every file in both folders, so a new feature or format is a new file and nothing else.
 
 ```bash
 cargo run -- [PATHS]...   # docov on a project

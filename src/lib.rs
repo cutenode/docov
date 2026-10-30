@@ -10,4 +10,4 @@ pub mod walk;
 pub use collect::{FileReport, Item, Kind, Rules, scan, scan_file};
 pub use config::Config;
 pub use feature::{Feature, Settings, scope::Scope, threshold::Threshold};
-pub use report::{Format, Totals};
+pub use report::{Context, Format, Output, Totals};

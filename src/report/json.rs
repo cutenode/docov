@@ -1,8 +1,12 @@
-use std::io::{self, Write};
+//! `json`: every item, documented or not, with totals.
 
 use serde::{Serialize, Serializer};
 
-use crate::{FileReport, Item, Kind, Totals};
+use crate::report::{Context, Format, json};
+use crate::{Item, Kind, Totals};
+
+/// The format.
+pub const FORMAT: Format = Format { name: "json", help: "Every item, documented or not, with totals", render };
 
 #[derive(Serialize)]
 struct Report<'a> {
@@ -54,9 +58,10 @@ impl<'a> JsonItem<'a> {
     }
 }
 
-pub fn write(files: &[FileReport], out: &mut impl Write) -> io::Result<()> {
-    let (totals, kinds) = (Totals::of(files), Totals::by_kind(files));
-    let files = files
+fn render(context: &Context) -> String {
+    let (totals, kinds) = (Totals::of(context.files), Totals::by_kind(context.files));
+    let files = context
+        .files
         .iter()
         .map(|f| File {
             path: f.path.display().to_string(),
@@ -65,6 +70,5 @@ pub fn write(files: &[FileReport], out: &mut impl Write) -> io::Result<()> {
             items: f.items.iter().map(JsonItem::of).collect(),
         })
         .collect();
-    serde_json::to_writer_pretty(&mut *out, &Report { totals, percent: totals.percent(), kinds, files })?;
-    writeln!(out)
+    json(&Report { totals, percent: totals.percent(), kinds, files })
 }

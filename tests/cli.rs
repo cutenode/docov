@@ -3,7 +3,15 @@
 use std::{fs, path::Path, process::Command};
 
 fn docov(dir: &Path, args: &[&str]) -> (i32, String, String) {
-    let out = Command::new(env!("CARGO_BIN_EXE_docov")).args(args).current_dir(dir).output().unwrap();
+    docov_in(dir, args, &[])
+}
+
+/// docov with these environment variables, and without GITHUB_ACTIONS unless they set it: CI
+/// would otherwise add annotations to the output.
+fn docov_in(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> (i32, String, String) {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_docov"));
+    command.env_remove("GITHUB_ACTIONS").envs(env.iter().copied());
+    let out = command.args(args).current_dir(dir).output().unwrap();
     let text = |b: Vec<u8>| String::from_utf8(b).unwrap();
     (out.status.code().unwrap(), text(out.stdout), text(out.stderr))
 }
@@ -155,6 +163,10 @@ fn help_describes_docov_and_lists_every_features_flags() {
     for flag in ["--threshold <PERCENT>", "--scope <SCOPE>"] {
         assert!(out.contains(flag), "{flag}: {out}");
     }
+    // Every format, with what it writes.
+    for format in docov::report::FORMATS {
+        assert!(out.contains(&format!("- {}: {}", format.name, format.help)), "{}: {out}", format.name);
+    }
 }
 
 #[test]
@@ -162,9 +174,87 @@ fn lcov_marks_each_items_line() {
     let dir = project();
     // Named files keep the paths they were given, separators and all.
     let (code, out, _) = docov(dir.path(), &["--format", "lcov", "src/c.js", "src/a.ts"]);
-    let a = "SF:src/a.ts\nDA:2,1\nDA:3,0\nLH:1\nLF:2\nend_of_record\n";
-    let c = "SF:src/c.js\nDA:2,1\nLH:1\nLF:1\nend_of_record\n";
+    let a = "TN:docov\nSF:src/a.ts\nFN:2,a\nFN:3,b\nFNDA:1,a\nFNDA:0,b\nFNF:2\nFNH:1\nDA:2,1\nDA:3,0\nLH:1\nLF:2\nend_of_record\n";
+    let c = "TN:docov\nSF:src/c.js\nFN:2,C\nFNDA:1,C\nFNF:1\nFNH:1\nDA:2,1\nLH:1\nLF:1\nend_of_record\n";
     assert_eq!((code, out), (0, format!("{a}{c}")));
+}
+
+#[test]
+fn several_formats_go_to_stdout_and_their_files_from_one_scan() {
+    let dir = project();
+    let lcov = Path::new("coverage").join("docov.lcov");
+    let (code, text, _) = docov(dir.path(), &[]);
+    let (_, json, _) = docov(dir.path(), &["--format", "json"]);
+    let args = ["--format", "text", "--format", &format!("lcov={}", lcov.display()), "--format", "json"];
+    let (_, out, _) = docov(dir.path(), &args);
+    assert_eq!((code, out), (0, format!("{text}{json}")));
+    assert!(fs::read_to_string(dir.path().join(&lcov)).unwrap().starts_with("TN:docov\nSF:"));
+
+    // --output is the file for the one format without its own.
+    let (code, out, _) = docov(dir.path(), &["--output", "out.txt"]);
+    assert_eq!((code, out.as_str(), fs::read_to_string(dir.path().join("out.txt")).unwrap()), (0, "", text));
+    let (code, _, err) = docov(dir.path(), &["--output", "out.txt", "--format", "json", "--format", "text"]);
+    assert_eq!((code, err.as_str()), (2, "docov: --output needs exactly one --format without a file\n"));
+    let (code, _, err) = docov(dir.path(), &["--format", "pdf"]);
+    assert_eq!(code, 2);
+    assert!(err.contains("unknown format `pdf`, expected one of: "), "{err}");
+}
+
+#[test]
+fn github_actions_get_annotations_after_the_text() {
+    let dir = project();
+    let (_, text, _) = docov(dir.path(), &["--threshold", "70"]);
+    let (code, out, _) = docov_in(dir.path(), &["--threshold", "70"], &[("GITHUB_ACTIONS", "true")]);
+    let annotations = "::warning file=src/a.ts,line=3,col=1,title=docov::variable b is undocumented\n\
+        ::error title=docov::66.7%25 documented, under the 70%25 threshold\n";
+    assert_eq!((code, out), (1, format!("{text}{annotations}")));
+    // Only without a --format.
+    let (_, json, _) = docov(dir.path(), &["--format", "json"]);
+    assert_eq!(docov_in(dir.path(), &["--format", "json"], &[("GITHUB_ACTIONS", "true")]).1, json);
+}
+
+#[test]
+fn gitlab_fingerprints_are_fnv_1a_of_the_path_kind_and_name() {
+    // GitLab matches issues between runs by fingerprint, so a change here reopens every one.
+    let (_, out, _) = docov(project().path(), &["--format", "gitlab"]);
+    let issues: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(issues[0]["fingerprint"], "0ed237bda4d88c42");
+}
+
+#[test]
+fn badge_writes_an_svg_beside_the_report() {
+    let dir = project();
+    let (_, text, _) = docov(dir.path(), &[]);
+    let (code, out, _) = docov(dir.path(), &["--badge", "docs/badge.svg", "--threshold", "60"]);
+    assert_eq!((code, out), (0, text));
+    let svg = fs::read_to_string(dir.path().join("docs/badge.svg")).unwrap();
+    assert!(svg.contains("aria-label=\"docs: 66.7%\"") && svg.contains("#dfb317"), "{svg}");
+    let (_, shields, _) = docov(dir.path(), &["--format", "shields"]);
+    assert_eq!(shields, "{\"color\":\"blue\",\"label\":\"docs\",\"message\":\"66.7%\",\"schemaVersion\":1}\n");
+}
+
+#[test]
+fn benchmark_is_the_total_for_github_action_benchmark() {
+    let (_, out, _) = docov(project().path(), &["--format", "benchmark"]);
+    assert_eq!(out, "[{\"name\":\"docov\",\"unit\":\"%\",\"value\":66.7}]\n");
+}
+
+#[test]
+fn unix_writes_a_warning_line_per_undocumented_item() {
+    let (_, out, _) = docov(project().path(), &["--format", "unix"]);
+    let a = Path::new("src").join("a.ts");
+    assert_eq!(out, format!("{}:3:1: variable b undocumented [docov]\n", a.display()));
+}
+
+#[test]
+fn html_is_one_page_with_the_sources() {
+    let dir = project();
+    let (code, out, _) = docov(dir.path(), &["--format", "html=report.html"]);
+    let page = fs::read_to_string(dir.path().join("report.html")).unwrap();
+    assert_eq!((code, out.as_str()), (0, ""));
+    let row =
+        "<tr class=\"miss\"><td class=\"ln\">3</td><td>export const b = 1;</td><td class=\"note\">variable b</td></tr>";
+    assert!(page.contains(row) && page.contains("prefers-color-scheme: dark") && !page.contains("<script"), "{page}");
 }
 
 #[test]
@@ -240,6 +330,17 @@ fn unused_ignores_fail_when_reported() {
     );
     fs::write(dir.path().join("docov.json"), r#"{ "reportUnusedIgnores": true }"#).unwrap();
     assert_eq!(docov(dir.path(), &[]).0, 1);
+}
+
+#[test]
+fn each_line_of_a_gate_is_an_annotation_of_its_own() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = "// docov-ignore-next-line\n/** A. */ export const a = 1;\n// docov-ignore-next-line\n/** B. */ export const b = 1;\n";
+    fs::write(dir.path().join("a.ts"), source).unwrap();
+    let (code, out, _) = docov(dir.path(), &["--report-unused-ignores", "--format", "github"]);
+    let errors =
+        "::error title=docov::a.ts:1:1: unused docov-ignore\n::error title=docov::a.ts:3:1: unused docov-ignore\n";
+    assert_eq!((code, out.as_str()), (1, errors));
 }
 
 #[test]
