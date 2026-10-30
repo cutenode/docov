@@ -1,5 +1,6 @@
 //! `--explain FILE`: in place of a report, each item in one file with whether it counts and is
-//! documented, and why, and what the scan passed over there, and why.
+//! documented, and why, and what the scan passed over there, and why, after the override that set
+//! its scope, if one did.
 
 use std::{
     io::Write,
@@ -55,7 +56,13 @@ impl Explain {
 
 fn explain(path: &Path, files: &[(&Path, &Rules)], out: &mut dyn Write) -> Result<(), String> {
     let lines = match files {
-        [(_, rules), ..] => collect::explain(path, rules).map_err(|e| e.to_string())?,
+        [(_, rules), ..] => {
+            let scope = format!("{:?}", rules.scope).to_lowercase();
+            let set_by = rules.scope_set_by.iter().map(|(i, globs)| {
+                format!("{}  scope {scope}: set by overrides[{i}], for {globs}", path.display())
+            });
+            set_by.chain(collect::explain(path, rules).map_err(|e| e.to_string())?).collect()
+        }
         [] => vec![format!("{}  left out: the config excludes it", path.display())],
     };
     lines.iter().try_for_each(|line| writeln!(out, "{line}")).map_err(|e| e.to_string())
