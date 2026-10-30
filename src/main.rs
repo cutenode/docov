@@ -48,6 +48,7 @@ fn run(cli: Cli, matches: &clap::ArgMatches) -> Result<bool, Vec<String>> {
     // GitHub Actions sets it, and reads annotations from the output.
     let github_actions = env::var_os("GITHUB_ACTIONS").is_some_and(|value| value == "true");
     let outputs = cli.report.outputs(github_actions).map_err(|e| vec![e])?;
+    let base = cli.report.compare.as_deref().map(report::Base::read).transpose().map_err(|e| vec![e])?;
     let mut config = Config::load(cli.config.as_deref()).map_err(|e| vec![e.to_string()])?;
     let settings = Settings::new(matches, std::mem::take(&mut config.keys));
     // The config's paths are relative to its folder. Collecting the components drops `.` parts after
@@ -67,7 +68,7 @@ fn run(cli: Cli, matches: &clap::ArgMatches) -> Result<bool, Vec<String>> {
     let failures = settings.gates(&reports);
     let threshold = settings.get::<Threshold>().0;
     let (now, text) = (SystemTime::now(), cli.report.text);
-    let context = report::Context { files: &reports, failures: &failures, now, threshold, text };
+    let context = report::Context { files: &reports, failures: &failures, now, threshold, text, base: base.as_ref() };
     report::write(&outputs, &context, &mut io::stdout().lock()).map_err(|e| vec![e])?;
     for failure in &failures {
         eprintln!("docov: {failure}");

@@ -214,6 +214,36 @@ fn github_actions_get_annotations_after_the_text() {
 }
 
 #[test]
+fn markdown_shows_the_change_from_an_earlier_json_report() {
+    let dir = project();
+    assert_eq!(docov(dir.path(), &["--format", "json=base.json"]).0, 0);
+    fs::write(dir.path().join("src/a.ts"), "/** a */\nexport function a() {}\n/** b */\nexport const b = 1;\n")
+        .unwrap();
+    fs::write(dir.path().join("src/d.ts"), "export const d = 1;\nexport const e = 2;\n").unwrap();
+    fs::remove_file(dir.path().join("src/c.js")).unwrap();
+    let (code, out, err) = docov(dir.path(), &["--format", "markdown", "--compare", "base.json"]);
+    assert_eq!((code, err.as_str()), (0, ""));
+    let table = "| Documented | Before | Change | Items | File |\n| ---: | ---: | ---: | ---: | :--- |\n\
+        | 100.0% | 50.0% | +50.0 | 2/2 | `src/a.ts` |\n\
+        | 0.0% |  | new | 0/2 | `src/d.ts` |\n\
+        |  | 100.0% | gone |  | `src/c.js` |\n";
+    let details = "<details>\n<summary><code>src/d.ts</code>: 2 undocumented</summary>\n\n\
+        - 1:1 variable `d`\n- 2:1 variable `e`\n\n</details>\n";
+    assert_eq!(out, format!("## docov\n\n**50.0%** documented (2/4), -16.7 from 66.7%\n\n{table}\n{details}"));
+    // The json format doesn't change.
+    let (_, json, _) = docov(dir.path(), &["--format", "json"]);
+    assert_eq!(docov(dir.path(), &["--format", "json", "--compare", "base.json"]).1, json);
+
+    // A base that isn't there or isn't a report fails, naming it.
+    let (code, out, err) = docov(dir.path(), &["--format", "markdown", "--compare", "missing.json"]);
+    assert_eq!(code, 2);
+    assert!(out.is_empty() && err.starts_with("docov: missing.json: "), "{err}");
+    fs::write(dir.path().join("base.json"), "{}").unwrap();
+    let (code, _, err) = docov(dir.path(), &["--format", "markdown", "--compare", "base.json"]);
+    assert_eq!((code, err.as_str()), (2, "docov: base.json: missing field `files` at line 1 column 2\n"));
+}
+
+#[test]
 fn gitlab_fingerprints_are_fnv_1a_of_the_path_kind_and_name() {
     // GitLab matches issues between runs by fingerprint, so a change here reopens every one.
     let (_, out, _) = docov(project().path(), &["--format", "gitlab"]);

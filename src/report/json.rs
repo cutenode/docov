@@ -1,6 +1,8 @@
-//! `json`: every item, documented or not, with totals.
+//! `json`: every item, documented or not, with totals. `--compare` reads one back.
 
-use serde::Serialize;
+use std::{fs, path::Path};
+
+use serde::{Deserialize, Serialize};
 
 use crate::report::{Context, Format, json};
 use crate::{Item, Totals};
@@ -38,4 +40,31 @@ fn render(context: &Context) -> String {
         })
         .collect();
     json(&Report { totals, percent: totals.percent(), files })
+}
+
+/// An earlier `json` report, which `--compare` reads to show what changed.
+#[derive(Debug, Deserialize)]
+pub struct Base {
+    /// The total.
+    #[serde(flatten)]
+    pub totals: Totals,
+    pub(crate) files: Vec<BaseFile>,
+}
+
+/// A file in an earlier report.
+#[derive(Debug, Deserialize)]
+pub(crate) struct BaseFile {
+    /// Its path, as `json` writes it.
+    pub(crate) path: String,
+    #[serde(flatten)]
+    pub(crate) totals: Totals,
+}
+
+impl Base {
+    /// Reads the report at `path`. An error names the file.
+    pub fn read(path: &Path) -> Result<Self, String> {
+        let failed = |e: &dyn std::fmt::Display| format!("{}: {e}", path.display());
+        let text = fs::read_to_string(path).map_err(|e| failed(&e))?;
+        serde_json::from_str(&text).map_err(|e| failed(&e))
+    }
 }

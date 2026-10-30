@@ -463,6 +463,7 @@ impl Drawn {
             now: UNIX_EPOCH + Duration::from_millis(self.now_ms),
             threshold: self.threshold,
             text: self.text,
+            base: None,
         }
     }
 }
@@ -548,8 +549,13 @@ fn outputs_go_where_the_flags_send_them(tc: TestCase) {
     let unnamed = if format.is_empty() { 1 } else { format.iter().filter(|o| o.path.is_none()).count() };
     let github_actions = tc.draw(gs::booleans());
     let badge = tc.draw(gs::booleans()).then(|| dir.path().join("badge.svg"));
-    let flags =
-        report::Flags { format: format.clone(), output: output.clone(), badge: badge.clone(), text: drawn.text };
+    let flags = report::Flags {
+        format: format.clone(),
+        output: output.clone(),
+        badge: badge.clone(),
+        compare: None,
+        text: drawn.text,
+    };
     let outputs = match flags.outputs(github_actions) {
         Err(e) => {
             assert!(output.is_some() && unnamed != 1, "{e}");
@@ -673,6 +679,92 @@ fn markdown_reads_back_as_written(tc: TestCase) {
     assert_eq!(failed.iter().map(|f| f.trim_end()).collect::<Vec<_>>(), failures, "{out}");
     assert_eq!(rows, with_items.len());
     assert_eq!(details, drawn.files.iter().filter(|f| f.items.iter().any(|i| !i.documented)).count());
+}
+
+/// With `--compare`, `markdown`'s total says the change from the base report's, and the table has
+/// a row for each file with items in either: its percentage now and before and the change between
+/// them, `new` for a file the base didn't have, and `gone`, after the rest, for one only the base
+/// had. A base that can't be read or isn't a `json` report fails, naming its file.
+#[hegel::test(test_cases = 100)]
+fn markdown_shows_the_change_from_the_base(tc: TestCase) {
+    use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("base.json");
+    let mut drawn = Drawn::draw(&tc);
+    let old = reports(&tc);
+    // Some files are in both.
+    for (file, old) in drawn.files.iter_mut().zip(&old) {
+        if tc.draw(gs::booleans()) {
+            file.path.clone_from(&old.path);
+        }
+    }
+    let json = report::format("json").unwrap().render(&Context { files: &old, ..drawn.context() });
+    let text = tc.draw(gs::sampled_from(vec![Some(json), None, Some("not json".into()), Some("[]".into())]));
+    if let Some(text) = &text {
+        fs::write(&path, text).unwrap();
+    }
+    let base = match report::Base::read(&path) {
+        Ok(base) => base,
+        Err(e) => {
+            assert!(text.is_none_or(|t| !t.starts_with('{')), "{e}");
+            assert!(e.starts_with(&format!("{}: ", path.display())), "{e}");
+            return;
+        }
+    };
+    let out = report::format("markdown").unwrap().render(&Context { base: Some(&base), ..drawn.context() });
+
+    // A change is a signed difference of the percentages it's between.
+    let percent = |cell: &str| cell.strip_suffix('%').unwrap().parse::<f64>().unwrap();
+    let is_change = |change: &str, now: &str, before: &str| {
+        let sign = change.starts_with(['+', '-']);
+        sign && (change.parse::<f64>().unwrap() - (percent(now) - percent(before))).abs() < 1e-9
+    };
+    let (now, before) = (Totals::of(&drawn.files), Totals::of(&old));
+    let shown = format!("{:.1}%", now.percent());
+    let heading = format!("**{shown}** documented ({}/{}), ", now.documented, now.total);
+    let line = out.lines().find_map(|l| l.strip_prefix(&heading)).unwrap();
+    let (change, from) = line.split_once(" from ").unwrap();
+    assert!(from == format!("{:.1}%", before.percent()) && is_change(change, &shown, from), "{out}");
+
+    let (mut rows, mut cells) = (Vec::new(), Vec::new());
+    for event in Parser::new_ext(&out, Options::ENABLE_TABLES) {
+        match event {
+            Event::Start(Tag::TableCell) => cells.push(String::new()),
+            Event::Text(text) | Event::Code(text) if !cells.is_empty() => cells.last_mut().unwrap().push_str(&text),
+            Event::End(TagEnd::TableHead | TagEnd::TableRow) => rows.push(std::mem::take(&mut cells)),
+            _ => {}
+        }
+    }
+    let slash = |path: &Path| path.display().to_string().replace(std::path::MAIN_SEPARATOR, "/");
+    let with_items = |files: &[FileReport]| files.iter().filter(|f| !f.items.is_empty()).cloned().collect::<Vec<_>>();
+    let (now, mut gone) = (with_items(&drawn.files), with_items(&old));
+    let mut wanted =
+        vec![vec!["Documented", "Before", "Change", "Items", "File"].into_iter().map(String::from).collect()];
+    if now.is_empty() && gone.is_empty() {
+        wanted.clear();
+    }
+    for file in &now {
+        let totals = file.totals();
+        let before = gone.iter().position(|f| f.path == file.path).map(|i| gone.remove(i).totals());
+        let row = &rows[wanted.len()];
+        let change = before.map_or("new".into(), |_| row[2].clone());
+        let before = before.map_or(String::new(), |b| format!("{:.1}%", b.percent()));
+        assert!(change == "new" || is_change(&change, &row[0], &before), "{out}");
+        let (documented, total) = (totals.documented, totals.total);
+        wanted.push(vec![
+            format!("{:.1}%", totals.percent()),
+            before,
+            change,
+            format!("{documented}/{total}"),
+            slash(&file.path),
+        ]);
+    }
+    gone.sort_by_key(|f| f.path.display().to_string());
+    for file in gone {
+        let before = format!("{:.1}%", file.totals().percent());
+        wanted.push(vec![String::new(), before, "gone".into(), String::new(), slash(&file.path)]);
+    }
+    assert_eq!(rows, wanted, "{out}");
 }
 
 /// Each undocumented item and its file, with the file's path as CI services want it.
@@ -1043,12 +1135,19 @@ fn formats_agree_on_totals(tc: TestCase) {
             now: UNIX_EPOCH,
             threshold: None,
             text: report::Text::default(),
+            base: None,
         })
     };
     // Every format fails when its output doesn't fit where it's going, and only then.
     for format in report::FORMATS {
-        let context =
-            Context { files: &files, failures: &[], now: UNIX_EPOCH, threshold: None, text: report::Text::default() };
+        let context = Context {
+            files: &files,
+            failures: &[],
+            now: UNIX_EPOCH,
+            threshold: None,
+            text: report::Text::default(),
+            base: None,
+        };
         let length = format.render(&context).len();
         let room = tc.draw(gs::integers::<usize>().max_value(length + 1));
         let result = report::write(&[Output { format, path: None }], &context, &mut Room(room));
@@ -1321,13 +1420,15 @@ fn each_bad_input_fails_naming_itself(tc: TestCase) {
         assert!(stderr.contains(culprit), "{culprit}: {stderr}");
     };
     // Bad arguments, and what the error names.
-    let bad_args: [(&[&str], &str); 6] = [
+    let bad_args: [(&[&str], &str); 8] = [
         (&["--config", "missing.json"], "missing.json"),
         (&["--output", "o.txt", "--format", "lcov=x.lcov"], "--output"),
         (&["--format", "json=README.md/x.json"], "README.md"),
         (&["--threshold", "150"], "150"),
         (&["gone"], "gone"),
         (&["README.md"], "README.md"),
+        (&["--compare", "missing.json"], "missing.json"),
+        (&["--compare", "README.md"], "README.md"),
     ];
     for (args, culprit) in bad_args {
         fails_naming(args, culprit);
