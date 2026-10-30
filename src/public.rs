@@ -20,12 +20,20 @@ use serde_json::Value;
 #[derive(Debug, Default)]
 pub struct Api {
     files: FxHashMap<PathBuf, FxHashSet<String>>,
+    sources: Vec<PathBuf>,
 }
 
 impl Api {
     /// The local names the entry points reach in the file at `path`, if they reach it at all.
     pub fn reach(&self, path: &Path) -> Option<&FxHashSet<String>> {
         fs::canonicalize(path).ok().and_then(|path| self.files.get(&path))
+    }
+
+    /// What it was read from: package.json, the tsconfig.json beside it (there or not), each
+    /// module, and each module's folder, where an import that didn't resolve would find a file
+    /// added there.
+    pub fn sources(&self) -> &[PathBuf] {
+        &self.sources
     }
 
     /// What the entry points of the package.json in `dir`, or else the nearest one above `paths`,
@@ -51,7 +59,12 @@ impl Api {
         }
         let mut graph = Graph { resolver, modules: FxHashMap::default(), files: FxHashMap::default() };
         graph.walk(entries);
-        Ok(Self { files: graph.files })
+        let folders = graph.modules.keys().map(|module| module.parent().expect("a file is in a folder").to_owned());
+        let mut sources: Vec<PathBuf> = [package.clone(), root.join("tsconfig.json")].into();
+        sources.extend(graph.modules.keys().cloned().chain(folders));
+        sources.sort();
+        sources.dedup();
+        Ok(Self { files: graph.files, sources })
     }
 }
 

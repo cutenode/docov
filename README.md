@@ -203,6 +203,8 @@ Badges are red under the threshold, yellow up to 10 points over it, and green pa
 
 `docov lsp` is a language server on stdin and stdout. For each open JavaScript or TypeScript file it shows an information diagnostic at each undocumented item (`docov/undocumented`) and each doc check finding at its level, from the unsaved text, by the config `docov` would use for that file (nested configs included). It finds the config as if it ran in the workspace folder the file is in, or else in the file's own folder, and shows nothing for a file the config's `paths` or excludes leave out. On an undocumented item, a code action writes the stub `--fix` would. To stub every file at once, run `docov --fix`.
 
+It reads each file's config (and, with the public scope, the package's module graph) once, and keeps it until a file it came from changes or a config or package.json turns up closer. When the editor can watch files for a server, docov asks it to and goes by what it says; otherwise, and for files outside the workspace, it compares their modified times and sizes on each edit.
+
 VS Code needs an extension to start a language server, but editors with a generic LSP client can run it directly. In Neovim (0.10 or later):
 
 ```lua

@@ -29,6 +29,8 @@ use crate::{
 pub struct Group {
     /// The nested config file they're scanned with, or none for the root config.
     pub config: Option<PathBuf>,
+    /// The config files its settings came from, each before the files it wins over.
+    pub configs: Vec<PathBuf>,
     /// Its settings.
     pub settings: Settings,
     /// What counts in its files, by its settings.
@@ -60,7 +62,8 @@ impl Group {
         let baseline_dir = config.dirs.get("baseline").unwrap_or(&top.dir).clone();
         let excused = settings.get::<Baseline>().read(&baseline_dir)?;
         let (rules, root, dir) = (settings.rules(), config.root(), config.dir.clone());
-        Ok(Self { config: path, settings, rules, root, dir, baseline_dir, excused, files })
+        let configs = config.files.clone();
+        Ok(Self { config: path, configs, settings, rules, root, dir, baseline_dir, excused, files })
     }
 
     /// Its own of `reports`.
@@ -131,8 +134,18 @@ impl Plan {
     /// Reads what the package's entry points reach for each group under the public scope: the
     /// package.json in its config's folder, or else the nearest one above one of `paths`.
     pub fn load_public(&mut self, paths: &[PathBuf]) -> Result<(), Vec<String>> {
+        self.load_public_with(paths, |dir, paths| Api::load(dir, paths).map(Arc::new))
+    }
+
+    /// [`Plan::load_public`], with each group's API from `load`, given the folder and paths
+    /// [`Api::load`] takes, for a caller that keeps them.
+    pub fn load_public_with(
+        &mut self,
+        paths: &[PathBuf],
+        mut load: impl FnMut(&Path, &[PathBuf]) -> Result<Arc<Api>, Vec<String>>,
+    ) -> Result<(), Vec<String>> {
         for group in self.groups.iter_mut().filter(|group| group.rules.scope == Scope::Public) {
-            group.rules.public = Some(Arc::new(Api::load(&group.dir, paths)?));
+            group.rules.public = Some(load(&group.dir, paths)?);
         }
         Ok(())
     }
