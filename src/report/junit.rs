@@ -18,7 +18,7 @@ fn render(context: &Context) -> String {
         let path = escape(&slash(&file.path));
         let (tests, failures) = (totals.total, totals.total - totals.documented);
         out += &format!("  <testsuite name=\"{path}\" tests=\"{tests}\" failures=\"{failures}\">\n");
-        for item in &file.items {
+        for item in file.counted() {
             let name = escape(&format!("{} {}", item.kind.as_str(), item.name));
             let case = format!("<testcase name=\"{name}\" classname=\"{path}\" file=\"{path}\" line=\"{}\"", item.line);
             if item.documented {

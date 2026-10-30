@@ -273,3 +273,172 @@ fn the_readme_points_at_this_versions_schema() {
         format!("https://raw.githubusercontent.com/cutenode/docov/v{}/docov.schema.json", env!("CARGO_PKG_VERSION"));
     assert!(readme.contains(&url), "point the README's $schema at {url}");
 }
+
+#[test]
+fn require_description_comes_from_the_flag_or_the_config() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("a.ts"), "/** @internal */\nexport const a = 1;\n/** A. */\nexport const b = 1;\n")
+        .unwrap();
+    let total = |args: &[&str]| docov(dir.path(), args).1.lines().last().unwrap().to_owned();
+    assert_eq!(total(&[]), " 100.0%  2/2  total");
+    assert_eq!(total(&["--require-description"]), "  50.0%  1/2  total");
+    fs::write(dir.path().join("docov.json"), r#"{ "requireDescription": true }"#).unwrap();
+    assert_eq!(total(&[]), "  50.0%  1/2  total");
+}
+
+#[test]
+fn excluded_tags_come_from_the_flags_or_the_config() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = "/** @internal */\nexport const a = 1;\n/** @hidden */\nexport const b = 1;\nexport const c = 1;\n";
+    fs::write(dir.path().join("a.ts"), source).unwrap();
+    let total = |args: &[&str]| docov(dir.path(), args).1.lines().last().unwrap().to_owned();
+    assert_eq!(total(&[]), "  66.7%  2/3  total");
+    assert_eq!(total(&["--exclude-tag", "internal", "--exclude-tag", "hidden"]), "   0.0%  0/1  total");
+    fs::write(dir.path().join("docov.json"), r#"{ "excludeTags": ["internal"] }"#).unwrap();
+    assert_eq!(total(&[]), "  50.0%  1/2  total");
+    // The flags win over the key.
+    assert_eq!(total(&["--exclude-tag", "hidden"]), "  50.0%  1/2  total");
+}
+
+#[test]
+fn ignored_items_are_left_out_of_the_text_and_marked_in_the_json() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = "// docov-ignore-next-line: legacy\nexport const a = 1;\nexport const b = 1;\n";
+    fs::write(dir.path().join("a.ts"), source).unwrap();
+    fs::write(dir.path().join("b.ts"), "/* docov-ignore-file */\nexport const c = 1;\n").unwrap();
+    let (code, out, _) = docov(dir.path(), &[]);
+    assert_eq!((code, out.as_str()), (0, "   0.0%  0/1  a.ts\n         a.ts:3:1  variable b\n   0.0%  0/1  total\n"));
+    let (_, out, _) = docov(dir.path(), &["--format", "json"]);
+    let json: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let a = &json["files"][0]["items"];
+    assert_eq!((&a[0]["ignored"], &a[0]["reason"]), (&true.into(), &"legacy".into()));
+    assert_eq!((a[1].get("ignored"), a[1].get("reason")), (None, None));
+    let c = &json["files"][1]["items"][0];
+    assert_eq!((&c["ignored"], c.get("reason")), (&true.into(), None));
+}
+
+#[test]
+fn unused_ignores_fail_when_reported() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = "/** A. */\n// docov-ignore-next-line\nexport const a = 1;\n  // docov-ignore-next-line\n  /** B. */ export const b = 1;\n// docov-ignore-next-line\nexport const c = 1;\n";
+    fs::write(dir.path().join("a.ts"), source).unwrap();
+    assert_eq!(docov(dir.path(), &[]).0, 0);
+    let (code, _, err) = docov(dir.path(), &["--report-unused-ignores"]);
+    assert_eq!(
+        (code, err.as_str()),
+        (1, "docov: a.ts:2:1: unused docov-ignore\ndocov: a.ts:4:3: unused docov-ignore\n")
+    );
+    fs::write(dir.path().join("docov.json"), r#"{ "reportUnusedIgnores": true }"#).unwrap();
+    assert_eq!(docov(dir.path(), &[]).0, 1);
+}
+
+#[test]
+fn each_line_of_a_gate_is_an_annotation_of_its_own() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = "// docov-ignore-next-line\n/** A. */ export const a = 1;\n// docov-ignore-next-line\n/** B. */ export const b = 1;\n";
+    fs::write(dir.path().join("a.ts"), source).unwrap();
+    let (code, out, _) = docov(dir.path(), &["--report-unused-ignores", "--format", "github"]);
+    let errors =
+        "::error title=docov::a.ts:1:1: unused docov-ignore\n::error title=docov::a.ts:3:1: unused docov-ignore\n";
+    assert_eq!((code, out.as_str()), (1, errors));
+}
+
+#[test]
+fn add_ignore_writes_a_comment_above_each_undocumented_item() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = "/** A. */\r\nexport const a = 1;\r\nexport class B {\r\n\tc() {}\r\n}";
+    fs::write(dir.path().join("a.ts"), source).unwrap();
+    let (code, out, err) = docov(dir.path(), &["--add-ignore=to do", "a.ts"]);
+    assert_eq!((code, out.as_str(), err.as_str()), (0, "", "docov: added 2 docov-ignore-next-line comments\n"));
+    let ignored = "/** A. */\r\nexport const a = 1;\r\n// docov-ignore-next-line: to do\r\nexport class B {\r\n\t// docov-ignore-next-line: to do\r\n\tc() {}\r\n}";
+    assert_eq!(fs::read_to_string(dir.path().join("a.ts")).unwrap(), ignored);
+    assert_eq!(docov(dir.path(), &[]).1, " 100.0%  1/1  a.ts\n 100.0%  1/1  total\n");
+    assert_eq!(docov(dir.path(), &["--add-ignore"]).2, "docov: added 0 docov-ignore-next-line comments\n");
+}
+
+#[test]
+fn kinds_pick_what_counts_and_break_the_total_down() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = "/** f */\nexport function f() {}\nexport class C { m() {} }\nexport const v = 1;\n";
+    fs::write(dir.path().join("a.ts"), source).unwrap();
+    let (_, out, _) = docov(dir.path(), &["--by-kind"]);
+    assert!(
+        out.ends_with("  25.0%  1/4  total\nby kind: function 1/1, class 0/1, method 0/1, variable 0/1\n"),
+        "{out}"
+    );
+    let (_, out, _) = docov(dir.path(), &["--kind", "function,method", "--by-kind"]);
+    assert!(out.ends_with("  50.0%  1/2  total\nby kind: function 1/1, method 0/1\n"), "{out}");
+    fs::write(dir.path().join("docov.json"), r#"{ "kinds": ["class"] }"#).unwrap();
+    let (_, out, _) = docov(dir.path(), &["--format", "json"]);
+    let json: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(json["kinds"], serde_json::json!({ "class": { "documented": 0, "total": 1, "percent": 0.0 } }));
+}
+
+#[test]
+fn name_patterns_leave_out_what_they_match() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = "export const _a = 1;\nexport const b = 1;\nexport class C { _d() {} e() {} }\n";
+    fs::write(dir.path().join("a.ts"), source).unwrap();
+    let total = |args: &[&str]| docov(dir.path(), args).1.lines().last().unwrap().to_owned();
+    assert_eq!(total(&[]), "   0.0%  0/5  total");
+    assert_eq!(total(&["--ignore-name", "^_"]), "   0.0%  0/3  total");
+    assert_eq!(total(&["--ignore-name", "^C\\.e$", "--ignore-name", "^b"]), "   0.0%  0/3  total");
+    fs::write(dir.path().join("docov.json"), r#"{ "ignore": { "names": ["^_", "^C$"] } }"#).unwrap();
+    assert_eq!(total(&[]), "   0.0%  0/2  total");
+    let (code, _, err) = docov(dir.path(), &["--ignore-name", "("]);
+    assert_eq!(code, 2);
+    assert!(err.contains("unclosed group"), "{err}");
+    fs::write(dir.path().join("docov.json"), r#"{ "ignore": { "names": ["("] } }"#).unwrap();
+    let (code, _, err) = docov(dir.path(), &[]);
+    assert_eq!(code, 2);
+    assert!(err.starts_with("docov: docov.json: regex parse error"), "{err}");
+}
+
+#[test]
+fn access_levels_come_from_the_flag_or_the_config() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = "/** @private */\nexport const a = 1;\nexport class B { protected c = 1; }\n";
+    fs::write(dir.path().join("a.ts"), source).unwrap();
+    let total = |args: &[&str]| docov(dir.path(), args).1.lines().last().unwrap().to_owned();
+    assert_eq!(total(&[]), "  33.3%  1/3  total");
+    assert_eq!(total(&["--access", "public,protected"]), "   0.0%  0/2  total");
+    fs::write(dir.path().join("docov.json"), r#"{ "access": ["public"] }"#).unwrap();
+    assert_eq!(total(&[]), "   0.0%  0/1  total");
+}
+
+#[test]
+fn override_members_count_as_documented_with_inherit_override() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("a.ts"), "/** A. */\nexport class A extends B {\n    override m() {}\n}\n").unwrap();
+    let total = |args: &[&str]| docov(dir.path(), args).1.lines().last().unwrap().to_owned();
+    assert_eq!(total(&[]), "  50.0%  1/2  total");
+    fs::write(dir.path().join("docov.json"), r#"{ "inherit": "override" }"#).unwrap();
+    assert_eq!(total(&[]), " 100.0%  2/2  total");
+}
+
+#[test]
+fn the_config_picks_which_exports_count() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("a.js"), "export const a = 1;\nexports.b = 1;\nwindow.c = 1;\n").unwrap();
+    let total = || docov(dir.path(), &[]).1.lines().last().unwrap().to_owned();
+    assert_eq!(total(), "   0.0%  0/2  total");
+    fs::write(dir.path().join("docov.json"), r#"{ "exports": { "esm": false, "globals": true } }"#).unwrap();
+    assert_eq!(total(), "   0.0%  0/2  total");
+    fs::write(dir.path().join("docov.json"), r#"{ "exports": { "cjs": false } }"#).unwrap();
+    assert_eq!(total(), "   0.0%  0/1  total");
+    fs::write(dir.path().join("docov.json"), r#"{ "exports": { "amd": true } }"#).unwrap();
+    let (code, _, err) = docov(dir.path(), &[]);
+    assert_eq!(code, 2);
+    assert!(err.contains("unknown field `amd`"), "{err}");
+}
+
+#[test]
+fn the_config_leaves_out_deprecated_items_and_generated_files() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("a.ts"), "/** @deprecated */\nexport const a = 1;\nexport const b = 1;\n").unwrap();
+    fs::write(dir.path().join("b.ts"), "// @generated\nexport const c = 1;\n").unwrap();
+    let total = || docov(dir.path(), &[]).1.lines().last().unwrap().to_owned();
+    assert_eq!(total(), "  33.3%  1/3  total");
+    fs::write(dir.path().join("docov.json"), r#"{ "ignoreDeprecated": true, "skipGenerated": true }"#).unwrap();
+    assert_eq!(total(), "   0.0%  0/1  total");
+}

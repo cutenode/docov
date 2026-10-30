@@ -2,21 +2,30 @@
 
 use std::{fs, io, path::Path, path::PathBuf};
 
+mod doc;
+mod ignore;
+mod rules;
+
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
     AssignmentExpression, Class, ClassElement, CommentContent, Declaration, ExportDefaultDeclarationKind, Expression,
     Function, MemberExpression, MethodDefinitionKind, ObjectPropertyKind, PropertyKey, Statement, TSAccessibility,
     TSInterfaceDeclaration, TSSignature,
 };
+use oxc_jsdoc::JSDoc;
 use oxc_parser::Parser;
-use oxc_span::{GetSpan, SourceType};
-use rustc_hash::FxHashSet;
-use serde::Serialize;
+use oxc_span::{GetSpan, SourceType, Span};
+use rustc_hash::{FxHashMap, FxHashSet};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
-use crate::{Scope, Totals};
+use self::ignore::Ignores;
+pub use self::{ignore::Ignore, rules::Rules};
+use crate::Totals;
 
 /// What kind of declaration an item is.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Deserialize, JsonSchema, clap::ValueEnum)]
+#[serde(rename_all = "lowercase")]
 pub enum Kind {
     /// `function f() {}`, or a function assigned to an export.
     Function,
@@ -79,8 +88,20 @@ pub struct Item {
     pub line: usize,
     /// 1-based, in characters.
     pub column: usize,
-    /// Whether a JSDoc block with something in it comes right before it.
+    /// Whether a JSDoc block with something in it comes right before it (and, by the rules, says
+    /// enough).
     pub documented: bool,
+    /// The `docov-ignore` comment that covers it, if one does. The JSON report shapes it.
+    #[serde(skip)]
+    pub ignore: Option<Ignore>,
+}
+
+impl Item {
+    /// Whether it's out of the total: undocumented, and covered by a `docov-ignore` comment. A
+    /// documented item counts as documented, ignore or not.
+    pub fn ignored(&self) -> bool {
+        !self.documented && self.ignore.is_some()
+    }
 }
 
 /// One file's items, in source order.
@@ -93,9 +114,14 @@ pub struct FileReport {
 }
 
 impl FileReport {
-    /// How many of its items are documented.
+    /// Its items that aren't [ignored](Item::ignored).
+    pub fn counted(&self) -> impl Iterator<Item = &Item> {
+        self.items.iter().filter(|i| !i.ignored())
+    }
+
+    /// How many of its counted items are documented.
     pub fn totals(&self) -> Totals {
-        Totals { documented: self.items.iter().filter(|i| i.documented).count(), total: self.items.len() }
+        Totals { documented: self.items.iter().filter(|i| i.documented).count(), total: self.counted().count() }
     }
 }
 
@@ -124,10 +150,10 @@ pub struct SyntaxError {
 }
 
 /// Reads and scans one file.
-pub fn scan_file(path: &Path, scope: Scope) -> Result<FileReport, Error> {
+pub fn scan_file(path: &Path, rules: &Rules) -> Result<FileReport, Error> {
     let source_type = SourceType::from_path(path).map_err(|_| Error::Language { path: path.to_owned() })?;
     let source = fs::read_to_string(path).map_err(|source| Error::Read { path: path.to_owned(), source })?;
-    match scan(&source, source_type, scope) {
+    match scan(&source, source_type, rules) {
         Ok(items) => Ok(FileReport { path: path.to_owned(), items }),
         Err(e) => {
             let (line, column) = Lines::new(&source).position(e.offset);
@@ -136,8 +162,9 @@ pub fn scan_file(path: &Path, scope: Scope) -> Result<FileReport, Error> {
     }
 }
 
-/// The items in `source`. Any syntax error fails the scan: a partial AST would undercount.
-pub fn scan(source: &str, source_type: SourceType, scope: Scope) -> Result<Vec<Item>, SyntaxError> {
+/// The items in `source` that count by `rules`. Any syntax error fails the scan: a partial AST
+/// would undercount.
+pub fn scan(source: &str, source_type: SourceType, rules: &Rules) -> Result<Vec<Item>, SyntaxError> {
     let allocator = Allocator::default();
     let parsed = Parser::new(&allocator, source, source_type).parse();
     if let Some(error) = parsed.diagnostics.errors().next() {
@@ -145,53 +172,82 @@ pub fn scan(source: &str, source_type: SourceType, scope: Scope) -> Result<Vec<I
         return Err(SyntaxError { offset, message: error.message.to_string() });
     }
 
-    // The positions that a JSDoc block with something in it is attached to: the first token after
-    // it. Legal comments (`/** @license */`) are file headers, not docs.
+    // The JSDoc block with something in it attached to each position: the first token after it.
+    // With several, the nearest is the item's, as in jsdoc. Legal comments (`/** @license */`) are
+    // file headers, not docs.
     let docs = parsed
         .program
         .comments
         .iter()
         .filter(|c| c.content == CommentContent::Jsdoc && c.is_leading())
-        .filter(|c| c.content_span().source_text(source).chars().any(|ch| !ch.is_whitespace() && ch != '*'))
-        .map(|c| c.attached_to)
+        .filter_map(|c| {
+            // Past the `/**`, as oxc_jsdoc reads it.
+            let span = Span::new(c.content_span().start + 1, c.content_span().end);
+            let text = span.source_text(source);
+            text.chars().any(|ch| !ch.is_whitespace() && ch != '*').then(|| (c.attached_to, JSDoc::new(text, span)))
+        })
         .collect();
+    let generated = parsed.program.comments.first().is_some_and(|c| c.span.source_text(source).contains("@generated"));
+    if rules.skip_generated && generated {
+        return Ok(Vec::new());
+    }
+
+    let lines = Lines::new(source);
+    let ignores = Ignores::find(&parsed.program, &lines);
     let mut collector = Collector { source, docs, found: Vec::new(), exported: FxHashSet::default(), overload: None };
     for statement in &parsed.program.body {
         collector.statement(statement);
     }
 
-    let lines = Lines::new(source);
     let Collector { found, exported, .. } = collector;
     Ok(found
         .into_iter()
-        .filter(|f| scope == Scope::All || f.exported || f.binding.is_some_and(|b| exported.contains(b)))
+        .filter(|f| rules.counts(f, &exported))
         .map(|f| {
             let (line, column) = lines.position(f.at as usize);
-            Item { name: f.name, kind: f.kind, line, column, documented: f.documented }
+            let documented = rules.documents(&f);
+            Item { name: f.name, kind: f.kind, line, column, documented, ignore: ignores.covering(line) }
         })
         .collect())
 }
 
-struct Found<'a> {
+struct Found<'s> {
     name: String,
     kind: Kind,
     at: u32,
-    documented: bool,
+    /// Its JSDoc block, if it has one with something in it.
+    doc: Option<JSDoc<'s>>,
     /// The module-level name that exports it (a member's class), when `export { name }` can.
-    binding: Option<&'a str>,
-    exported: bool,
+    binding: Option<&'s str>,
+    /// How it's exported, where it's declared.
+    via: Option<Via>,
+    /// Whether it's a TypeScript `protected` member.
+    protected: bool,
+    /// Whether it's a TypeScript `override` member.
+    overrides: bool,
 }
 
 struct Collector<'s> {
     source: &'s str,
-    docs: FxHashSet<u32>,
+    docs: FxHashMap<u32, JSDoc<'s>>,
     found: Vec<Found<'s>>,
-    /// Names exported apart from their declarations: `export { a }`, `export default a`,
-    /// `export = a`, `exports.a = a`.
-    exported: FxHashSet<&'s str>,
+    /// Names exported apart from their declarations, and how: `export { a }`, `export default a`,
+    /// `export = a`, `exports.a = a`, `window.a = a`.
+    exported: FxHashSet<(&'s str, Via)>,
     /// The name of the function the last statement declared without a body. An overload's
     /// implementation follows its signatures, and only the signatures are documented.
     overload: Option<&'s str>,
+}
+
+/// How a module exports something.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum Via {
+    /// `export`.
+    Esm,
+    /// `exports.a =`, `module.exports =` or TypeScript's `export =`.
+    Cjs,
+    /// `window.a =` or `globalThis.a =`.
+    Global,
 }
 
 /// The owner of a declaration being collected: where its docs go and how it's exported.
@@ -200,40 +256,44 @@ struct Site<'s> {
     /// The start of the statement, where JSDoc attaches when the declaration is exported.
     at: u32,
     binding: Option<&'s str>,
-    exported: bool,
+    via: Option<Via>,
 }
 
 impl<'s> Collector<'s> {
-    fn push(&mut self, site: Site<'s>, start: u32, name: String, kind: Kind) {
-        let documented = self.docs.contains(&site.at) || self.docs.contains(&start);
+    fn push(&mut self, site: Site<'s>, start: u32, name: String, kind: Kind) -> &mut Found<'s> {
+        let doc = self.docs.get(&site.at).or_else(|| self.docs.get(&start)).cloned();
         // A decorator before `export` starts the declaration, and is where its doc goes.
         let at = site.at.min(start);
-        self.found.push(Found { name, kind, at, documented, binding: site.binding, exported: site.exported });
+        let via = site.via;
+        self.found.push(Found { name, kind, at, doc, binding: site.binding, via, protected: false, overrides: false });
+        self.found.last_mut().expect("just pushed")
     }
 
     fn statement(&mut self, statement: &Statement<'s>) {
         let overload = self.overload.take();
         let at = statement.span().start;
         match statement {
-            Statement::ExportDeclaration(e) => self.declaration(&e.declaration, at, true, overload),
+            Statement::ExportDeclaration(e) => self.declaration(&e.declaration, at, Some(Via::Esm), overload),
             Statement::ExportNamedDeclaration(e) => {
-                self.exported.extend(e.specifiers.iter().map(|s| s.local.name().as_str()));
+                self.exported.extend(e.specifiers.iter().map(|s| (s.local.name().as_str(), Via::Esm)));
             }
             Statement::ExportDefaultDeclaration(e) => {
-                let site = Site { at, binding: None, exported: true };
+                let site = Site { at, binding: None, via: Some(Via::Esm) };
                 match &e.declaration {
                     ExportDefaultDeclarationKind::FunctionDeclaration(f) => self.function(f, site, overload),
                     ExportDefaultDeclarationKind::ClassDeclaration(c) => self.class(c, site),
                     ExportDefaultDeclarationKind::TSInterfaceDeclaration(i) => self.interface(i, site),
                     ExportDefaultDeclarationKind::Identifier(id) => {
-                        self.exported.insert(id.name.as_str());
+                        self.exported.insert((id.name.as_str(), Via::Esm));
                     }
-                    expression => self.push(site, expression.span().start, "default".into(), Kind::Default),
+                    expression => {
+                        self.push(site, expression.span().start, "default".into(), Kind::Default);
+                    }
                 }
             }
             Statement::TSExportAssignment(e) => {
                 if let Expression::Identifier(id) = &e.expression {
-                    self.exported.insert(id.name.as_str());
+                    self.exported.insert((id.name.as_str(), Via::Cjs));
                 }
             }
             Statement::ExpressionStatement(e) => {
@@ -243,15 +303,15 @@ impl<'s> Collector<'s> {
             }
             _ => {
                 if let Some(declaration) = statement.as_declaration() {
-                    self.declaration(declaration, at, false, overload);
+                    self.declaration(declaration, at, None, overload);
                 }
             }
         }
     }
 
-    fn declaration(&mut self, declaration: &Declaration<'s>, at: u32, exported: bool, overload: Option<&'s str>) {
+    fn declaration(&mut self, declaration: &Declaration<'s>, at: u32, via: Option<Via>, overload: Option<&'s str>) {
         let site =
-            |binding: &oxc_ast::ast::BindingIdentifier<'s>| Site { at, binding: Some(binding.name.as_str()), exported };
+            |binding: &oxc_ast::ast::BindingIdentifier<'s>| Site { at, binding: Some(binding.name.as_str()), via };
         match declaration {
             Declaration::VariableDeclaration(v) => {
                 // Destructured bindings (`const { a } = b`) have nowhere for a doc of their own, and
@@ -266,18 +326,18 @@ impl<'s> Collector<'s> {
                 }
             }
             Declaration::FunctionDeclaration(f) => {
-                let site = Site { at, binding: f.id.as_ref().map(|id| id.name.as_str()), exported };
+                let site = Site { at, binding: f.id.as_ref().map(|id| id.name.as_str()), via };
                 self.function(f, site, overload);
             }
             Declaration::ClassDeclaration(c) => {
-                self.class(c, Site { at, binding: c.id.as_ref().map(|id| id.name.as_str()), exported });
+                self.class(c, Site { at, binding: c.id.as_ref().map(|id| id.name.as_str()), via });
             }
             Declaration::TSInterfaceDeclaration(i) => self.interface(i, site(&i.id)),
             Declaration::TSTypeAliasDeclaration(t) => {
                 self.push(site(&t.id), t.span.start, t.id.name.to_string(), Kind::Type);
             }
             Declaration::TSEnumDeclaration(e) => {
-                self.push(site(&e.id), e.span.start, e.id.name.to_string(), Kind::Enum)
+                self.push(site(&e.id), e.span.start, e.id.name.to_string(), Kind::Enum);
             }
             Declaration::TSNamespaceDeclaration(n) => {
                 self.push(site(&n.id), n.span.start, n.id.name.to_string(), Kind::Namespace);
@@ -290,23 +350,28 @@ impl<'s> Collector<'s> {
         }
     }
 
-    /// CommonJS exports: `module.exports = …`, `module.exports.name = …` and `exports.name = …`.
-    /// An identifier exports its declaration, which carries the doc; anything else is an item
-    /// here. `module.exports = { … }` exports each property.
+    /// CommonJS exports: `module.exports = …`, `module.exports.name = …` and `exports.name = …`,
+    /// and globals: `window.name = …` and `globalThis.name = …`. An identifier exports its
+    /// declaration, which carries the doc; anything else is an item here. `module.exports = { … }`
+    /// exports each property.
     fn commonjs(&mut self, assignment: &AssignmentExpression<'s>, at: u32) {
         let Some(target) = assignment.left.as_member_expression() else { return };
-        let site = Site { at, binding: None, exported: true };
         let value = &assignment.right;
         let is_module_exports = target.is_specific_member_access("module", "exports");
+        let via = if is_module_exports || is_commonjs_export(target) {
+            Via::Cjs
+        } else if target.object().is_specific_id("window") || target.object().is_specific_id("globalThis") {
+            Via::Global
+        } else {
+            return;
+        };
+        let site = Site { at, binding: None, via: Some(via) };
         if let Expression::Identifier(id) = value {
-            if is_module_exports || is_commonjs_export(target) {
-                self.exported.insert(id.name.as_str());
-            }
+            self.exported.insert((id.name.as_str(), via));
             return;
         }
         if !is_module_exports {
-            let name = target.static_property_name().and_then(|name| name.as_str());
-            if let Some(name) = name.filter(|_| is_commonjs_export(target)) {
+            if let Some(name) = target.static_property_name().and_then(|name| name.as_str()) {
                 self.push(site, at, name.to_owned(), value_kind(value));
             }
             return;
@@ -327,7 +392,7 @@ impl<'s> Collector<'s> {
         for property in &object.properties {
             let ObjectPropertyKind::ObjectProperty(p) = property else { continue };
             if let Expression::Identifier(id) = &p.value {
-                self.exported.insert(id.name.as_str());
+                self.exported.insert((id.name.as_str(), Via::Cjs));
                 continue;
             }
             let start = p.span.start;
@@ -365,7 +430,7 @@ impl<'s> Collector<'s> {
         let mut overload = None;
         for element in &class.body.body {
             let previous = overload.take();
-            let (start, key, kind) = match element {
+            let (start, key, kind, accessibility, overrides) = match element {
                 ClassElement::MethodDefinition(m) => {
                     if m.kind.is_constructor() || is_private(&m.key, m.accessibility) {
                         continue;
@@ -380,17 +445,19 @@ impl<'s> Collector<'s> {
                         continue;
                     }
                     let kind = if m.kind == MethodDefinitionKind::Method { Kind::Method } else { Kind::Accessor };
-                    (m.span.start, key, kind)
+                    (m.span.start, key, kind, m.accessibility, m.r#override)
                 }
                 ClassElement::PropertyDefinition(p) if !is_private(&p.key, p.accessibility) => {
-                    (p.span.start, self.key(&p.key), Kind::Property)
+                    (p.span.start, self.key(&p.key), Kind::Property, p.accessibility, p.r#override)
                 }
                 ClassElement::AccessorProperty(a) if !is_private(&a.key, a.accessibility) => {
-                    (a.span.start, self.key(&a.key), Kind::Accessor)
+                    (a.span.start, self.key(&a.key), Kind::Accessor, a.accessibility, a.r#override)
                 }
                 _ => continue,
             };
-            self.push(Site { at: start, ..site }, start, format!("{class_name}.{key}"), kind);
+            let found = self.push(Site { at: start, ..site }, start, format!("{class_name}.{key}"), kind);
+            found.protected = accessibility == Some(TSAccessibility::Protected);
+            found.overrides = overrides;
         }
     }
 

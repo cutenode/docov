@@ -3,7 +3,7 @@
 use std::{env, io, path::PathBuf, process::ExitCode, time::SystemTime};
 
 use clap::{CommandFactory, FromArgMatches, Parser};
-use docov::{Config, Scope, Settings, Threshold, feature, report, scan_file, walk};
+use docov::{Config, Settings, Threshold, feature, report, scan_file, walk};
 use rayon::{iter::Either, prelude::*};
 
 /// Checks how much of a JavaScript or TypeScript project's API has JSDoc.
@@ -54,17 +54,22 @@ fn run(cli: Cli, matches: &clap::ArgMatches) -> Result<bool, Vec<String>> {
     // the first (`.././src` is `../src`), which would keep the excludes from matching.
     let config_paths = config.paths.iter().map(|p| config.dir.join(p).components().collect());
     let paths = if cli.paths.is_empty() { config_paths.collect() } else { cli.paths };
-    let scope = *settings.get::<Scope>();
+    let rules = settings.rules();
 
     let files = walk::files(&paths, &config.dir, &config.exclude).map_err(|e| vec![e.to_string()])?;
-    let (reports, errors): (Vec<_>, Vec<_>) = files.par_iter().partition_map(|path| match scan_file(path, scope) {
+    let (reports, errors): (Vec<_>, Vec<_>) = files.par_iter().partition_map(|path| match scan_file(path, &rules) {
         Ok(report) => Either::Left(report),
         Err(e) => Either::Right(e.to_string()),
     });
     if !errors.is_empty() {
         return Err(errors);
     }
-    let failures = settings.gates(&reports);
+    if let Some(edited) = settings.edit(&reports) {
+        eprintln!("docov: {}", edited.map_err(|e| vec![e])?);
+        return Ok(true);
+    }
+    // A gate's message can span lines, each a failure of its own.
+    let failures: Vec<String> = settings.gates(&reports).iter().flat_map(|f| f.lines()).map(String::from).collect();
     let threshold = settings.get::<Threshold>().0;
     let (now, text) = (SystemTime::now(), cli.report.text);
     let context = report::Context { files: &reports, failures: &failures, now, threshold, text };

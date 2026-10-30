@@ -16,7 +16,7 @@ fn render(context: &Context) -> String {
     for failure in context.failures {
         out += &format!("\n**Failed:** {}\n", plain(failure));
     }
-    let files: Vec<_> = context.files.iter().filter(|f| !f.items.is_empty()).collect();
+    let files: Vec<_> = context.files.iter().filter(|f| f.counted().next().is_some()).collect();
     if !files.is_empty() {
         out += "\n| Documented | Items | File |\n| ---: | ---: | :--- |\n";
     }
@@ -26,12 +26,12 @@ fn render(context: &Context) -> String {
         let path = code(&slash(&file.path)).replace('|', "\\|");
         out += &format!("| {:.1}% | {}/{} | {path} |\n", totals.percent(), totals.documented, totals.total);
     }
-    for file in files.iter().filter(|f| f.items.iter().any(|i| !i.documented)) {
+    for file in files.iter().filter(|f| f.counted().any(|i| !i.documented)) {
         let totals = file.totals();
         // Markdown isn't read in an HTML block, which runs to the blank line.
         let path = escape(&slash(&file.path));
         out += &format!("\n<details>\n<summary><code>{path}</code>: {} undocumented</summary>\n\n", totals.total - totals.documented);
-        for item in file.items.iter().filter(|i| !i.documented) {
+        for item in file.counted().filter(|i| !i.documented) {
             out += &format!("- {}:{} {} {}\n", item.line, item.column, item.kind.as_str(), code(&item.name));
         }
         out += "\n</details>\n";
