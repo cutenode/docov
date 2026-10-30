@@ -152,6 +152,31 @@ pre-commit:
       run: npx docov --quiet
 ```
 
+### Codecov
+
+Upload docov's lcov under its own flag, and carry the flag forward so uploads without it keep its last numbers:
+
+```yaml
+- run: npx docov --format lcov=docov.lcov
+- uses: codecov/codecov-action@v5
+  with:
+    files: docov.lcov
+    flags: docs # -F docs with Codecov's CLI
+```
+
+```yaml
+# codecov.yml
+flag_management:
+  individual_flags:
+    - name: docs
+      carryforward: true
+      statuses:
+        - type: project
+          target: 80%
+```
+
+Codecov [merges every upload](https://docs.codecov.com/docs/merging-reports) for a commit, so if you upload test coverage too, the repository's headline number mixes the two on the same lines: an undocumented function your tests cover counts as covered. The `docs` flag's own status and numbers are the doc coverage alone.
+
 ## Working on it
 
 The toolchain is pinned in `rust-toolchain.toml`, and Node in `.node-version`. The checks need [cargo-nextest](https://nexte.st) and [cargo-llvm-cov](https://github.com/taiki-e/cargo-llvm-cov).
