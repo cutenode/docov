@@ -39,6 +39,21 @@
       },
       "type": "object"
     },
+    "Inherit": {
+      "description": "What documents an item by inheriting its docs.",
+      "oneOf": [
+        {
+          "const": "tag",
+          "description": "An `@inheritdoc` tag.",
+          "type": "string"
+        },
+        {
+          "const": "override",
+          "description": "An `@inheritdoc` tag, or TypeScript's `override` on a class member.",
+          "type": "string"
+        }
+      ]
+    },
     "Kind": {
       "description": "What kind of declaration an item is.",
       "oneOf": [
@@ -159,6 +174,11 @@
     "ignore": {
       "$ref": "#/$defs/Ignore",
       "description": "What to leave out."
+    },
+    "inherit": {
+      "$ref": "#/$defs/Inherit",
+      "default": "tag",
+      "description": "What documents an item by inheriting its docs."
     },
     "kinds": {
       "default": null,

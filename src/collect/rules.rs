@@ -4,7 +4,10 @@ use regex::Regex;
 use rustc_hash::FxHashSet;
 
 use super::{Found, doc};
-use crate::{Kind, Scope, feature::access::Access};
+use crate::{
+    Kind, Scope,
+    feature::{access::Access, inherit::Inherit},
+};
 
 /// Which items count, and when one is documented. The default is docov's out of the box.
 #[derive(Clone, Debug, Default)]
@@ -21,6 +24,8 @@ pub struct Rules {
     pub ignore_names: Vec<Regex>,
     /// The access levels that count, or `None` to look at no access tags.
     pub access: Option<Vec<Access>>,
+    /// What documents an item by inheriting its docs.
+    pub inherit: Inherit,
 }
 
 impl From<Scope> for Rules {
@@ -48,6 +53,7 @@ impl Rules {
 
     /// Whether `found` is documented.
     pub(super) fn documents(&self, found: &Found) -> bool {
-        found.doc.as_ref().is_some_and(|doc| !self.require_description || doc::describes(doc, found.kind))
+        let inherits = self.inherit == Inherit::Override && found.overrides;
+        inherits || found.doc.as_ref().is_some_and(|doc| !self.require_description || doc::describes(doc, found.kind))
     }
 }

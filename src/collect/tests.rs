@@ -1,7 +1,10 @@
 use oxc_span::SourceType;
 
 use super::*;
-use crate::{Scope, feature::access::Access};
+use crate::{
+    Scope,
+    feature::{access::Access, inherit::Inherit},
+};
 
 /// `(name, kind, documented)` for each item `source` has, as TypeScript.
 fn items(source: &str, scope: Scope) -> Vec<(String, Kind, bool)> {
@@ -415,4 +418,24 @@ export class C {
     assert_eq!(names(&[Access::Public]), ["C", "C.f"]);
     assert_eq!(names(&[Access::Protected, Access::Package]), ["b", "C.d", "C.e"]);
     assert_eq!(names(&[Access::Private]), ["a"]);
+}
+
+#[test]
+fn override_members_inherit_their_docs_when_asked() {
+    let source = "
+export class A extends B {
+    override m() {}
+    override p = 1;
+    override accessor q = 1;
+    n() {}
+    /** @inheritDoc */
+    o() {}
+}
+";
+    let documented = |inherit| {
+        let rules = Rules { inherit, require_description: true, ..Rules::default() };
+        scan(source, SourceType::ts(), &rules).unwrap().into_iter().map(|i| i.documented).collect::<Vec<_>>()
+    };
+    assert_eq!(documented(Inherit::Tag), [false, false, false, false, false, true]);
+    assert_eq!(documented(Inherit::Override), [false, true, true, true, false, true]);
 }

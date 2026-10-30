@@ -304,3 +304,13 @@ fn access_levels_come_from_the_flag_or_the_config() {
     fs::write(dir.path().join("docov.json"), r#"{ "access": ["public"] }"#).unwrap();
     assert_eq!(total(&[]), "   0.0%  0/1  total");
 }
+
+#[test]
+fn override_members_count_as_documented_with_inherit_override() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("a.ts"), "/** A. */\nexport class A extends B {\n    override m() {}\n}\n").unwrap();
+    let total = |args: &[&str]| docov(dir.path(), args).1.lines().last().unwrap().to_owned();
+    assert_eq!(total(&[]), "  50.0%  1/2  total");
+    fs::write(dir.path().join("docov.json"), r#"{ "inherit": "override" }"#).unwrap();
+    assert_eq!(total(&[]), " 100.0%  2/2  total");
+}
