@@ -4,12 +4,13 @@
 use std::path::Path;
 
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     feature::{Entry, Feature, threshold::Thresholds},
     glob::Globs,
     root::Root,
+    walk::Exclude,
 };
 
 pub(crate) fn entry() -> Entry {
@@ -21,14 +22,16 @@ pub(crate) fn entry() -> Entry {
 pub struct Overrides(pub Vec<Override>);
 
 /// Settings for the files some globs match, in place of the top-level ones.
-#[derive(Clone, Debug, PartialEq, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Override {
     /// Gitignore-style globs of the files it's for, relative to this file's folder.
     pub files: Globs,
     /// In place of the top-level `exclude`, for these files.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub exclude: Option<Globs>,
     /// In place of the top-level `threshold`, for these files.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub threshold: Option<Thresholds>,
 }
 
@@ -40,12 +43,18 @@ impl Overrides {
     }
 
     /// Whether the walk leaves out `path`, from the current folder: what `exclude` (the top-level
-    /// one) does, or the last override for it with its own.
-    pub fn excluder(self, exclude: Globs, root: Root) -> impl Fn(&Path, bool) -> bool + Send + Sync + 'static {
+    /// one) does, or the last override for it with its own. `root` is the config's, and each
+    /// exclude's globs match only in its own folder.
+    pub fn excluder(self, exclude: Vec<Exclude>, root: &Root) -> impl Fn(&Path, bool) -> bool + Send + Sync + 'static {
+        let own = root.of("overrides");
+        let exclude: Vec<_> = exclude.into_iter().map(|e| (Root::new(&e.root), e.globs)).collect();
         move |path, is_dir| {
-            let path = root.relative(path);
-            let exclude = self.last(&path, is_dir, |o| o.exclude.as_ref()).map_or(&exclude, |(_, e)| e);
-            exclude.matches(&path, is_dir)
+            let matches = |root: &Root, globs: &Globs| root.inside(path).is_some_and(|p| globs.matches(&p, is_dir));
+            let overridden = own.inside(path).and_then(|p| self.last(&p, is_dir, |o| o.exclude.as_ref()));
+            match overridden {
+                Some((_, globs)) => matches(&own, globs),
+                None => exclude.iter().any(|(root, globs)| matches(root, globs)),
+            }
         }
     }
 }
@@ -69,5 +78,9 @@ impl Feature for Overrides {
 
     fn new(_: Flags, keys: Keys) -> Self {
         Self(keys.overrides)
+    }
+
+    fn describe(&self) -> Option<serde_json::Value> {
+        Some(serde_json::to_value(&self.0).expect("overrides serialize"))
     }
 }

@@ -7,13 +7,11 @@ use jsonc_parser::{
     ParseOptions,
     cst::{CstInputValue, CstRootNode},
 };
-use schemars::JsonSchema;
-use serde::Deserialize;
 
 use crate::{
     Totals,
     config::FILE_NAMES,
-    feature::{Entry, Feature},
+    feature::{Entry, Feature, NoKeys},
 };
 
 pub(crate) fn entry() -> Entry {
@@ -88,15 +86,12 @@ pub struct Flags {
     update_threshold: bool,
 }
 
-/// No keys: this is for one run.
-#[derive(Debug, Default, PartialEq, Deserialize, JsonSchema)]
-pub struct Keys {}
 
 impl Feature for UpdateThreshold {
     type Flags = Flags;
-    type Keys = Keys;
+    type Keys = NoKeys;
 
-    fn new(flags: Flags, _: Keys) -> Self {
+    fn new(flags: Flags, _: NoKeys) -> Self {
         Self(flags.update_threshold)
     }
 }

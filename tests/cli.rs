@@ -6,11 +6,14 @@ fn docov(dir: &Path, args: &[&str]) -> (i32, String, String) {
     docov_in(dir, args, &[])
 }
 
-/// docov with these environment variables, and without GITHUB_ACTIONS unless they set it: CI
-/// would otherwise add annotations to the output.
+/// docov with these environment variables, and without the ones it reads to change its output
+/// (GitHub Actions' annotations and color) unless they set them: CI would otherwise change it.
 fn docov_in(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> (i32, String, String) {
     let mut command = Command::new(env!("CARGO_BIN_EXE_docov"));
-    command.env_remove("GITHUB_ACTIONS").envs(env.iter().copied());
+    for var in ["GITHUB_ACTIONS", "NO_COLOR", "CLICOLOR", "CLICOLOR_FORCE"] {
+        command.env_remove(var);
+    }
+    command.envs(env.iter().copied());
     let out = command.args(args).current_dir(dir).output().unwrap();
     let text = |b: Vec<u8>| String::from_utf8(b).unwrap();
     (out.status.code().unwrap(), text(out.stdout), text(out.stderr))
@@ -729,4 +732,59 @@ fn each_path_threshold_failure_is_an_annotation_and_ignored_items_stay_out() {
     )
     .unwrap();
     assert_eq!(docov(dir.path(), &["--format", "github"]), (0, String::new(), String::new()));
+}
+
+#[test]
+fn a_config_extends_others_relative_to_itself() {
+    let dir = project();
+    fs::create_dir(dir.path().join("pkg")).unwrap();
+    // `paths` and `exclude` stay relative to the base's folder, and the extending file's keys win.
+    let base = r#"{ "paths": ["src"], "exclude": ["*.js"], "threshold": 100, "scope": "all" }"#;
+    fs::write(dir.path().join("base.json"), base).unwrap();
+    fs::write(dir.path().join("pkg/docov.json"), r#"{ "extends": "../base.json", "scope": "exports" }"#).unwrap();
+    let (code, out, _) = docov(&dir.path().join("pkg"), &["--format", "json"]);
+    let json: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!((code, &json["documented"], &json["total"]), (1, &1.into(), &2.into()));
+
+    fs::write(dir.path().join("base.json"), r#"{ "extends": ["pkg/docov.json"] }"#).unwrap();
+    let (code, _, err) = docov(&dir.path().join("pkg"), &[]);
+    // docov puts the OS's separator between the parts of the files it extends.
+    let up = Path::new("..");
+    let chain = [Path::new("docov.json"), &up.join("base.json"), &up.join("pkg").join("docov.json")]
+        .map(|p| p.display().to_string());
+    assert_eq!((code, err), (2, format!("docov: config files extend each other in a cycle: {}\n", chain.join(" -> "))));
+}
+
+#[test]
+fn print_config_and_list_files_show_what_a_scan_would_use() {
+    let dir = project();
+    fs::write(dir.path().join("docov.json"), r#"{ "paths": ["src"], "threshold": 80 }"#).unwrap();
+    let (code, out, _) = docov(dir.path(), &["--print-config", "--scope", "all"]);
+    let json: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(code, 0);
+    assert_eq!(json["files"], serde_json::json!(["docov.json"]));
+    assert_eq!((&json["features"]["scope"], &json["features"]["threshold"]), (&"all".into(), &80.0.into()));
+
+    let (code, out, _) = docov(dir.path(), &["--list-files"]);
+    let files = [Path::new("src").join("a.ts"), Path::new("src").join("c.js")].map(|p| p.display().to_string() + "\n");
+    assert_eq!((code, out), (0, files.concat()));
+}
+
+#[test]
+fn init_writes_a_config_with_the_current_coverage() {
+    let dir = project();
+    let (code, _, err) = docov(dir.path(), &["init"]);
+    assert_eq!((code, err.as_str()), (0, "docov: wrote docov.json, with a 66% threshold\n"));
+    let json: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(dir.path().join("docov.json")).unwrap()).unwrap();
+    let schema =
+        format!("https://raw.githubusercontent.com/cutenode/docov/v{}/docov.schema.json", env!("CARGO_PKG_VERSION"));
+    assert_eq!(json, serde_json::json!({ "$schema": schema, "threshold": 66 }));
+    assert_eq!(docov(dir.path(), &["init"]), (2, String::new(), "docov: docov.json is already there\n".into()));
+    // Paths still scan: a folder named init as `./init`, and one named help as it is.
+    fs::create_dir(dir.path().join("init")).unwrap();
+    fs::create_dir(dir.path().join("help")).unwrap();
+    for path in ["./init", "help"] {
+        assert_eq!(docov(dir.path(), &[path]), (0, " 100.0%  0/0  total\n".into(), String::new()), "{path}");
+    }
 }

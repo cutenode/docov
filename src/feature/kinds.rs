@@ -48,4 +48,8 @@ impl Feature for Kinds {
     fn rules(&self, rules: &mut Rules) {
         rules.kinds.clone_from(&self.only);
     }
+
+    fn describe(&self) -> Option<serde_json::Value> {
+        Some(serde_json::json!(self.only))
+    }
 }

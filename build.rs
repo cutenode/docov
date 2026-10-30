@@ -8,16 +8,18 @@ fn main() {
         "feature",
         "features.rs",
         "pub mod",
-        "/// Makes each feature's entry",
-        "const ENTRIES: &[fn() -> Entry]",
-        "entry",
+        "/// Each feature's name and a maker of its entry",
+        "const ENTRIES: &[Maker]",
+        |name| format!("({name:?}, {name}::entry)"),
     );
-    register("report", "formats.rs", "mod", "/// Every output format", "pub const FORMATS: &[Format]", "FORMAT");
+    register("report", "formats.rs", "mod", "/// Every output format", "pub const FORMATS: &[Format]", |name| {
+        format!("{name}::FORMAT")
+    });
 }
 
-/// Writes `out` in OUT_DIR: a `module` for each Rust file in src/`folder`/, and `list`, each
-/// module's `item` in file name order.
-fn register(folder: &str, out: &str, module: &str, doc: &str, list: &str, item: &str) {
+/// Writes `out` in OUT_DIR: a `module` for each Rust file in src/`folder`/, and `list`, of the
+/// `item` for each module's name, in file name order.
+fn register(folder: &str, out: &str, module: &str, doc: &str, list: &str, item: fn(&str) -> String) {
     println!("cargo::rerun-if-changed=src/{folder}");
     let dir = Path::new(&env::var("CARGO_MANIFEST_DIR").expect("cargo sets it")).join("src").join(folder);
     let mut names: Vec<String> = fs::read_dir(&dir)
@@ -37,7 +39,7 @@ fn register(folder: &str, out: &str, module: &str, doc: &str, list: &str, item: 
     }
     text += &format!("\n{doc}, in file name order.\n{list} = &[\n");
     for name in &names {
-        text += &format!("    {name}::{item},\n");
+        text += &format!("    {},\n", item(name));
     }
     text += "];\n";
     fs::write(Path::new(&env::var("OUT_DIR").expect("cargo sets it")).join(out), text).expect("OUT_DIR is writable");

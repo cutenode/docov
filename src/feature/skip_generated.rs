@@ -40,4 +40,8 @@ impl Feature for SkipGenerated {
     fn rules(&self, rules: &mut Rules) {
         rules.skip_generated = self.0;
     }
+
+    fn describe(&self) -> Option<serde_json::Value> {
+        Some(self.0.into())
+    }
 }

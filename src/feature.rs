@@ -5,14 +5,19 @@ use std::{any::Any, fmt::Debug, sync::LazyLock};
 
 use clap::{ArgMatches, Args, Command, FromArgMatches};
 use schemars::{JsonSchema, Schema};
-use serde::de::DeserializeOwned;
+use serde::{Deserialize, de::DeserializeOwned};
+use serde_json::{Map, Value};
 
 use crate::{FileReport, Rules, root::Root};
 
 include!(concat!(env!("OUT_DIR"), "/features.rs"));
 
+/// A feature's name, its file's, and what makes its entry.
+type Maker = (&'static str, fn() -> Entry);
+
 /// Every feature, registered.
-static FEATURES: LazyLock<Vec<Entry>> = LazyLock::new(|| ENTRIES.iter().map(|entry| entry()).collect());
+static FEATURES: LazyLock<Vec<Entry>> =
+    LazyLock::new(|| ENTRIES.iter().map(|&(name, entry)| Entry { name, ..entry() }).collect());
 
 /// A setting, or a group of them, read from flags and docov.json. Register one by giving its file
 /// a `pub(crate) fn entry() -> Entry { Entry::of::<YourFeature>() }`.
@@ -39,20 +44,32 @@ pub trait Feature: Sized + Send + Sync + 'static {
     fn edit(&self, _reports: &[FileReport]) -> Option<Result<String, String>> {
         None
     }
+
+    /// The setting as JSON, for `--print-config`, if it has one worth printing.
+    fn describe(&self) -> Option<Value> {
+        None
+    }
 }
 
 /// What a scan found, for the gates.
 pub struct Run<'a> {
     /// Each file's items.
     pub reports: &'a [FileReport],
-    /// The config's folder, which docov.json's globs are relative to.
+    /// The config's folder, which docov.json's globs are relative to, and the folders of the
+    /// files it extends, which their own keys' are.
     pub root: &'a Root,
     /// Every feature's setting, for a gate that depends on another feature's.
     pub settings: &'a Settings,
 }
 
+/// The keys of a feature that only has flags.
+#[derive(Debug, Default, PartialEq, Deserialize, JsonSchema)]
+pub struct NoKeys {}
+
 /// A feature, registered.
 pub struct Entry {
+    /// Its file's name.
+    name: &'static str,
     args: fn(Command) -> Command,
     schema: fn() -> Schema,
     keys: fn(&str) -> serde_json::Result<Box<dyn AnyKeys>>,
@@ -62,7 +79,7 @@ pub struct Entry {
 impl Entry {
     /// The entry for `F`.
     pub fn of<F: Feature>() -> Self {
-        Self { args: F::Flags::augment_args, schema: schema::<F>, keys: keys::<F>, load: load::<F> }
+        Self { name: "", args: F::Flags::augment_args, schema: schema::<F>, keys: keys::<F>, load: load::<F> }
     }
 }
 
@@ -144,6 +161,7 @@ trait Loaded: Send + Sync {
     fn rules(&self, rules: &mut Rules);
     fn gate(&self, run: &Run) -> Vec<String>;
     fn edit(&self, reports: &[FileReport]) -> Option<Result<String, String>>;
+    fn describe(&self) -> Option<Value>;
 }
 
 impl<F: Feature> Loaded for F {
@@ -158,6 +176,9 @@ impl<F: Feature> Loaded for F {
     }
     fn edit(&self, reports: &[FileReport]) -> Option<Result<String, String>> {
         Feature::edit(self, reports)
+    }
+    fn describe(&self) -> Option<Value> {
+        Feature::describe(self)
     }
 }
 
@@ -190,9 +211,14 @@ impl Settings {
     }
 
     /// Why the scan of `reports` fails, from each feature that fails it. `root` is the config's
-    /// folder.
+    /// folder, with those of the files it extends.
     pub fn gates(&self, reports: &[FileReport], root: &Root) -> Vec<String> {
         let run = Run { reports, root, settings: self };
         self.0.iter().flat_map(|f| f.gate(&run)).collect()
+    }
+
+    /// Each feature's setting as JSON, by its name, leaving out those without one.
+    pub fn describe(&self) -> Map<String, Value> {
+        FEATURES.iter().zip(&self.0).filter_map(|(entry, f)| Some((entry.name.to_owned(), f.describe()?))).collect()
     }
 }

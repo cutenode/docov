@@ -4,12 +4,12 @@ use std::{borrow::Cow, fmt, path::Path};
 
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use schemars::{JsonSchema, Schema, SchemaGenerator};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// Gitignore-style globs, matched against paths relative to the config's folder. A `!` glob takes
 /// back what one before it matched, as in .gitignore.
-#[derive(Clone, Debug, Deserialize)]
-#[serde(try_from = "Vec<String>")]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(try_from = "Vec<String>", into = "Vec<String>")]
 pub struct Globs {
     globs: Vec<String>,
     matcher: Gitignore,
@@ -43,6 +43,19 @@ impl TryFrom<Vec<String>> for Globs {
     type Error = ignore::Error;
     fn try_from(globs: Vec<String>) -> Result<Self, ignore::Error> {
         Self::new(globs)
+    }
+}
+
+impl From<Globs> for Vec<String> {
+    fn from(globs: Globs) -> Self {
+        globs.globs
+    }
+}
+
+/// No globs, which match nothing.
+impl Default for Globs {
+    fn default() -> Self {
+        Self::new(Vec::new()).expect("no globs build")
     }
 }
 

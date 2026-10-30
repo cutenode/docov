@@ -1,12 +1,10 @@
 //! `--add-ignore`: writes a `// docov-ignore-next-line` above every undocumented item, for adopting
 //! docov in a project that's far from documented.
 
-use schemars::JsonSchema;
-use serde::Deserialize;
 
 use crate::{
     FileReport, rewrite,
-    feature::{Entry, Feature},
+    feature::{Entry, Feature, NoKeys},
 };
 
 pub(crate) fn entry() -> Entry {
@@ -26,15 +24,12 @@ pub struct Flags {
     add_ignore: Option<String>,
 }
 
-/// It has no key: it's for one run.
-#[derive(Debug, Default, PartialEq, Deserialize, JsonSchema)]
-pub struct Keys {}
 
 impl Feature for AddIgnore {
     type Flags = Flags;
-    type Keys = Keys;
+    type Keys = NoKeys;
 
-    fn new(flags: Flags, _keys: Keys) -> Self {
+    fn new(flags: Flags, _: NoKeys) -> Self {
         Self(flags.add_ignore.map(|reason| match reason.trim() {
             "" => "// docov-ignore-next-line".to_owned(),
             reason => format!("// docov-ignore-next-line: {reason}"),

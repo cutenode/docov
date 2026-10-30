@@ -3,12 +3,10 @@
 use std::{ops::RangeInclusive, path::PathBuf};
 
 use rustc_hash::FxHashMap;
-use schemars::JsonSchema;
-use serde::Deserialize;
 
 use crate::{
     FileReport, Totals, config,
-    feature::{Entry, Feature, threshold::Limit},
+    feature::{Entry, Feature, NoKeys, threshold::Limit},
     git,
     root::Root,
 };
@@ -68,15 +66,16 @@ pub struct Flags {
     diff_threshold: Option<f64>,
 }
 
-/// No keys: the change is up to each run.
-#[derive(Debug, Default, PartialEq, Deserialize, JsonSchema)]
-pub struct Keys {}
 
 impl Feature for Diff {
     type Flags = Flags;
-    type Keys = Keys;
+    type Keys = NoKeys;
 
-    fn new(flags: Flags, _: Keys) -> Self {
+    fn new(flags: Flags, _: NoKeys) -> Self {
         Self { base: flags.diff_base, threshold: flags.diff_threshold }
+    }
+
+    fn describe(&self) -> Option<serde_json::Value> {
+        Some(serde_json::json!({ "base": self.base, "threshold": self.threshold }))
     }
 }

@@ -12,7 +12,7 @@ use std::{
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 
-use crate::{FileReport, Item, Kind};
+use crate::{FileReport, Item, Kind, feature::color::Styled, packages::Package};
 
 include!(concat!(env!("OUT_DIR"), "/formats.rs"));
 
@@ -60,12 +60,16 @@ pub struct Context<'a> {
     pub failures: &'a [String],
     /// When the scan ran, for formats that say.
     pub now: SystemTime,
-    /// The global threshold, when it is a percentage, which badges are colored by.
+    /// The global threshold, when it is a percentage, which badges and `--color` color by.
     pub threshold: Option<f64>,
     /// How much `text` shows.
     pub text: Text,
     /// The earlier report `--compare` names, which `markdown` shows the change from.
     pub base: Option<&'a Base>,
+    /// Each workspace package's totals, with `--by-package`, which `text` and `json` add.
+    pub packages: Option<&'a [Package]>,
+    /// Whether `text` is colored on stdout, which drops the colors where they don't belong.
+    pub color: bool,
 }
 
 /// How much `text` shows.
@@ -251,7 +255,13 @@ pub fn write(outputs: &[Output], context: &Context, stdout: &mut dyn Write) -> R
     for output in outputs {
         let text = output.format.render(context);
         let Some(path) = &output.path else {
-            stdout.write_all(text.as_bytes()).map_err(|e| e.to_string())?;
+            let styled = context.color && output.format.name == text::FORMAT.name;
+            let written = if styled {
+                Styled::new(&mut *stdout, context.threshold).write_all(text.as_bytes())
+            } else {
+                stdout.write_all(text.as_bytes())
+            };
+            written.map_err(|e| e.to_string())?;
             continue;
         };
         let failed = |e: io::Error| format!("{}: {e}", path.display());

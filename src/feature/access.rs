@@ -59,4 +59,8 @@ impl Feature for AccessLevels {
     fn rules(&self, rules: &mut Rules) {
         rules.access.clone_from(&self.0);
     }
+
+    fn describe(&self) -> Option<serde_json::Value> {
+        Some(serde_json::json!(self.0))
+    }
 }

@@ -47,6 +47,22 @@
       },
       "type": "object"
     },
+    "Extends": {
+      "anyOf": [
+        {
+          "description": "One file.",
+          "type": "string"
+        },
+        {
+          "description": "Files, each winning over the ones before it.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      ],
+      "description": "A config file to extend, or a list of them."
+    },
     "Ignore": {
       "additionalProperties": false,
       "description": "What to leave out.",
@@ -303,7 +319,16 @@
     },
     "exports": {
       "$ref": "#/$defs/Exports",
+      "default": {
+        "cjs": true,
+        "esm": true,
+        "globals": false
+      },
       "description": "Which ways of exporting count under the `exports` scope. Globals are items under either scope only when on."
+    },
+    "extends": {
+      "$ref": "#/$defs/Extends",
+      "description": "Config files this one builds on, relative to its folder. Its keys win over theirs, and a later one's over an earlier one's."
     },
     "ignore": {
       "$ref": "#/$defs/Ignore",
@@ -318,6 +343,14 @@
       "$ref": "#/$defs/Inherit",
       "default": "tag",
       "description": "What documents an item by inheriting its docs."
+    },
+    "jsdocConfig": {
+      "default": null,
+      "description": "A jsdoc.json, relative to this file's folder, whose `source` picks the files: its `include` is the paths unless `paths` is set, and its `exclude`, `includePattern` and `excludePattern` leave files out.",
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "kinds": {
       "default": null,
@@ -340,7 +373,13 @@
         "null"
       ]
     },
+    "nested": {
+      "default": false,
+      "description": "Scan each file with the nearest docov.json, docov.jsonc or .docovrc above it, up to this file's folder, merged over this one. Only the root config's counts.",
+      "type": "boolean"
+    },
     "overrides": {
+      "default": [],
       "description": "Settings for the files globs match, in place of the top-level ones. For each file and setting, the last override that matches it and has the setting wins.",
       "items": {
         "$ref": "#/$defs/Override"
@@ -446,6 +485,7 @@
           "type": "null"
         }
       ],
+      "default": null,
       "description": "The lowest documented percentage that passes, or thresholds by path: `global` for every file together, `perFile` for each file, and gitignore-style globs for the files each matches together."
     }
   },

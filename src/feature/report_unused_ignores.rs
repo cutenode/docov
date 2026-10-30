@@ -60,4 +60,8 @@ impl Feature for ReportUnusedIgnores {
         }
         unused
     }
+
+    fn describe(&self) -> Option<serde_json::Value> {
+        Some(self.0.into())
+    }
 }

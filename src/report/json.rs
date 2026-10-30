@@ -5,7 +5,7 @@ use std::{fs, path::Path};
 use serde::{Deserialize, Serialize, Serializer};
 
 use crate::report::{Context, Format, json};
-use crate::{Item, Kind, Totals};
+use crate::{Item, Kind, Totals, packages::Package};
 
 /// The format.
 pub const FORMAT: Format = Format { name: "json", help: "Every item, documented or not, with totals", render };
@@ -18,6 +18,8 @@ struct Report<'a> {
     #[serde(serialize_with = "by_kind")]
     kinds: Vec<(Kind, Totals)>,
     files: Vec<File<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    packages: Option<&'a [Package]>,
 }
 
 /// Totals with their percentage.
@@ -72,7 +74,7 @@ fn render(context: &Context) -> String {
             items: f.items.iter().map(JsonItem::of).collect(),
         })
         .collect();
-    json(&Report { totals, percent: totals.percent(), kinds, files })
+    json(&Report { totals, percent: totals.percent(), kinds, files, packages: context.packages })
 }
 
 /// An earlier `json` report, which `--compare` reads to show what changed.

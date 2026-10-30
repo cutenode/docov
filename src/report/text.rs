@@ -9,7 +9,8 @@ pub const FORMAT: Format =
 
 /// One line per file with something to document, then its undocumented items as
 /// `path:line:column`, which terminals and editors open at the spot. `--omit-covered` leaves out
-/// fully documented files, `--quiet` all of them, and `--by-kind` adds the totals by kind.
+/// fully documented files, `--quiet` all of them, `--by-package` adds each package's total, and
+/// `--by-kind` the totals by kind.
 fn render(context: &Context) -> String {
     let Text { omit_covered, quiet, by_kind } = context.text;
     let shown = |file: &&FileReport| {
@@ -27,6 +28,10 @@ fn render(context: &Context) -> String {
     }
     let totals = Totals::of(context.files);
     out += &format!("{:>6.1}%  {}/{}  total\n", totals.percent(), totals.documented, totals.total);
+    for package in context.packages.into_iter().flatten() {
+        let Totals { documented, total } = package.totals;
+        out += &format!("{:>6.1}%  {documented}/{total}  {} total\n", package.percent, package.path);
+    }
     if !by_kind {
         return out;
     }

@@ -78,11 +78,12 @@ pub struct Excused(FxHashMap<Known, usize>);
 
 impl Excused {
     /// `reports`, with the items in the baseline counted as documented, each entry once.
-    pub fn apply(mut self, root: &Root, mut reports: Vec<FileReport>) -> Vec<FileReport> {
+    pub fn apply(&self, root: &Root, mut reports: Vec<FileReport>) -> Vec<FileReport> {
+        let mut left = self.0.clone();
         for report in &mut reports {
             // An ignored item is out of the total, and counting it as documented would bring it back.
             for item in report.items.iter_mut().filter(|i| !i.documented && i.ignore.is_none()) {
-                if let Some(count) = self.0.get_mut(&Known::new(root, &report.path, item)).filter(|n| **n > 0) {
+                if let Some(count) = left.get_mut(&Known::new(root, &report.path, item)).filter(|n| **n > 0) {
                     *count -= 1;
                     item.documented = true;
                 }
@@ -113,9 +114,15 @@ impl Baseline {
         Ok(Some(excused))
     }
 
+    /// The file `--write-baseline` writes, as a path from the current folder. `dir` is the
+    /// config's folder.
+    pub fn file(&self, dir: &Path) -> PathBuf {
+        self.path(dir).unwrap_or_else(|| dir.join(DEFAULT))
+    }
+
     /// Writes each undocumented item that counts in `reports` to the baseline file, and says where.
     pub fn save(&self, dir: &Path, root: &Root, reports: &[FileReport]) -> Result<PathBuf, String> {
-        let path = self.path(dir).unwrap_or_else(|| dir.join(DEFAULT));
+        let path = self.file(dir);
         let items = reports
             .iter()
             .flat_map(|r| r.counted().filter(|i| !i.documented).map(|i| Known::new(root, &r.path, i)))
@@ -156,5 +163,10 @@ impl Feature for Baseline {
 
     fn new(flags: Flags, keys: Keys) -> Self {
         Self { flag: flags.baseline, key: keys.baseline, write: flags.write_baseline }
+    }
+
+    fn describe(&self) -> Option<serde_json::Value> {
+        let path = self.flag.as_ref().or(self.key.as_ref()).map(|path| path.display().to_string());
+        Some(serde_json::json!({ "path": path, "write": self.write }))
     }
 }

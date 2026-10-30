@@ -26,7 +26,10 @@ The npm package runs a prebuilt binary for macOS, Linux or Windows on x64 or arm
 
 ```
 docov [PATHS]... [--config FILE] [--threshold PERCENT] [--scope exports|all] [--format FORMAT[=FILE]]... [--output FILE] [--badge FILE] [--compare FILE] [--omit-covered] [--quiet]
+docov init
 ```
+
+`docov --help` lists every flag.
 
 With no paths it scans the current folder: every `.js`, `.mjs`, `.cjs`, `.jsx`, `.ts`, `.mts`, `.cts` and `.tsx` file, leaving out hidden files and what `.gitignore` leaves out (in a git repository or not). A file named on the command line is always scanned.
 
@@ -35,6 +38,16 @@ It exits 0 when every gate passes (or there isn't one), 1 when one fails, such a
 `--changed` scans only the files that differ from where HEAD branched off the default branch (`origin/HEAD`, or `main` without one), committed or not, and untracked ones. `--since REF` compares with another branch or commit instead. `--staged` scans only the staged files, for a pre-commit hook. Paths given on the command line still narrow the scan.
 
 `--diff-threshold PERCENT` fails the scan when the items on lines a change added (committed or not, and every line of an untracked file) are under that documented percentage, wherever the rest of the project is. The change is from where HEAD branched off the default branch, or off `--diff-base REF`. These run `git` (2.30 or later).
+
+`docov init` writes a docov.json in the current folder with the `$schema` for this version and a `threshold` of its coverage now, rounded down, and won't write over a config file that's there. (To scan a folder named `init`, use `docov ./init`.)
+
+`--watch` scans again whenever a JavaScript, TypeScript or config file under the paths changes, with a line between reports, until Ctrl-C.
+
+`--stdin-filename PATH` scans stdin in place of the paths, as the file at PATH, whose extension picks the language, for editors to check a buffer before it's saved. It can't go with `--add-ignore`, `--write-baseline`, `--update-threshold`, `--watch`, `--changed` or `--staged`, which would act on that one file.
+
+`--cache` keeps each file's items in `.docov-cache` in the config's folder (or the file `--cache-location` names), and the next scan reuses them for each file whose size and modified time haven't changed, as long as docov's version and the settings that change what counts are the same. Add it to `.gitignore`.
+
+`--threads N` scans N files at once, one per CPU by default. `RAYON_NUM_THREADS` sets the same.
 
 ### What counts
 
@@ -82,15 +95,25 @@ Some things never count: constructors (their class's doc covers them), private m
 }
 ```
 
-`paths` and `exclude` (gitignore-style globs) are relative to the config's folder. Comments and trailing commas are fine in any of the three. Editors don't know `.docovrc` is JSON, so tell yours (in VS Code, `"files.associations": { ".docovrc": "jsonc" }`).
+`paths` and `exclude` (gitignore-style globs) are relative to the config's folder. Comments and trailing commas are fine in any of the three.
+
+`"extends": "../docov.json"` (or a list of paths) builds on other config files, relative to the one that names them. Its own keys win, and in a list a later file's win over an earlier one's. Each file's `paths`, `exclude`, `baseline` and the globs in its `threshold` and `overrides` stay relative to that file. Editors don't know `.docovrc` is JSON, so tell yours (in VS Code, `"files.associations": { ".docovrc": "jsonc" }`).
+
+`--jsdoc-config FILE` (or `"jsdocConfig": "jsdoc.json"`, relative to the config) scans the files a [jsdoc config](https://jsdoc.app/about-configuring-jsdoc) documents: its `source.include` are the paths, unless there are paths already, and `source.exclude` leaves files and folders out, both relative to the jsdoc config. `source.includePattern` and `excludePattern` filter files only when the config writes them, since jsdoc's default `includePattern` would leave out TypeScript. It has to be JSON; docov can't read a `.js` config.
+
+With `"nested": true` in the root config, each file is scanned with the nearest docov.json, docov.jsonc or .docovrc in a folder above it, up to the root config's folder, merged over the root config, the way [oxlint's nested configs](https://oxc.rs/docs/guide/usage/linter/nested-config.html) work. A nested config's `exclude` applies in its folder, its gates (`threshold`, `maxUndocumented`, `overrides` and `baseline`) hold for its own files (a failure names the config), and its `paths` aren't read.
+
+`--by-package` adds a total line for each workspace package after the text total, and a `packages` array to the JSON. The packages are the folders with a package.json that the globs in the root config folder's package.json `workspaces` or pnpm-workspace.yaml `packages` match.
+
+`--print-config` prints the settings a scan would use as JSON: the config files they came from, the paths, the excludes and each feature's setting, with the flags applied. `--list-files` prints the files it would scan. Neither scans.
 
 `threshold` can also be an object of thresholds by path, such as `{ "global": 80, "perFile": 50, "src/api/**": 100 }`. `global` is for every file together (`--threshold` sets it), `perFile` for each file on its own, and any other key is a gitignore-style glob, relative to the config's folder, for the files it matches together. A negative number is the most undocumented items that pass instead of a percentage, as in [Jest](https://jestjs.io/docs/configuration#coveragethreshold-object): `-10` allows 10. Each threshold that fails prints its own line.
 
 `maxUndocumented` (or `--max-undocumented N`) fails the scan when more than that many items are undocumented, next to any threshold.
 
-`baseline` (or `--baseline FILE`) names a file of known undocumented items, so new code can be held to a gate while older code catches up. `docov --write-baseline` writes every undocumented item that isn't ignored to it (to `docov-baseline.json` in the config's folder when nothing names one) and exits 0. The gates count the items in it as documented, while the report still lists them. Items are kept by path, kind and name, so moving lines doesn't make them stale, and each path is relative to the config's folder with `/` on every OS. [`docov-baseline.schema.json`](docov-baseline.schema.json) (`docov --print-schema baseline`) is its JSON Schema.
+`baseline` (or `--baseline FILE`) names a file of known undocumented items, so new code can be held to a gate while older code catches up. `docov --write-baseline` writes every undocumented item that isn't ignored to it (to `docov-baseline.json` in the config's folder when nothing names one) and exits 0. The gates count the items in it as documented, while the report still lists them. Items are kept by path, kind and name, so moving lines doesn't make them stale, and each path is relative to the folder of the config that names the baseline (the root config's for `--baseline`) with `/` on every OS. [`docov-baseline.schema.json`](docov-baseline.schema.json) (`docov --print-schema baseline`) is its JSON Schema.
 
-`docov --update-threshold` ratchets the threshold: when the documented percentage, rounded down to a tenth, is over the config's global threshold, it writes it there (into `global` for an object of thresholds), changing only that number so comments and formatting stay. A negative threshold stays as it is. Without a config it writes a new `docov.json` where docov runs.
+`docov --update-threshold` ratchets the threshold: when the documented percentage, rounded down to a tenth, is over the config's global threshold, it writes it there (into `global` for an object of thresholds), changing only that number so comments and formatting stay. A negative threshold stays as it is. Without a config it writes a new `docov.json` where docov runs. With nested configs, it goes by the files the root config scans.
 
 `overrides` changes settings for some paths: each has `files` (gitignore-style globs) and any of `exclude` and `threshold`, which replace the top-level ones for those files. For each file and setting, the last override that matches the file and has the setting wins. The top-level thresholds then cover only the files no override has a threshold for. As in .gitignore, a file in a folder that's left out stays out.
 
@@ -110,7 +133,7 @@ Some things never count: constructors (their class's doc covers them), private m
 docov --format text --format lcov=coverage/docov.lcov
 ```
 
-- `text` (the default): each file's percentage and its undocumented items, then the total. `--omit-covered` leaves out fully documented files, and `--quiet` prints only the total (failed gates still go to stderr).
+- `text` (the default): each file's percentage and its undocumented items, then the total. `--omit-covered` leaves out fully documented files, and `--quiet` prints only the total (failed gates still go to stderr). On a terminal, a percentage under the threshold is red and the undocumented items are dim. `--color always` or `never` says otherwise, and `NO_COLOR` turns it off.
 - `json`: every item, documented or not, with its kind, line and column, and totals per file, per kind and overall.
 - `lcov`: a line record for each line with items on it, hit when all of them are documented, and each item as a function, hit when it's documented. Coverage services and editor gutters read it.
 - `cobertura`: Cobertura XML (coverage-04.dtd) with the same line records, a package per folder and a class per file, for GitLab's merge request coverage and other CI coverage views.
