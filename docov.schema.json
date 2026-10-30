@@ -201,6 +201,11 @@
       "$ref": "#/$defs/Ignore",
       "description": "What to leave out."
     },
+    "ignoreDeprecated": {
+      "default": false,
+      "description": "Leave out items whose JSDoc has @deprecated.",
+      "type": "boolean"
+    },
     "inherit": {
       "$ref": "#/$defs/Inherit",
       "default": "tag",
@@ -239,6 +244,11 @@
       "$ref": "#/$defs/Scope",
       "default": "exports",
       "description": "Which declarations count."
+    },
+    "skipGenerated": {
+      "default": false,
+      "description": "Leave out files whose first comment has @generated.",
+      "type": "boolean"
     },
     "threshold": {
       "default": null,

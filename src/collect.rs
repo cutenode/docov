@@ -187,6 +187,11 @@ pub fn scan(source: &str, source_type: SourceType, rules: &Rules) -> Result<Vec<
             text.chars().any(|ch| !ch.is_whitespace() && ch != '*').then(|| (c.attached_to, JSDoc::new(text, span)))
         })
         .collect();
+    let generated = parsed.program.comments.first().is_some_and(|c| c.span.source_text(source).contains("@generated"));
+    if rules.skip_generated && generated {
+        return Ok(Vec::new());
+    }
+
     let lines = Lines::new(source);
     let ignores = Ignores::find(&parsed.program, &lines);
     let mut collector = Collector { source, docs, found: Vec::new(), exported: FxHashSet::default(), overload: None };

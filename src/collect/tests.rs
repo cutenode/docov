@@ -465,3 +465,19 @@ self.i = 1;
     assert_eq!(names(Scope::All, Exports { esm: false, cjs: false, ..on }), ["a", "b", "c", "f"]);
     assert_eq!(names(Scope::All, Exports { globals: true, ..on }), ["a", "b", "c", "e", "f"]);
 }
+
+#[test]
+fn deprecated_items_and_generated_files_can_be_left_out() {
+    let source = "/** @deprecated */\nexport const a = 1;\n/** B. */\nexport const b = 1;\n";
+    let names = |source: &str, rules: &Rules| -> Vec<String> {
+        scan(source, SourceType::ts(), rules).unwrap().into_iter().map(|i| i.name).collect()
+    };
+    let deprecated = Rules { ignore_deprecated: true, ..Rules::default() };
+    assert_eq!(names(source, &Rules::default()), ["a", "b"]);
+    assert_eq!(names(source, &deprecated), ["b"]);
+
+    let generated = Rules { skip_generated: true, ..Rules::default() };
+    assert_eq!(names(&format!("/* @generated */\n{source}"), &generated), [""; 0]);
+    assert_eq!(names(&format!("/* @generated */\n{source}"), &Rules::default()).len(), 2);
+    assert_eq!(names(&format!("// header\n// @generated\n{source}"), &generated).len(), 2, "only the first comment");
+}

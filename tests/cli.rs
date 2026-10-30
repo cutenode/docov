@@ -330,3 +330,14 @@ fn the_config_picks_which_exports_count() {
     assert_eq!(code, 2);
     assert!(err.contains("unknown field `amd`"), "{err}");
 }
+
+#[test]
+fn the_config_leaves_out_deprecated_items_and_generated_files() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("a.ts"), "/** @deprecated */\nexport const a = 1;\nexport const b = 1;\n").unwrap();
+    fs::write(dir.path().join("b.ts"), "// @generated\nexport const c = 1;\n").unwrap();
+    let total = || docov(dir.path(), &[]).1.lines().last().unwrap().to_owned();
+    assert_eq!(total(), "  33.3%  1/3  total");
+    fs::write(dir.path().join("docov.json"), r#"{ "ignoreDeprecated": true, "skipGenerated": true }"#).unwrap();
+    assert_eq!(total(), "   0.0%  0/1  total");
+}
