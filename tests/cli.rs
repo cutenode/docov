@@ -408,3 +408,16 @@ fn file_docs_make_each_file_an_item() {
     let a = Path::new("src").join("a.ts").display().to_string();
     assert_eq!((code, file(0), file(1)), (0, (a.into(), false.into()), ("c".into(), true.into())));
 }
+
+#[test]
+fn virtual_types_count_typedefs_in_javascript() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = "/**\n * A point.\n * @typedef {Object} Point\n */\n/** @callback Done */\nexport const a = 1;\n";
+    fs::write(dir.path().join("a.js"), source).unwrap();
+    fs::write(dir.path().join("docov.json"), r#"{ "virtual": true }"#).unwrap();
+    let (code, out, _) = docov(dir.path(), &[]);
+    assert_eq!(
+        (code, out.as_str()),
+        (0, "  33.3%  1/3  a.js\n         a.js:5:1  type Done\n         a.js:6:1  variable a\n  33.3%  1/3  total\n")
+    );
+}

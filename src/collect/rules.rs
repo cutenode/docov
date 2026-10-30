@@ -34,6 +34,8 @@ pub struct Rules {
     pub exports: Exports,
     /// Whether each file is an item, documented by a JSDoc block about it.
     pub file_docs: FileDocs,
+    /// Whether a JavaScript file's named `@typedef` and `@callback` blocks are items.
+    pub virtual_types: bool,
 }
 
 impl From<Scope> for Rules {

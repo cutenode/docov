@@ -208,8 +208,16 @@ pub fn scan(source: &str, source_type: SourceType, rules: &Rules) -> Result<Vec<
     if rules.file_docs == FileDocs::Require {
         collector.file(&parsed.program.comments);
     }
+    let types = rules.virtual_types && source_type.is_javascript();
+    if types {
+        collector.types(&parsed.program.comments);
+    }
     for statement in &parsed.program.body {
         collector.statement(statement);
+    }
+    // The types are where their blocks are, among the declarations.
+    if types {
+        collector.found.sort_by_key(|f| f.at);
     }
 
     let Collector { found, exported, .. } = collector;
@@ -240,9 +248,9 @@ struct Found<'s> {
     overrides: bool,
     /// For a function or method, each parameter's name, or `None` for a destructured one.
     params: Option<Vec<Option<&'s str>>>,
-    /// Whether it's documented, for an item whose own rule says: a file's.
+    /// Whether it's documented, for an item whose own rule says: a file's, or a comment's type.
     documented: Option<bool>,
-    /// Whether it counts under any scope, as a file's own item does.
+    /// Whether it counts under any scope, as a file's own item and a comment's type do.
     standalone: bool,
 }
 
@@ -298,6 +306,18 @@ impl<'s> Collector<'s> {
     fn detach(&mut self, comment: &Comment, block: &JSDoc) {
         if self.docs.get(&comment.attached_to).is_some_and(|doc| doc.span == block.span) {
             self.docs.remove(&comment.attached_to);
+        }
+    }
+
+    /// A type for each block that declares one (`@typedef` or `@callback`, with a name), at the
+    /// block, documented when it has a description. The block documents nothing else.
+    fn types(&mut self, comments: &[Comment]) {
+        for comment in comments.iter().filter(|c| c.content == CommentContent::Jsdoc) {
+            let block = jsdoc(comment, self.source);
+            let Some((name, documented)) = doc::declared_type(&block) else { continue };
+            self.detach(comment, &block);
+            let found = Found::new(name, Kind::Type, comment.span.start, Some(block));
+            self.found.push(Found { documented: Some(documented), standalone: true, ..found });
         }
     }
 

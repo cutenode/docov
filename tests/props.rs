@@ -5,6 +5,7 @@ use std::{fs, path::Path, path::PathBuf, process::Command};
 use docov::feature::{
     Feature, access::Access, add_ignore::AddIgnore, examples::Examples, exports::Exports, file_docs::FileDocs,
     inherit::Inherit, kinds::Kinds, report_unused_ignores::ReportUnusedIgnores, sort::Sort,
+    virtual_types::VirtualTypes,
 };
 use docov::{
     FileReport, Format, Item, Kind, Rules, Scope, Totals, collect, collect::Facts, collect::Ignore, config, feature,
@@ -975,6 +976,53 @@ fn files_are_items_documented_by_a_block_about_them(tc: TestCase) {
     assert_eq!(summary(scan_file(&path, &on).unwrap().items)[0], (named, Kind::Module, file.2));
 }
 
+/// With `"virtual": true`, a JavaScript file's `@typedef` and `@callback` blocks with a name are
+/// items of kind `type`, where the block is, documented when they have a description, and they no
+/// longer document the declaration after them. In TypeScript, or off, they're ordinary blocks.
+#[hegel::test(test_cases = 100)]
+fn comment_types_are_items_in_javascript(tc: TestCase) {
+    let mut source = String::new();
+    // Each item, by whether types count: (name, kind, line, documented).
+    let (mut plain, mut typed) = (Vec::new(), Vec::new());
+    for i in 0..tc.draw(gs::integers::<usize>().max_value(4)) {
+        // A block, whether it names a type, and whether it describes it.
+        let (block, declares, described) = tc.draw(gs::sampled_from(vec![
+            ("/** @typedef {Object} T */", true, false),
+            ("/**\n * A shape.\n * @typedef {Object} T\n * @property {number} x\n */", true, true),
+            ("/** @typedef {string} T - An id. */", true, true),
+            ("/** @callback T */", true, false),
+            ("/**\n * @callback T\n * Called back.\n */", true, true),
+            ("/** @typedef */", false, false),
+            ("/** Docs. */", false, true),
+        ]));
+        let line = source.matches('\n').count() + 1;
+        source.push_str(&block.replace(" T", &format!(" T{i}")));
+        source.push('\n');
+        if declares {
+            typed.push((format!("T{i}"), Kind::Type, line, described));
+        }
+        if tc.draw(gs::booleans()) {
+            let line = source.matches('\n').count() + 1;
+            source.push_str(&format!("exports.v{i} = 1;\n"));
+            plain.push((format!("v{i}"), Kind::Variable, line, true));
+            typed.push((format!("v{i}"), Kind::Variable, line, !declares));
+        }
+    }
+    let types = tc.draw(gs::booleans());
+    let (name, source_type) = tc.draw(gs::sampled_from(vec![
+        ("mjs", SourceType::mjs()),
+        ("cjs", SourceType::cjs()),
+        ("jsx", SourceType::jsx()),
+        ("ts", SourceType::ts()),
+    ]));
+    let rules = Rules { virtual_types: types, ..Rules::default() };
+    let items = scan(&source, source_type, &rules).unwrap();
+    let found: Vec<_> = items.iter().map(|i| (i.name.clone(), i.kind, i.line, i.documented)).collect();
+    let wanted = if types && name != "ts" { typed } else { plain };
+    assert_eq!(found, wanted, "{name}: {source}");
+    assert!(items.iter().all(|i| i.facts.exported));
+}
+
 fn render(format: Format, files: &[FileReport]) -> String {
     let mut out = Vec::new();
     report::write(format, files, &mut out).unwrap();
@@ -1548,6 +1596,7 @@ fn rules_come_from_flags_over_the_config(tc: TestCase) {
     let ignore_deprecated = run.set(&tc, "ignoreDeprecated", vec![false, true], |_| vec![]);
     let skip_generated = run.set(&tc, "skipGenerated", vec![false, true], |_| vec![]);
     let file_docs = run.set(&tc, "fileDocs", vec![FileDocs::Off, FileDocs::Require], |_| vec![]);
+    let virtual_types = run.set(&tc, "virtual", vec![false, true], |_| vec![]);
 
     let settings = run.settings(dir.path());
     let rules = settings.rules();
@@ -1557,6 +1606,8 @@ fn rules_come_from_flags_over_the_config(tc: TestCase) {
     );
     assert_eq!(rules.exports, exports.map_or(Exports::default(), |(_, e)| e));
     assert_eq!(rules.file_docs, file_docs.unwrap_or_default());
+    assert_eq!(*settings.get::<VirtualTypes>(), VirtualTypes(virtual_types.unwrap_or_default()));
+    assert_eq!(rules.virtual_types, virtual_types.unwrap_or_default());
     assert_eq!(rules.inherit, inherit.unwrap_or_default());
     assert_eq!(rules.access, access);
     let patterns: Vec<&str> = rules.ignore_names.iter().map(regex::Regex::as_str).collect();

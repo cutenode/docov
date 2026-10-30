@@ -29,6 +29,14 @@ pub(super) fn file(doc: &JSDoc) -> Option<bool> {
     (!tags.is_empty()).then_some(text)
 }
 
+/// The type `doc` declares with its first `@typedef` or `@callback`, if that names one, and
+/// whether it's described: a description, or text after the name.
+pub(super) fn declared_type(doc: &JSDoc) -> Option<(String, bool)> {
+    let tag = doc.tags().iter().find(|tag| matches!(tag.kind.parsed(), "typedef" | "callback"))?;
+    let (_, name, text) = tag.type_name_comment();
+    Some((name?.parsed().to_owned(), !doc.comment().parsed().is_empty() || !text.parsed().is_empty()))
+}
+
 /// Whether `doc` has the tag `name` (without its `@`).
 pub(super) fn has_tag(doc: &JSDoc, name: &str) -> bool {
     doc.tags().iter().any(|tag| tag.kind.parsed() == name)

@@ -296,6 +296,11 @@
         "number",
         "null"
       ]
+    },
+    "virtual": {
+      "default": false,
+      "description": "Count a JavaScript file's named @typedef and @callback blocks as items of kind `type`, documented when they have a description. They then document nothing else.",
+      "type": "boolean"
     }
   },
   "title": "Config",

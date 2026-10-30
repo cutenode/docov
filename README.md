@@ -57,6 +57,8 @@ Some things never count: constructors (their class's doc covers them), private m
 
 `"fileDocs": "require"` makes each file an item of its own, of kind `module`, at its first line and named by its `@module` or else its path. It's documented when the file's first JSDoc block has `@file`, `@fileoverview`, `@overview`, `@module` or `@packageDocumentation`, with text, and that block then documents nothing else. Without it, a block like that right before a declaration documents the declaration.
 
+`"virtual": true` counts a JavaScript file's `@typedef` and `@callback` blocks that name a type as items of kind `type`, at the block, documented when the block or the tag describes the type. They count as exported under the `exports` scope, since JSDoc treats them as the module's public types, and they then document nothing else. Without it, such a block right before a declaration documents the declaration.
+
 `"exports": { "esm": true, "cjs": true, "globals": false }` picks which ways of exporting count under the `exports` scope (`cjs` covers TypeScript's `export =` too). With `globals` on, `window.a = …` and `globalThis.a = …` at the top level export `a` the way `exports.a = …` does, under either scope.
 
 `--kind function,class` (or `"kinds": ["function", "class"]`) counts only those kinds of item, named as the reports name them: `function`, `class`, `method`, `accessor`, `property`, `variable`, `interface`, `type`, `enum`, `namespace`, `default` and `module`. `--by-kind` adds a line of totals by kind after the text report's total, and the JSON report always has them, under `kinds`.
