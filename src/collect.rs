@@ -11,12 +11,13 @@ use oxc_ast::ast::{
 use oxc_parser::Parser;
 use oxc_span::{GetSpan, SourceType};
 use rustc_hash::FxHashSet;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{Scope, Totals};
 
 /// What kind of declaration an item is.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Kind {
     /// `function f() {}`, or a function assigned to an export.
     Function,
@@ -61,14 +62,8 @@ impl Kind {
     }
 }
 
-impl Serialize for Kind {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(self.as_str())
-    }
-}
-
 /// A declaration that should have JSDoc.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Item {
     /// The declared name, `Class.member` for members, `default` for an unnamed default export.
     pub name: String,

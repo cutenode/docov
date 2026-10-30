@@ -11,6 +11,7 @@ use docov::{
     Config, Format, Settings, Threshold, batch,
     feature::{
         self,
+        cache::CacheFile,
         color::{Color, Styled},
         jsdoc_config::JsdocConfig,
         list_files::{self, ListFiles},
@@ -111,7 +112,7 @@ fn run(cli: &Cli, matches: &clap::ArgMatches, watched: &mut Vec<PathBuf>) -> Res
     plan.settings().get::<Threads>().apply();
     let reports = match stdin {
         Some(_) => stdin_filename::scan(&files, &mut io::stdin().lock())?,
-        None => batch::scan(&files)?,
+        None => batch::scan(&files, &plan.settings().get::<CacheFile>().open(&config.dir))?,
     };
     let (settings, text) = (plan.settings(), cli.format == Format::Text);
     let stream = &mut settings.get::<Color>().stream(io::stdout().lock());

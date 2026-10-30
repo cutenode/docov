@@ -8,11 +8,13 @@ use std::{
 };
 
 use docov::{
-    FileReport, Format, Item, Kind, Scope, Settings, Totals, batch, config,
+    FileReport, Format, Item, Kind, Scope, Settings, Totals, batch,
+    cache::Cache,
+    config,
     config::Config,
     feature,
     feature::{color, stdin_filename, threads::Threads, watch},
-    init, jsdoc, nested, packages, report, scan, walk,
+    init, jsdoc, nested, packages, report, scan, scan_file, walk,
     walk::Exclude,
 };
 use hegel::{TestCase, generators as gs};
@@ -372,7 +374,7 @@ fn nested_configs_set_their_own_files(tc: TestCase) {
     assert_eq!(files, expected.iter().map(|e| (e.0.clone(), e.1)).collect::<Vec<_>>());
 
     // Each group's threshold, the root's 50 unless a nested config has its own, over its files.
-    let reports = batch::scan(&plan.files()).unwrap();
+    let reports = batch::scan(&plan.files(), &Cache::default()).unwrap();
     let mut groups: Vec<(Option<String>, u8, Totals)> = Vec::new();
     for (_, scope, documented, config) in &expected {
         let (file, threshold) = config.clone().map_or((None, Some(50)), |(file, t)| (Some(file), t.or(Some(50))));
@@ -902,4 +904,94 @@ fn watch_scans_again_after_changes(tc: TestCase) {
     let after_config = scanned_after(first.path(), "docov.json").expect("a scan after a config change");
     let after_source = scanned_after(second.path(), "a.ts").expect("a scan after a source change");
     assert!(after_config >= 2 && after_source > after_config, "{after_config} {after_source}");
+}
+
+/// With `--cache`, a scan reuses each file's items while its size and modified time and the scope
+/// are what they were, from a cache another docov version's or a broken one doesn't count for, and
+/// rescans a file that changed. Without it, nothing's kept. A cache file that can't be written
+/// fails the scan naming it.
+#[hegel::test(test_cases = 30)]
+fn the_cache_keeps_unchanged_files_items(tc: TestCase) {
+    let dir = tempfile::tempdir().unwrap();
+    let cache_path = dir.path().join(".docov-cache");
+    let path = dir.path().join("a.ts");
+    let scope = tc.draw(gs::sampled_from(vec![Scope::Exports, Scope::All]));
+    write(dir.path(), "a.ts", "export const a = 1;\nconst b = 2;\n");
+    let files = [(path.as_path(), scope)];
+    let scanned = batch::scan(&files, &Cache::read(cache_path.clone())).unwrap();
+    // What a cache holds is what it gives back, whatever the file says now, while the stamp's
+    // the same: the file is rewritten with its size and time kept.
+    let (modified, size) = (fs::metadata(&path).unwrap().modified().unwrap(), fs::metadata(&path).unwrap().len());
+    let documented = "/** A */\nexport const a = 1;\n";
+    write(dir.path(), "a.ts", &format!("{documented}{}\n", "/".repeat(size as usize - documented.len() - 1)));
+    fs::File::options().write(true).open(&path).unwrap().set_modified(modified).unwrap();
+    let kept = tc.draw(gs::integers::<u8>().max_value(3));
+    let cache = match kept {
+        0 => Cache::read(cache_path.clone()),
+        // Unchecked: the version, or the cache itself, or a scope that isn't the same.
+        1 => {
+            let text = fs::read_to_string(&cache_path).unwrap().replace(env!("CARGO_PKG_VERSION"), "0.0.0-other");
+            fs::write(&cache_path, text).unwrap();
+            Cache::read(cache_path.clone())
+        }
+        2 => {
+            fs::write(&cache_path, "not json").unwrap();
+            Cache::read(cache_path.clone())
+        }
+        _ => Cache::default(),
+    };
+    let reused = cache.stamp(&path, scope).and_then(|stamp| cache.get(&path, stamp)).is_some();
+    let again = batch::scan(&files, &cache).unwrap();
+    assert_eq!(again, if reused { scanned.clone() } else { scanned_now(&path, scope) });
+    assert_eq!(reused, kept == 0);
+    assert_ne!(scanned, scanned_now(&path, scope));
+    // A scope that's changed doesn't count.
+    let other = if scope == Scope::All { Scope::Exports } else { Scope::All };
+    let cache = Cache::read(cache_path.clone());
+    assert!(cache.stamp(&path, other).and_then(|stamp| cache.get(&path, stamp)).is_none());
+
+    // A file with no time to keep it by, from before 1970, isn't kept, nor one that's gone.
+    fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(std::time::UNIX_EPOCH - std::time::Duration::from_secs(1))
+        .unwrap();
+    assert_eq!(cache.stamp(&path, scope), None);
+    assert_eq!(cache.stamp(&dir.path().join("gone.ts"), scope), None);
+    let report = FileReport { path: path.clone(), items: Vec::new() };
+    cache.write(&[(report, None)]).unwrap();
+    assert!(!fs::read_to_string(&cache_path).unwrap().contains("a.ts"));
+
+    let unwritable = Cache::read(dir.path().to_owned());
+    let error = batch::scan(&files, &unwritable).unwrap_err();
+    assert!(error[0].starts_with(&dir.path().display().to_string()), "{error:?}");
+}
+
+fn scanned_now(path: &Path, scope: Scope) -> Vec<FileReport> {
+    vec![scan_file(path, scope).unwrap()]
+}
+
+/// The binary keeps its cache in .docov-cache in the config's folder, or at `--cache-location`,
+/// and scans the same with it as without.
+#[hegel::test(test_cases = 2)]
+fn the_cli_caches_where_it_is_told(tc: TestCase) {
+    let dir = tempfile::tempdir().unwrap();
+    let doc = if tc.draw(gs::booleans()) { "/** Docs. */\n" } else { "" };
+    write(dir.path(), "src/a.ts", &format!("{doc}export const a = 1;\n"));
+    write(dir.path(), "docov.json", r#"{ "paths": ["src"] }"#);
+    let plain = docov(dir.path(), &[], false);
+    for (args, cache, location) in [
+        (&["--cache"][..], ".docov-cache", None),
+        (&["--cache", "--cache-location", "c.json"], "c.json", Some("c.json")),
+    ] {
+        // The first run writes the cache, and the second reads it.
+        for _ in 0..2 {
+            assert_eq!(docov(dir.path(), args, false), plain);
+        }
+        assert!(fs::read_to_string(dir.path().join(cache)).unwrap().contains("a.ts"));
+        let (_, out, _) = docov(dir.path(), &[args, &["--print-config"]].concat(), false);
+        let json: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(json["features"]["cache"], serde_json::json!({ "on": true, "location": location }));
+    }
 }

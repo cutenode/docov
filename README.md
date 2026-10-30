@@ -26,7 +26,10 @@ The npm package runs a prebuilt binary for macOS, Linux or Windows on x64 or arm
 
 ```
 docov [PATHS]... [--config FILE] [--threshold PERCENT] [--scope exports|all] [--format text|json|lcov]
+docov init
 ```
+
+`docov --help` lists every flag.
 
 With no paths it scans the current folder: every `.js`, `.mjs`, `.cjs`, `.jsx`, `.ts`, `.mts`, `.cts` and `.tsx` file, leaving out hidden files and what `.gitignore` leaves out (in a git repository or not). A file named on the command line is always scanned.
 
@@ -35,6 +38,8 @@ With no paths it scans the current folder: every `.js`, `.mjs`, `.cjs`, `.jsx`, 
 `--watch` scans again whenever a JavaScript, TypeScript or config file under the paths changes, with a line between reports, until Ctrl-C.
 
 `--stdin-filename PATH` scans stdin in place of the paths, as the file at PATH, whose extension picks the language, for editors to check a buffer before it's saved.
+
+`--cache` keeps each file's items in `.docov-cache` in the config's folder (or the file `--cache-location` names), and the next scan reuses them for each file whose size and modified time haven't changed, as long as docov's version and the scope are the same. Add it to `.gitignore`.
 
 `--threads N` scans N files at once, one per CPU by default. `RAYON_NUM_THREADS` sets the same.
 
