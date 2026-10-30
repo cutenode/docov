@@ -1369,10 +1369,10 @@ enum Change {
 
 /// In a real repository with a branch off main: --changed scans the files the branch changed,
 /// committed or not, and untracked ones, from main or from origin/HEAD in a clone, and --staged
-/// the staged ones. Outside a repository git's error says so, and without git, that it's missing.
+/// the staged ones. --diff-threshold counts the items on the lines they added. Outside a repository git's error says so, and without git, that it's missing.
 #[hegel::test(test_cases = 15)]
 fn git_narrows_to_changed_files_and_lines(tc: TestCase) {
-    use docov::feature::changed::Changed;
+    use docov::feature::{changed::Changed, diff::Diff};
     let dir = tempfile::tempdir().unwrap();
     let origin = dir.path().join("origin");
     fs::create_dir(&origin).unwrap();
@@ -1388,9 +1388,11 @@ fn git_narrows_to_changed_files_and_lines(tc: TestCase) {
             ]))
         })
         .collect();
-    // Each file starts with a documented function, and the change adds one, documented or not, a
-    // line after it.
-    let base = |f: usize| format!("/** Docs. */\nexport function a{f}() {{}}\n");
+    // Each file has a comment, a documented function and another comment. The change takes out the
+    // first comment (a hunk that adds no lines), adds a line before the second that the diff shows
+    // as `+++ x;`, and adds a function, documented or not, after it.
+    let kept = |f: usize| format!("/** Docs. */\nexport function a{f}() {{}}\n");
+    let base = |f: usize| format!("// old\n{}// mid\n", kept(f));
     for (f, change) in changes.iter().enumerate() {
         if *change != Change::Untracked {
             write(&origin, &format!("src/f{f}.ts"), &base(f));
@@ -1410,7 +1412,11 @@ fn git_narrows_to_changed_files_and_lines(tc: TestCase) {
     let documented: Vec<bool> = changes.iter().map(|_| tc.draw(gs::booleans())).collect();
     let edit = |f: usize| {
         let doc = if documented[f] { "/** Docs. */\n" } else { "" };
-        write(&repo, &format!("src/f{f}.ts"), &format!("{}// changed\n{doc}export function b{f}() {{}}\n", base(f)));
+        write(
+            &repo,
+            &format!("src/f{f}.ts"),
+            &format!("{}++ x;\n// mid\n// changed\n{doc}export function b{f}() {{}}\n", kept(f)),
+        );
     };
     for (f, change) in changes.iter().enumerate() {
         if *change == Change::Committed {
@@ -1446,12 +1452,49 @@ fn git_narrows_to_changed_files_and_lines(tc: TestCase) {
     assert_eq!(changed.get::<Changed>().filter(files.clone(), &root).unwrap(), since_main);
     assert_eq!(staged.get::<Changed>().filter(files.clone(), &root).unwrap(), pick(&[Change::Staged]));
 
+    // The changed lines' items are the functions the change added.
+    let reports: Vec<FileReport> = files.iter().map(|f| scan_file(f, Scope::Exports).unwrap()).collect();
+    let threshold = tc.draw(gs::integers::<u8>().max_value(100));
+    let diff = settings(
+        &repo,
+        "{}",
+        &[
+            vec!["--diff-threshold".to_owned(), threshold.to_string()],
+            since.iter().map(|a| a.replace("since", "diff-base")).collect(),
+        ]
+        .concat(),
+    );
+    let diff = diff.get::<Diff>();
+    let added = diff.added(&root).unwrap();
+    let changed_items = Totals {
+        documented: changes.iter().zip(&documented).filter(|(c, d)| **c != Change::Untouched && **d).count(),
+        total: changes.iter().filter(|c| **c != Change::Untouched).count(),
+    };
+    // An untracked file's every line is new, its first function too.
+    let untracked = changes.iter().filter(|c| **c == Change::Untracked).count();
+    let changed_items =
+        Totals { documented: changed_items.documented + untracked, total: changed_items.total + untracked };
+    let wanted = (changed_items.percent() < f64::from(threshold)).then(|| {
+        format!("changed lines: {:.1}% documented, under the {threshold}% diff threshold", changed_items.percent())
+    });
+    assert_eq!(diff.gate(added.as_ref(), &reports, &root), wanted);
+    assert!(all.get::<Diff>().added(&root).unwrap().is_none());
+
     // Outside a repository, git's error says so.
     std::env::set_current_dir(dir.path()).unwrap();
     for settings in [&changed, &staged] {
         let error = settings.get::<Changed>().filter(files.clone(), &root).unwrap_err();
         assert!(error.starts_with("git rev-parse --show-cdup: ") && error.contains("not a git repository"), "{error}");
     }
+    assert!(diff.added(&root).unwrap_err().contains("not a git repository"));
+    let out = Command::new(env!("CARGO_BIN_EXE_docov"))
+        .args(["--diff-threshold", "100"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert_eq!(out.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("not a git repository"), "{stderr}");
     let out =
         Command::new(env!("CARGO_BIN_EXE_docov")).arg("--staged").env("PATH", "").current_dir(&repo).output().unwrap();
     let stderr = String::from_utf8(out.stderr).unwrap();

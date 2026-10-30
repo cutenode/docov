@@ -1,6 +1,7 @@
-//! Asks git which files changed, by running it.
+//! Asks git which files and lines changed, by running it.
 
 use std::{
+    ops::RangeInclusive,
     path::{Path, PathBuf},
     process::Command,
 };
@@ -47,4 +48,43 @@ pub fn changed_since(base: &str) -> Result<Vec<PathBuf>, String> {
 pub fn staged() -> Result<Vec<PathBuf>, String> {
     let out = git(&[TOP, &["diff", "--name-only", "-z", "--cached"]])?;
     Ok(names(&out[0], &out[1]).collect())
+}
+
+/// A file's lines that a change added.
+pub struct Added {
+    /// The file, as a path from the current folder.
+    pub path: PathBuf,
+    /// The lines, 1-based, or `None` for all of them.
+    pub lines: Option<Vec<RangeInclusive<usize>>>,
+}
+
+/// The lines added since where HEAD branched from `base`, committed or not, in each file; all of
+/// an untracked file's.
+pub fn added_lines(base: &str) -> Result<Vec<Added>, String> {
+    // Without a/ and b/ before the names, and without quotes around names with characters past
+    // ASCII. Control characters, `"` and `\` still get them, and those files are missed.
+    let diff = ["-c", "core.quotePath=false", "diff", "--unified=0", "--no-prefix", "--no-color", "--no-ext-diff"];
+    let out = git(&[TOP, &[&diff[..], &["--merge-base", base]].concat(), UNTRACKED])?;
+    let mut files: Vec<Added> = Vec::new();
+    // `+++ ` starts a file's name only in its header, before its first hunk: in a hunk, it's an
+    // added line that starts with `++ `.
+    let mut header = false;
+    for line in out[1].lines() {
+        if line.starts_with("diff --git ") {
+            header = true;
+        } else if let Some(name) = line.strip_prefix("+++ ").filter(|_| header) {
+            files.push(Added { path: Path::new(out[0].trim_end()).join(name), lines: Some(Vec::new()) });
+        } else if let Some(hunk) = line.strip_prefix("@@ ") {
+            header = false;
+            // `@@ -a,b +c,d @@`: d lines from line c, where a missing d is 1.
+            let added = hunk.split(' ').nth(1).unwrap_or_default().trim_start_matches('+');
+            let (start, count) = added.split_once(',').unwrap_or((added, "1"));
+            let (start, count): (usize, usize) = (start.parse().unwrap_or_default(), count.parse().unwrap_or_default());
+            if let Some(Added { lines: Some(lines), .. }) = files.last_mut().filter(|_| count > 0) {
+                lines.push(start..=start + count - 1);
+            }
+        }
+    }
+    files.extend(names(&out[0], &out[2]).map(|path| Added { path, lines: None }));
+    Ok(files)
 }

@@ -389,3 +389,27 @@ fn changed_and_staged_scan_what_git_says_changed() {
     assert_eq!(docov(dir.path(), &["--since", "main"]).0, 2);
     assert_eq!(docov(dir.path(), &["--changed", "--staged"]).0, 2);
 }
+
+#[test]
+fn the_diff_threshold_counts_the_items_on_added_lines() {
+    let dir = project();
+    git(dir.path(), &["init", "-q"]);
+    git(dir.path(), &["add", "."]);
+    git(dir.path(), &["commit", "-q", "-m", "base"]);
+    git(dir.path(), &["checkout", "-q", "-b", "change"]);
+    // b, already undocumented, isn't on an added line; e and f are, one documented.
+    fs::write(
+        dir.path().join("src/a.ts"),
+        "/** a */\nexport function a() {}\nexport const b = 1;\n/** e */\nexport const e = 1;\nexport const f = 1;\n",
+    )
+    .unwrap();
+    git(dir.path(), &["commit", "-q", "-am", "e and f"]);
+    fs::write(dir.path().join("src/g.ts"), "/** g */\nexport const g = 1;\n").unwrap();
+    let (code, _, err) = docov(dir.path(), &["--diff-threshold", "70", "--threshold", "0"]);
+    assert_eq!((code, err.as_str()), (1, "docov: changed lines: 66.7% documented, under the 70% diff threshold\n"));
+    assert_eq!(docov(dir.path(), &["--diff-threshold", "66", "--diff-base", "main"]).0, 0);
+    // From HEAD, only the untracked file is new.
+    assert_eq!(docov(dir.path(), &["--diff-threshold", "100", "--diff-base", "HEAD"]).0, 0);
+    // --diff-base is for --diff-threshold.
+    assert_eq!(docov(dir.path(), &["--diff-base", "main"]).0, 2);
+}

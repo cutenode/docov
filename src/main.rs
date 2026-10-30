@@ -9,6 +9,7 @@ use docov::{
         self,
         baseline::{self, Baseline},
         changed::Changed,
+        diff::Diff,
         overrides::Overrides,
         update_threshold::UpdateThreshold,
     },
@@ -80,12 +81,14 @@ fn run(cli: Cli, matches: &clap::ArgMatches) -> Result<bool, Vec<String>> {
     let scope = *settings.get::<Scope>();
     let baseline = settings.get::<Baseline>();
     let excused = baseline.read(&config.dir).map_err(|e| vec![e])?;
+    let diff = settings.get::<Diff>();
 
     let root = Root::new(&config.dir);
     let exclude = Globs::new(std::mem::take(&mut config.exclude)).map_err(|e| vec![e.to_string()])?;
     let excluded = settings.get::<Overrides>().clone().excluder(exclude, root.clone());
     let files = walk::files(&paths, excluded).map_err(|e| vec![e.to_string()])?;
     let files = settings.get::<Changed>().filter(files, &root).map_err(|e| vec![e])?;
+    let added = diff.added(&root).map_err(|e| vec![e])?;
     let (reports, errors): (Vec<_>, Vec<_>) = files.par_iter().partition_map(|path| match scan_file(path, scope) {
         Ok(report) => Either::Left(report),
         Err(e) => Either::Right(e.to_string()),
@@ -109,7 +112,8 @@ fn run(cli: Cli, matches: &clap::ArgMatches) -> Result<bool, Vec<String>> {
         None => reports,
     };
 
-    let failures = settings.gates(&reports, &root);
+    let mut failures = settings.gates(&reports, &root);
+    failures.extend(diff.gate(added.as_ref(), &reports, &root));
     for failure in &failures {
         eprintln!("docov: {failure}");
     }
