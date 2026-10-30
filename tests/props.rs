@@ -66,6 +66,12 @@ impl Expected {
         if rules.kinds.as_ref().is_some_and(|kinds| !kinds.contains(&self.item.kind)) {
             return None;
         }
+        let member = matches!(self.item.kind, Kind::Method | Kind::Accessor | Kind::Property);
+        let own_name = self.item.name.split_once('.').filter(|_| member).map(|(_, name)| name);
+        if rules.ignore_names.iter().any(|re| re.is_match(&self.item.name) || own_name.is_some_and(|n| re.is_match(n)))
+        {
+            return None;
+        }
         let described = |b: Block| if self.item.kind == Kind::Class { b.class_described } else { b.described };
         let documented = self.doc.is_some_and(|b| !rules.require_description || described(b));
         Some(Item { documented, ..self.item.clone() })
@@ -480,6 +486,13 @@ fn rules_decide_what_counts_and_what_is_documented(tc: TestCase) {
             .map(String::from)
             .collect(),
         kinds: tc.draw(gs::optional(gs::vecs(gs::sampled_from(ALL_KINDS.to_vec())).max_size(4))),
+        ignore_names: tc
+            .draw(
+                gs::vecs(gs::sampled_from(vec!["^n1$", "^_", "^m", "^p\\d", "0$", "^n2\\.", "^default$"])).max_size(2),
+            )
+            .into_iter()
+            .map(|re| regex::Regex::new(re).unwrap())
+            .collect(),
     };
     let items = scan(&source, SourceType::ts(), &rules).unwrap();
     assert_eq!(items, expected.iter().filter_map(|e| e.by(&rules)).collect::<Vec<_>>(), "{source}");
@@ -743,6 +756,31 @@ fn totals_by_kind_add_up(tc: TestCase) {
     assert_eq!(append(true, Format::Text), format!("by kind: {}\n", line.join(", ")));
     assert_eq!(append(false, Format::Text), "");
     assert_eq!(append(true, Format::Json), "");
+}
+
+/// Name patterns load as regexes, the same patterns loading the same. One that isn't a regex, or an
+/// `ignore` key docov doesn't know, fails to load, naming it.
+#[hegel::test(test_cases = 10)]
+fn name_patterns_load_as_regexes(tc: TestCase) {
+    let dir = tempfile::tempdir().unwrap();
+    let load = |names: &[&str]| {
+        let path = dir.path().join("names.json");
+        fs::write(&path, serde_json::json!({ "ignore": { "names": names } }).to_string()).unwrap();
+        config::Config::load(Some(&path)).unwrap()
+    };
+    let (a, b) = (tc.draw(gs::sampled_from(vec!["^_", "a|b"])), tc.draw(gs::sampled_from(vec!["^_", "a|b"])));
+    assert_eq!(load(&[a]) == load(&[b]), a == b);
+
+    let (keys, culprit) = tc.draw(gs::sampled_from(vec![
+        (r#"{ "ignore": { "names": ["("] } }"#, "unclosed group"),
+        (r#"{ "ignore": { "names": ["^_", "[z"] } }"#, "unclosed character class"),
+        (r#"{ "ignore": { "nmes": [] } }"#, "unknown field `nmes`"),
+        (r#"{ "ignore": { "names": "^_" } }"#, "invalid type: string"),
+    ]));
+    let path = dir.path().join("docov.json");
+    fs::write(&path, keys).unwrap();
+    let error = config::Config::load(Some(&path)).unwrap_err().to_string();
+    assert!(error.contains(culprit), "{error}");
 }
 
 fn write(dir: &Path, path: &str, text: &str) {
@@ -1151,8 +1189,19 @@ fn rules_come_from_flags_over_the_config(tc: TestCase) {
         run.args.push("--by-kind".into());
     }
 
+    let name_lists = vec![vec!["^_".to_owned()], vec!["^a".into(), "b$".into()]];
+    let names = run.set(&tc, "ignore", name_lists, |names| {
+        names.iter().flat_map(|name| ["--ignore-name".to_owned(), name.clone()]).collect()
+    });
+    // The key is an object.
+    if let Some(names) = run.keys.get_mut("ignore") {
+        *names = serde_json::json!({ "names": names.take() });
+    }
+
     let settings = run.settings(dir.path());
     let rules = settings.rules();
+    let patterns: Vec<&str> = rules.ignore_names.iter().map(regex::Regex::as_str).collect();
+    assert_eq!(patterns, names.unwrap_or_default());
     assert_eq!(settings.get::<Kinds>().by_kind, by_kind);
     assert_eq!(rules.kinds, kinds);
     assert_eq!(*settings.get::<Scope>(), scope.unwrap_or_default());

@@ -1,5 +1,6 @@
 //! Which items count, and when one is documented: the scan's settings, which features fill in.
 
+use regex::Regex;
 use rustc_hash::FxHashSet;
 
 use super::{Found, doc};
@@ -16,6 +17,8 @@ pub struct Rules {
     pub exclude_tags: Vec<String>,
     /// The kinds of item that count, or every kind.
     pub kinds: Option<Vec<Kind>>,
+    /// Regexes that take an item out of the total when its name, or a member's own name, matches.
+    pub ignore_names: Vec<Regex>,
 }
 
 impl From<Scope> for Rules {
@@ -32,7 +35,10 @@ impl Rules {
             self.scope == Scope::All || found.exported || found.binding.is_some_and(|b| exported.contains(b));
         let tagged = |tag: &String| found.doc.as_ref().is_some_and(|doc| doc::has_tag(doc, tag));
         let kind = self.kinds.as_ref().is_none_or(|kinds| kinds.contains(&found.kind));
-        in_scope && kind && !self.exclude_tags.iter().any(tagged)
+        let member = matches!(found.kind, Kind::Method | Kind::Accessor | Kind::Property);
+        let own_name = found.name.split_once('.').filter(|_| member).map(|(_, name)| name);
+        let named = |re: &Regex| re.is_match(&found.name) || own_name.is_some_and(|name| re.is_match(name));
+        in_scope && kind && !self.exclude_tags.iter().any(tagged) && !self.ignore_names.iter().any(named)
     }
 
     /// Whether `found` is documented.

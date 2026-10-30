@@ -272,3 +272,23 @@ fn kinds_pick_what_counts_and_break_the_total_down() {
     let json: serde_json::Value = serde_json::from_str(&out).unwrap();
     assert_eq!(json["kinds"], serde_json::json!({ "class": { "documented": 0, "total": 1, "percent": 0.0 } }));
 }
+
+#[test]
+fn name_patterns_leave_out_what_they_match() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = "export const _a = 1;\nexport const b = 1;\nexport class C { _d() {} e() {} }\n";
+    fs::write(dir.path().join("a.ts"), source).unwrap();
+    let total = |args: &[&str]| docov(dir.path(), args).1.lines().last().unwrap().to_owned();
+    assert_eq!(total(&[]), "   0.0%  0/5  total");
+    assert_eq!(total(&["--ignore-name", "^_"]), "   0.0%  0/3  total");
+    assert_eq!(total(&["--ignore-name", "^C\\.e$", "--ignore-name", "^b"]), "   0.0%  0/3  total");
+    fs::write(dir.path().join("docov.json"), r#"{ "ignore": { "names": ["^_", "^C$"] } }"#).unwrap();
+    assert_eq!(total(&[]), "   0.0%  0/2  total");
+    let (code, _, err) = docov(dir.path(), &["--ignore-name", "("]);
+    assert_eq!(code, 2);
+    assert!(err.contains("unclosed group"), "{err}");
+    fs::write(dir.path().join("docov.json"), r#"{ "ignore": { "names": ["("] } }"#).unwrap();
+    let (code, _, err) = docov(dir.path(), &[]);
+    assert_eq!(code, 2);
+    assert!(err.starts_with("docov: docov.json: regex parse error"), "{err}");
+}
