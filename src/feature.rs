@@ -8,7 +8,7 @@ use schemars::{JsonSchema, Schema};
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::{Map, Value};
 
-use crate::{FileReport, Rules, root::Root};
+use crate::{FileReport, Rules, metric::Metric, root::Root};
 
 include!(concat!(env!("OUT_DIR"), "/features.rs"));
 
@@ -33,6 +33,11 @@ pub trait Feature: Sized + Send + Sync + 'static {
 
     /// Sets its part of what counts and when an item is documented.
     fn rules(&self, _rules: &mut Rules) {}
+
+    /// The metric past coverage it adds to the reports, if it adds one.
+    fn metric(&self) -> Option<Metric> {
+        None
+    }
 
     /// Why the scan fails, a line for each way this setting fails it (exit 1).
     fn gate(&self, _run: &Run) -> Vec<String> {
@@ -159,6 +164,7 @@ impl PartialEq for Keys {
 trait Loaded: Send + Sync {
     fn as_any(&self) -> &dyn Any;
     fn rules(&self, rules: &mut Rules);
+    fn metric(&self) -> Option<Metric>;
     fn gate(&self, run: &Run) -> Vec<String>;
     fn edit(&self, reports: &[FileReport]) -> Option<Result<String, String>>;
     fn describe(&self) -> Option<Value>;
@@ -170,6 +176,9 @@ impl<F: Feature> Loaded for F {
     }
     fn rules(&self, rules: &mut Rules) {
         Feature::rules(self, rules);
+    }
+    fn metric(&self) -> Option<Metric> {
+        Feature::metric(self)
     }
     fn gate(&self, run: &Run) -> Vec<String> {
         Feature::gate(self, run)
@@ -203,6 +212,11 @@ impl Settings {
             feature.rules(&mut rules);
         }
         rules
+    }
+
+    /// The metrics past coverage that features add to the reports, in registration order.
+    pub fn metrics(&self) -> Vec<Metric> {
+        self.0.iter().filter_map(|f| f.metric()).collect()
     }
 
     /// What the first feature that edits the files in place of a report did, if one does.

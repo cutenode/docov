@@ -25,7 +25,7 @@ The npm package runs a prebuilt binary for macOS, Linux or Windows on x64 or arm
 ## Usage
 
 ```
-docov [PATHS]... [--config FILE] [--threshold PERCENT] [--scope exports|all] [--format FORMAT[=FILE]]... [--output FILE] [--badge FILE] [--compare FILE] [--omit-covered] [--quiet]
+docov [PATHS]... [--config FILE] [--threshold PERCENT] [--scope exports|all|public] [--format FORMAT[=FILE]]... [--output FILE] [--badge FILE] [--compare FILE] [--omit-covered] [--quiet]
 docov init
 ```
 
@@ -68,15 +68,33 @@ A `// docov-ignore-next-line` comment (with an optional reason, `// docov-ignore
 
 To adopt docov in a project that's far from documented, `--add-ignore` (or `--add-ignore=REASON`) writes a `// docov-ignore-next-line` above every undocumented item, indented like it, and reports how many it wrote instead of the coverage. It changes no other line.
 
+`--explain FILE` prints, in place of a report, a line for each item in `FILE` saying whether it counts by the config `FILE` is scanned with (a nested config's too) and why (documented by the block at a line, ignored by a comment, or left out by a rule), and one for each declaration or block the scan passed over there and why (a re-export, a constructor, an overload's implementation, a destructured variable, a `require()` binding, a license header, a private member). When a nested config leaves `FILE` out, it says so. It exits 0.
+
 Some things never count: constructors (their class's doc covers them), private members (`#x` and `private x`), an overload's implementation (only its signatures), destructured variables, `require()` bindings, `declare module` and `declare global` blocks, and re-exports from another file (`export { x } from './x'`, `export * from`), whose declarations count in their own file.
 
 `--scope all` counts every module-level declaration, exported or not.
 
+`--scope public` counts only a package's public API: what its entry points export. It reads the package.json in the config's folder (a nested config's own, for its files), or else the nearest one above the scanned paths, takes every path in its `exports` (under every condition and subpath, leaving out `*` patterns), `main`, `module`, `types` and `typings`, and finds each one's source file, back through tsconfig.json's `outDir` and `rootDir` (or `src`) for a built file, and from a `.d.ts` to the module it declares. From there it follows `export * from`, `export { x } from`, `export * as ns from` and imports exported again through the module graph, the way Node and TypeScript resolve them, and counts each declaration it reaches once, in its own file. A reached file's CommonJS exports count too. An entry point with no source file is an error (exit 2).
+
+`"members": "all"` counts more members, where their parent counts: TypeScript enum members (`Color.Red`), the members of a type alias's object type (`Options.timeout`), and the properties of an object literal whose block has `@enum`, `@namespace` or `@lends X` (`Name.prop`, or `X.prop`). A matching `@property` in the parent's block documents one of these. The default, `"classes"`, counts only the members of classes and interfaces.
+
+`"commonjsMembers": true` counts `X.prototype.m = …` and `X.m = …` at the top level as members of `X` (`X.m`, a method or property by its value) when `X` is a function or class declared in the file, counting where `X` does. In a CommonJS file (`.cjs`, or a `.js` file with no `import` or `export`), `this.a = …` at the top level then exports `a` the way `exports.a = …` does.
+
+`"fileDocs": "require"` makes each file an item of its own, of kind `module`, at its first line and named by its `@module` or else its path. It's documented when the file's first JSDoc block has `@file`, `@fileoverview`, `@overview`, `@module` or `@packageDocumentation`, with text, and that block then documents nothing else. Without it, a block like that right before a declaration documents the declaration.
+
+`"virtual": true` counts a JavaScript file's `@typedef` and `@callback` blocks that name a type as items of kind `type`, at the block, documented when the block or the tag describes the type. They count as exported under the `exports` scope, since JSDoc treats them as the module's public types, and they then document nothing else. Without it, such a block right before a declaration documents the declaration.
+
 `"exports": { "esm": true, "cjs": true, "globals": false }` picks which ways of exporting count under the `exports` scope (`cjs` covers TypeScript's `export =` too). With `globals` on, `window.a = …` and `globalThis.a = …` at the top level export `a` the way `exports.a = …` does, under either scope.
 
-`--kind function,class` (or `"kinds": ["function", "class"]`) counts only those kinds of item, named as the reports name them: `function`, `class`, `method`, `accessor`, `property`, `variable`, `interface`, `type`, `enum`, `namespace` and `default`. `--by-kind` adds a line of totals by kind after the text report's total, and the JSON report always has them, under `kinds`.
+`--kind function,class` (or `"kinds": ["function", "class"]`) counts only those kinds of item, named as the reports name them: `function`, `class`, `method`, `accessor`, `property`, `variable`, `interface`, `type`, `enum`, `namespace`, `default` and `module`. `--by-kind` adds a line of totals by kind after the text report's total, and the JSON report always has them, under `kinds`.
 
 `--access public,protected` (or `"access": ["public", "protected", "package"]`) counts only items with those access levels, like jsdoc's `--access`: an item's level is its `@public`, `@protected`, `@package` or `@private` tag (or `@access` with one of those), else `protected` for a TypeScript `protected` member, else `public`. Without it, access tags change nothing.
+
+Example coverage is a second figure: the share of counted items whose JSDoc has an `@example`, as rustdoc's `--show-coverage` counts it. The JSON report always has it (`withExamples` and `examplesPercent`, for each file and in all), `--examples` adds it to each line of the text report, and `--examples-threshold PERCENT` (`"examplesThreshold"`) fails the scan under it.
+
+`--release-tags` adds release-tag coverage: the share of counted top-level exports with exactly one of `@public`, `@beta`, `@alpha` and `@internal`, which [API Extractor asks for](https://api-extractor.com/pages/messages/ae-missing-release-tag/) (members take their container's, so they aren't counted). It's a line after the text report's total and `releaseTagged` and `releaseTagsPercent` in the JSON report, and `--release-tags-threshold PERCENT` (`"releaseTagsThreshold"`, which turns it on too) fails the scan under it.
+
+`--types` adds type coverage for JavaScript (`.js`, `.mjs`, `.cjs` and `.jsx` files): the share of counted functions and methods whose JSDoc gives each `@param` a `{type}`, and its `@returns` one when it has one. An undocumented function isn't typed. It's a line after the text report's total and `typed` and `typesPercent` in the JSON report, and `--types-threshold PERCENT` (`"typesThreshold"`, which turns it on too) fails the scan under it.
 
 `"ignoreDeprecated": true` leaves out items whose JSDoc has `@deprecated`, and `"skipGenerated": true` leaves out every item in a file whose first comment has `@generated`.
 
@@ -101,7 +119,7 @@ Some things never count: constructors (their class's doc covers them), private m
 
 `--jsdoc-config FILE` (or `"jsdocConfig": "jsdoc.json"`, relative to the config) scans the files a [jsdoc config](https://jsdoc.app/about-configuring-jsdoc) documents: its `source.include` are the paths, unless there are paths already, and `source.exclude` leaves files and folders out, both relative to the jsdoc config. `source.includePattern` and `excludePattern` filter files only when the config writes them, since jsdoc's default `includePattern` would leave out TypeScript. It has to be JSON; docov can't read a `.js` config.
 
-With `"nested": true` in the root config, each file is scanned with the nearest docov.json, docov.jsonc or .docovrc in a folder above it, up to the root config's folder, merged over the root config, the way [oxlint's nested configs](https://oxc.rs/docs/guide/usage/linter/nested-config.html) work. A nested config's `exclude` applies in its folder, its gates (`threshold`, `maxUndocumented`, `overrides` and `baseline`) hold for its own files (a failure names the config), and its `paths` aren't read.
+With `"nested": true` in the root config, each file is scanned with the nearest docov.json, docov.jsonc or .docovrc in a folder above it, up to the root config's folder, merged over the root config, the way [oxlint's nested configs](https://oxc.rs/docs/guide/usage/linter/nested-config.html) work. A nested config's `exclude` applies in its folder, its gates (`threshold`, `maxUndocumented`, `overrides`, `baseline` and the examples, release-tags and types thresholds) hold for its own files (a failure names the config), and its `paths` aren't read.
 
 `--by-package` adds a total line for each workspace package after the text total, and a `packages` array to the JSON. The packages are the folders with a package.json that the globs in the root config folder's package.json `workspaces` or pnpm-workspace.yaml `packages` match.
 
@@ -133,8 +151,8 @@ With `"nested": true` in the root config, each file is scanned with the nearest 
 docov --format text --format lcov=coverage/docov.lcov
 ```
 
-- `text` (the default): each file's percentage and its undocumented items, then the total. `--omit-covered` leaves out fully documented files, and `--quiet` prints only the total (failed gates still go to stderr). On a terminal, a percentage under the threshold is red and the undocumented items are dim. `--color always` or `never` says otherwise, and `NO_COLOR` turns it off.
-- `json`: every item, documented or not, with its kind, line and column, and totals per file, per kind and overall.
+- `text` (the default): each file's percentage and its undocumented items, then the total. `--omit-covered` leaves out fully documented files, and `--quiet` prints only the total (failed gates still go to stderr). `--sort priority` lists each file's undocumented items by what to document first: exported functions and methods (more parameters first), then classes, then the rest. On a terminal, a percentage under the threshold is red and the undocumented items are dim. `--color always` or `never` says otherwise, and `NO_COLOR` turns it off.
+- `json`: every item, documented or not, with its kind, line and column, and totals per file, per kind and overall. Each item also says whether its JSDoc describes it (`hasDescription`) and has an `@example` (`hasExample`), whether each parameter has a matching `@param` (`paramsDocumented`, `null` for what isn't a function or method), whether it's `deprecated`, and its `since` text (or `null`).
 - `lcov`: a line record for each line with items on it, hit when all of them are documented, and each item as a function, hit when it's documented. Coverage services and editor gutters read it.
 - `cobertura`: Cobertura XML (coverage-04.dtd) with the same line records, a package per folder and a class per file, for GitLab's merge request coverage and other CI coverage views.
 - `github`: GitHub Actions annotations, a warning on each undocumented item and an error for each failed gate. In GitHub Actions (`GITHUB_ACTIONS=true`) with no `--format`, docov writes these after the text, the way [oxlint](https://oxc.rs/docs/guide/usage/linter/output-formats.html) does.
@@ -245,9 +263,12 @@ Each flag and docov.json key belongs to a feature, one file in `src/feature/` th
 ```bash
 cargo run -- [PATHS]...   # docov on a project
 tools/check.sh            # what CI runs: tools/lint.sh (format, clippy) and tools/coverage.sh (coverage for the whole suite, for the Hegel properties alone, and for the npm launcher's tests)
+tools/jsdoc-oracle.sh [DIR]   # where docov and jsdoc disagree on a folder of plain JavaScript (default: tests/fixtures/jsdoc)
 git tag v1.2.3 && git push origin v1.2.3   # release Cargo.toml's version 1.2.3 to crates.io and npm
 ```
 
 Pushing a version tag runs `.github/workflows/release.yml`, which builds the binaries and publishes with trusted publishing, so there are no registry tokens. The npm packages are `@docov/cli` (`npm/docov`, a launcher) and an `@docov/<platform>-<arch>` package per binary. `tools/bootstrap-publishing.sh` publishes the first version by hand and sets up the trust, which both registries only allow for a package they already have.
 
 `cargo coverage` fails under the thresholds in `.cargo/config.toml`. On a pull request, lint and coverage are separate pass/fail checks for each OS. With `LCOV_DIR` set, `tools/coverage.sh` writes each Rust coverage run to `$LCOV_DIR/suite.lcov` and `props.lcov` in place of its table. CI sets it, puts each run's per-file numbers in the job summary, and uploads the lcov files as the `coverage-<os>` artifact. The property tests (`tests/props.rs`) use [Hegel](https://github.com/hegeldev/hegel-rust). They check scans against a model of generated modules, and the binary against generated projects.
+
+`tools/jsdoc-oracle.sh` runs jsdoc 4 (`npx --yes jsdoc@4 -X`, so it needs Node and the network) and `docov --scope all --format json` on the same files, and lists each declaration only one of them counts, or that they disagree on documenting. It isn't part of the checks: some disagreements are by design (jsdoc counts constructors, `this.x =` members, object literal members, destructured variables and `/** */` and `@license` blocks), and a `@typedef` or `@file` block right before an undocumented declaration documents it for docov but not for jsdoc unless `"virtual"` or `"fileDocs"` is on.

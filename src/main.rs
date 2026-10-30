@@ -19,10 +19,13 @@ use docov::{
         changed::Changed,
         color::Color,
         diff::Diff,
+        examples::Examples,
+        explain::Explain,
         jsdoc_config::JsdocConfig,
         list_files::{self, ListFiles},
         overrides::Overrides,
         print_config::{self, PrintConfig},
+        sort::Sort,
         stdin_filename::{self, StdinFilename},
         threads::Threads,
         threshold::Limit,
@@ -126,7 +129,8 @@ fn run(cli: &Cli, matches: &clap::ArgMatches, watched: &mut Vec<PathBuf>) -> Res
 
     let root = config.root();
     let stdin = settings.get::<StdinFilename>().0.clone();
-    let files = match &stdin {
+    let explain = settings.get::<Explain>().0.clone();
+    let files = match stdin.as_ref().or(explain.as_ref()) {
         Some(path) => vec![path.clone()],
         None => {
             let excluded = settings.get::<Overrides>().clone().excluder(config.exclude.clone(), &root);
@@ -134,8 +138,12 @@ fn run(cli: &Cli, matches: &clap::ArgMatches, watched: &mut Vec<PathBuf>) -> Res
             settings.get::<Changed>().filter(files, &root).map_err(|e| vec![e])?
         }
     };
-    let plan = nested::Plan::new(&config, settings, matches, files).map_err(|e| vec![e])?;
+    let mut plan = nested::Plan::new(&config, settings, matches, files).map_err(|e| vec![e])?;
+    plan.load_public(&paths)?;
     let (settings, files) = (plan.settings(), plan.files());
+    if let Some(explained) = settings.get::<Explain>().write(&files, &mut io::stdout().lock()) {
+        return explained.map(|()| true).map_err(|e| vec![e]);
+    }
     if settings.get::<ListFiles>().0 {
         return wrote(list_files::write(files.iter().map(|(file, _)| *file), &mut io::stdout().lock()));
     }
@@ -176,6 +184,9 @@ fn run(cli: &Cli, matches: &clap::ArgMatches, watched: &mut Vec<PathBuf>) -> Res
         base: base.as_ref(),
         packages: packages.as_deref(),
         color: color != Color::Never,
+        sort: *settings.get::<Sort>(),
+        examples: settings.get::<Examples>().text,
+        metrics: &settings.metrics(),
     };
     report::write(&outputs, &context, &mut color.stream(io::stdout().lock())).map_err(|e| vec![e])?;
     if baseline.write {

@@ -220,7 +220,8 @@ fn the_cache_keys_on_the_rules(tc: TestCase) {
 
 /// `--print-config` describes each feature with a setting worth printing as it was written, the
 /// flags winning: the gates (thresholds by glob and negative ones too, overrides,
-/// `maxUndocumented`, the baseline, the changed files and the diff threshold) and what counts.
+/// `maxUndocumented`, the baseline, the changed files and the diff threshold), what counts, and
+/// the metrics and order the reports add.
 #[hegel::test(test_cases = 30)]
 fn print_config_describes_every_setting(tc: TestCase) {
     let dir = tempfile::tempdir().unwrap();
@@ -252,6 +253,12 @@ fn print_config_describes_every_setting(tc: TestCase) {
         "requireDescription": flags,
         "skipGenerated": flags,
         "reportUnusedIgnores": flags,
+        "fileDocs": "require",
+        "virtual": flags,
+        "members": "all",
+        "commonjsMembers": flags,
+        "examplesThreshold": 30,
+        "releaseTagsThreshold": 40,
     });
     write(dir.path(), "docov.json", &config.to_string());
     let changed = tc.draw(gs::sampled_from(vec![
@@ -263,6 +270,7 @@ fn print_config_describes_every_setting(tc: TestCase) {
     let mut args = changed.0;
     if flags {
         args.extend(["--baseline", "other.json", "--write-baseline", "--diff-threshold", "90", "--diff-base", "main"]);
+        args.extend(["--sort", "priority", "--examples", "--types"]);
     }
     let config = Config::load(Some(&dir.path().join("docov.json"))).unwrap();
     let described = Settings::new(&matches(&args), config.keys).describe();
@@ -289,6 +297,14 @@ fn print_config_describes_every_setting(tc: TestCase) {
         ("require_description", json!(flags)),
         ("skip_generated", json!(flags)),
         ("report_unused_ignores", json!(flags)),
+        ("file_docs", json!("require")),
+        ("virtual_types", json!(flags)),
+        ("members", json!("all")),
+        ("commonjs_members", json!(flags)),
+        ("examples", json!({ "text": flags, "threshold": 30.0 })),
+        ("release_tags", json!({ "on": true, "threshold": 40.0 })),
+        ("types", json!({ "on": flags, "threshold": null })),
+        ("sort", json!(if flags { "priority" } else { "position" })),
     ];
     for (name, value) in expected {
         assert_eq!(described.get(name), Some(&value), "{name}");
@@ -360,4 +376,175 @@ fn the_cli_combines_its_features(tc: TestCase) {
     let (code, out, err) = docov(root, &["--by-package"], false);
     assert_eq!((code, out.as_str()), (2, ""));
     assert!(err.starts_with("docov: package.json: "), "{err}");
+}
+
+/// A function each way the metrics tell apart: documented with an `@example` and a typed `@param`,
+/// documented without either, undocumented, or undocumented under a `docov-ignore`, which leaves it
+/// out of every metric.
+const FUNCTIONS: [&str; 4] = [
+    "/**\n * F.\n * @param {number} a A.\n * @example f(1)\n */\nexport function f{i}(a) {}\n",
+    "/**\n * F.\n * @param a A.\n */\nexport function f{i}(a) {}\n",
+    "export function f{i}(a) {}\n",
+    "// docov-ignore-next-line\nexport function f{i}(a) {}\n",
+];
+
+/// Example and type coverage gate each nested config's own files, with the thresholds it has or
+/// gets from the root config, counting only the items that aren't ignored, and a nested config's
+/// failures name it.
+#[hegel::test(test_cases = 40)]
+fn metric_gates_go_by_each_nested_config(tc: TestCase) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let threshold = || tc.draw(gs::optional(gs::integers::<u8>().max_value(100)));
+    let (root_examples, pkg_examples, pkg_types) = (threshold(), threshold(), threshold());
+    // A key written as null would take the root config's away.
+    let keys = |pairs: [(&str, Option<u8>); 2]| {
+        serde_json::Value::Object(
+            pairs.into_iter().filter_map(|(key, value)| Some((key.into(), value?.into()))).collect(),
+        )
+    };
+    let mut top = keys([("examplesThreshold", root_examples), ("typesThreshold", None)]);
+    top["nested"] = true.into();
+    write(root, "docov.json", &top.to_string());
+    write(
+        root,
+        "pkg/docov.json",
+        &keys([("examplesThreshold", pkg_examples), ("typesThreshold", pkg_types)]).to_string(),
+    );
+    // Each group's functions, by their kind in FUNCTIONS.
+    let mut groups: [Vec<usize>; 2] = [Vec::new(), Vec::new()];
+    for (g, folder) in ["", "pkg/"].into_iter().enumerate() {
+        let kinds = tc.draw(gs::vecs(gs::integers::<usize>().max_value(3)).max_size(4));
+        let source: String =
+            kinds.iter().enumerate().map(|(i, &k)| FUNCTIONS[k].replace("{i}", &i.to_string())).collect();
+        write(root, &format!("{folder}m.js"), &source);
+        groups[g] = kinds;
+    }
+
+    let mut config = Config::load(Some(&root.join("docov.json"))).unwrap();
+    let settings = Settings::new(&matches(&[]), std::mem::take(&mut config.keys));
+    let plan =
+        nested::Plan::new(&config, settings, &matches(&[]), walk::files(&[root.to_owned()], |_, _| false).unwrap())
+            .unwrap();
+    let reports = batch::scan(&plan.files(), &Cache::default()).unwrap();
+
+    let failure = |kinds: &[usize], has: usize, name: &str, threshold: Option<u8>| {
+        let counted = kinds.iter().filter(|&&k| k != 3).count();
+        let percent = Totals { documented: kinds.iter().filter(|&&k| k == has).count(), total: counted }.percent();
+        let threshold = threshold.filter(|&t| percent < f64::from(t))?;
+        Some(format!("{percent:.1}% with {name}, under the {threshold}% {name} threshold"))
+    };
+    let pkg = format!("{}: ", root.join("pkg").join("docov.json").display());
+    let mut wanted: Vec<String> = failure(&groups[0], 0, "examples", root_examples).into_iter().collect();
+    let pkg_failures = [
+        failure(&groups[1], 0, "examples", pkg_examples.or(root_examples)),
+        failure(&groups[1], 0, "types", pkg_types),
+    ];
+    wanted.extend(pkg_failures.into_iter().flatten().map(|f| pkg.clone() + &f));
+    assert_eq!(plan.gates(&reports).1, wanted);
+}
+
+/// The cache keeps every fact about an item, those the JSON report leaves out too, so the metrics
+/// and `--sort priority` read the same from it as from a fresh scan.
+#[hegel::test(test_cases = 30)]
+fn facts_survive_the_cache(tc: TestCase) {
+    let dir = tempfile::tempdir().unwrap();
+    let tags = tc.draw(gs::vecs(gs::sampled_from(vec![
+        "@example f(1)",
+        "@since 1.2",
+        "@deprecated",
+        "@public",
+        "@beta",
+        "@param {number} a A.",
+        "@param b B.",
+        "@returns {number} R.",
+    ])));
+    let doc: String = tags.iter().map(|tag| format!(" * {tag}\n")).collect();
+    let documented = tc.draw(gs::booleans());
+    let block = if documented { format!("/**\n * F.\n{doc} */\n") } else { String::new() };
+    write(dir.path(), "a.js", &format!("{block}export function f(a, b) {{}}\nexport class C {{ m(x) {{}} }}\n"));
+    let path = dir.path().join("a.js");
+    let rules = Rules::default();
+    let cache_path = dir.path().join(".docov-cache");
+    let fresh = scan_file(&path, &rules).unwrap();
+    batch::scan(&[(path.as_path(), &rules)], &Cache::read(cache_path.clone())).unwrap();
+
+    let cache = Cache::read(cache_path);
+    let kept = cache.stamp(&path, &rules).and_then(|stamp| cache.get(&path, stamp));
+    assert_eq!(kept.as_ref(), Some(&fresh.items));
+}
+
+/// Under the public scope, each nested config's files count by what its own folder's package.json
+/// reaches, or all their exports when it sets another scope. A file the cache kept counts again
+/// when what the entry points reach in it changes, though the file didn't, and an entry point with
+/// no source fails naming its package.json.
+#[hegel::test(test_cases = 20)]
+fn public_scope_goes_by_each_nested_config(tc: TestCase) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(root, "docov.json", r#"{ "nested": true, "scope": "public" }"#);
+    write(root, "package.json", r#"{ "main": "index.js" }"#);
+    write(root, "index.ts", "export const a = 1;\n");
+    write(root, "other.ts", "export const b = 1;\n");
+    let exports = tc.draw(gs::booleans());
+    write(root, "pkg/docov.json", if exports { r#"{ "scope": "exports" }"# } else { "{}" });
+    write(root, "pkg/x.ts", "export const c = 1;\n");
+    write(root, "pkg/y.ts", "export const d = 1;\n");
+    let cache_path = root.join(".docov-cache");
+    let scan = |main: &str| {
+        write(root, "pkg/package.json", &json!({ "main": main }).to_string());
+        let mut config = Config::load(Some(&root.join("docov.json"))).unwrap();
+        let settings = Settings::new(&matches(&[]), std::mem::take(&mut config.keys));
+        let files = walk::files(&[root.to_owned()], |path, _| path.ends_with(".docov-cache")).unwrap();
+        let mut plan = nested::Plan::new(&config, settings, &matches(&[]), files).unwrap();
+        plan.load_public(&[root.to_owned()])?;
+        let reports = batch::scan(&plan.files(), &Cache::read(cache_path.clone())).unwrap();
+        let fresh: Vec<_> = plan.files().into_iter().map(|(path, rules)| scan_file(path, rules).unwrap()).collect();
+        assert_eq!(reports, fresh);
+        Ok::<_, Vec<String>>(reports.iter().flat_map(|r| r.items.iter().map(|i| i.name.clone())).collect::<Vec<_>>())
+    };
+    for main in [tc.draw(gs::sampled_from(vec!["x.js", "y.js"])), "x.js", "y.js"] {
+        let wanted = match (exports, main) {
+            (true, _) => ["a", "c", "d"].as_slice(),
+            (false, "x.js") => &["a", "c"],
+            (false, _) => &["a", "d"],
+        };
+        assert_eq!(scan(main).unwrap(), wanted, "{main}");
+    }
+    let errors = scan("gone.js");
+    if exports {
+        assert!(errors.is_ok());
+    } else {
+        let errors = errors.unwrap_err();
+        assert!(
+            errors.len() == 1 && errors[0].contains(&root.join("pkg").join("package.json").display().to_string()),
+            "{errors:?}"
+        );
+    }
+}
+
+/// `--explain` explains a file by the config it's scanned with: a nested config's rules, and a line
+/// saying so when that config leaves the file out. It reads the file, so stdin can't stand in.
+#[hegel::test(test_cases = 2)]
+fn the_cli_explains_by_the_effective_config(tc: TestCase) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(root, "docov.json", r#"{ "nested": true }"#);
+    write(root, "pkg/docov.json", r#"{ "excludeTags": ["internal"], "exclude": ["skip.ts"] }"#);
+    let source = "/** @internal */\nexport const a = 1;\n";
+    for path in ["a.ts", "pkg/a.ts", "pkg/skip.ts"] {
+        write(root, path, source);
+    }
+    let explained = [
+        ("a.ts", "a.ts:2:1  variable a  documented by the block at 1:1"),
+        ("pkg/a.ts", "pkg/a.ts:2:1  variable a  left out: its JSDoc has @internal"),
+        ("pkg/skip.ts", "pkg/skip.ts  left out: the config excludes it"),
+    ];
+    for (path, line) in explained {
+        assert_eq!(docov(root, &["--explain", path], false), (0, format!("{line}\n"), String::new()));
+    }
+    let path = tc.draw(gs::sampled_from(explained.map(|(path, _)| path).to_vec()));
+    let (code, _, err) = docov_with_stdin(root, &["--explain", path, "--stdin-filename", path], b"");
+    assert_eq!(code, 2);
+    assert!(err.contains("cannot be used with"), "{err}");
 }

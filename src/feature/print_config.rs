@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use serde_json::{Value, json};
 
 use crate::{
-    Config,
+    Config, report,
     feature::{Entry, Feature, NoKeys, Settings},
 };
 
@@ -36,15 +36,15 @@ impl Feature for PrintConfig {
 }
 
 /// The settings: the files they came from, the paths to scan, the excludes, and each feature's
-/// setting.
+/// setting, with the keys in order.
 pub fn json(config: &Config, paths: &[PathBuf], settings: &Settings) -> Value {
     let display = |paths: &[PathBuf]| paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>();
     let exclude: Vec<_> =
         config.exclude.iter().map(|e| json!({ "root": e.root.display().to_string(), "globs": e.globs })).collect();
-    json!({
+    report::sorted(json!({
         "files": display(&config.files),
         "paths": display(paths),
         "exclude": exclude,
         "features": settings.describe(),
-    })
+    }))
 }

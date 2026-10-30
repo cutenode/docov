@@ -4,8 +4,12 @@ use std::{fs, path::Path};
 
 use serde::{Deserialize, Serialize, Serializer};
 
-use crate::report::{Context, Format, json};
-use crate::{Item, Kind, Totals, packages::Package};
+use crate::report::{Context, Format};
+use crate::{
+    Item, Kind, Totals,
+    metric::{EXAMPLES, Metric},
+    packages::Package,
+};
 
 /// The format.
 pub const FORMAT: Format = Format { name: "json", help: "Every item, documented or not, with totals", render };
@@ -15,6 +19,8 @@ struct Report<'a> {
     #[serde(flatten)]
     totals: Totals,
     percent: f64,
+    #[serde(flatten)]
+    metrics: Metrics,
     #[serde(serialize_with = "by_kind")]
     kinds: Vec<(Kind, Totals)>,
     files: Vec<File<'a>>,
@@ -30,6 +36,18 @@ struct Share {
     percent: f64,
 }
 
+/// Each metric's count and percentage, under its keys.
+struct Metrics(Vec<(Metric, Totals)>);
+
+impl Serialize for Metrics {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_map(self.0.iter().flat_map(|(metric, totals)| {
+            let [count, percent] = metric.keys;
+            [(count, serde_json::Value::from(totals.documented)), (percent, totals.percent().into())]
+        }))
+    }
+}
+
 /// Each kind's totals, as an object by kind.
 fn by_kind<S: Serializer>(kinds: &[(Kind, Totals)], serializer: S) -> Result<S::Ok, S::Error> {
     serializer.collect_map(kinds.iter().map(|&(kind, totals)| (kind, Share { totals, percent: totals.percent() })))
@@ -41,6 +59,8 @@ struct File<'a> {
     #[serde(flatten)]
     totals: Totals,
     percent: f64,
+    #[serde(flatten)]
+    metrics: Metrics,
     items: Vec<JsonItem<'a>>,
 }
 
@@ -62,8 +82,12 @@ impl<'a> JsonItem<'a> {
     }
 }
 
+/// Every item, with totals and each metric's figures: examples, and those the features add.
 fn render(context: &Context) -> String {
     let (totals, kinds) = (Totals::of(context.files), Totals::by_kind(context.files));
+    let metrics: Vec<Metric> = std::iter::once(EXAMPLES).chain(context.metrics.iter().copied()).collect();
+    let of = |count: &dyn Fn(Metric) -> Totals| Metrics(metrics.iter().map(|&m| (m, count(m))).collect());
+    let total = of(&|m| m.total(context.files));
     let files = context
         .files
         .iter()
@@ -71,10 +95,12 @@ fn render(context: &Context) -> String {
             path: f.path.display().to_string(),
             totals: f.totals(),
             percent: f.totals().percent(),
+            metrics: of(&|m| m.file(f)),
             items: f.items.iter().map(JsonItem::of).collect(),
         })
         .collect();
-    json(&Report { totals, percent: totals.percent(), kinds, files, packages: context.packages })
+    let report = Report { totals, percent: totals.percent(), metrics: total, kinds, files, packages: context.packages };
+    serde_json::to_string_pretty(&report).expect("a report serializes") + "\n"
 }
 
 /// An earlier `json` report, which `--compare` reads to show what changed.

@@ -63,6 +63,21 @@
       ],
       "description": "A config file to extend, or a list of them."
     },
+    "FileDocs": {
+      "description": "Whether each file needs a JSDoc block of its own.",
+      "oneOf": [
+        {
+          "const": "off",
+          "description": "Files aren't items.",
+          "type": "string"
+        },
+        {
+          "const": "require",
+          "description": "Each file is an item of kind `module`, documented when its first JSDoc block has `@file`,\n`@fileoverview`, `@overview`, `@module` or `@packageDocumentation`, with text. That block then\ndocuments nothing else.",
+          "type": "string"
+        }
+      ]
+    },
     "Ignore": {
       "additionalProperties": false,
       "description": "What to leave out.",
@@ -107,7 +122,7 @@
         },
         {
           "const": "method",
-          "description": "A class method or an interface method signature.",
+          "description": "A class method or an interface method signature, or a function member of a tagged object\nliteral, an object type or a CommonJS export (with `members` or `commonjsMembers`).",
           "type": "string"
         },
         {
@@ -117,7 +132,7 @@
         },
         {
           "const": "property",
-          "description": "A class field or an interface property signature.",
+          "description": "A class field or an interface property signature, or another member that isn't a function\n(with `members` or `commonjsMembers`).",
           "type": "string"
         },
         {
@@ -148,6 +163,26 @@
         {
           "const": "default",
           "description": "`export default` or `module.exports =` of an expression.",
+          "type": "string"
+        },
+        {
+          "const": "module",
+          "description": "A file, with `fileDocs`.",
+          "type": "string"
+        }
+      ]
+    },
+    "Members": {
+      "description": "Which members count.",
+      "oneOf": [
+        {
+          "const": "classes",
+          "description": "The public members of classes and interfaces.",
+          "type": "string"
+        },
+        {
+          "const": "all",
+          "description": "Those, and enum members, the members of a type alias's object type, and the properties of\nan object literal tagged `@enum`, `@namespace` or `@lends`. A matching `@property` in the\nparent's block documents one of these.",
           "type": "string"
         }
       ]
@@ -264,6 +299,11 @@
           "const": "all",
           "description": "Every module-level declaration, exported or not.",
           "type": "string"
+        },
+        {
+          "const": "public",
+          "description": "What the package's entry points (package.json's `exports`, `main`, `module`, `types` and\n`typings`) export, following re-exports through the module graph.",
+          "type": "string"
         }
       ]
     }
@@ -301,6 +341,22 @@
         "null"
       ]
     },
+    "commonjsMembers": {
+      "default": false,
+      "description": "Count `X.prototype.m = …` and `X.m = …` at the top level as members of X, a function or class declared there, and `this.a = …` in a CommonJS file as an export.",
+      "type": "boolean"
+    },
+    "examplesThreshold": {
+      "default": null,
+      "description": "The lowest percentage of counted items with an @example that passes.",
+      "format": "double",
+      "maximum": 100,
+      "minimum": 0,
+      "type": [
+        "number",
+        "null"
+      ]
+    },
     "exclude": {
       "default": [],
       "description": "Gitignore-style globs of files to leave out, relative to this file's folder, on top of .gitignore.",
@@ -329,6 +385,11 @@
     "extends": {
       "$ref": "#/$defs/Extends",
       "description": "Config files this one builds on, relative to its folder. Its keys win over theirs, and a later one's over an earlier one's."
+    },
+    "fileDocs": {
+      "$ref": "#/$defs/FileDocs",
+      "default": "off",
+      "description": "Whether each file needs a JSDoc block of its own (`@file`, `@fileoverview`, `@overview`, `@module` or `@packageDocumentation`, with text), counted as an item of kind `module`."
     },
     "ignore": {
       "$ref": "#/$defs/Ignore",
@@ -373,6 +434,11 @@
         "null"
       ]
     },
+    "members": {
+      "$ref": "#/$defs/Members",
+      "default": "classes",
+      "description": "Which members count: those of classes and interfaces, or all of them, with enum members, a type alias's object members and the properties of an object literal tagged @enum, @namespace or @lends."
+    },
     "nested": {
       "default": false,
       "description": "Scan each file with the nearest docov.json, docov.jsonc or .docovrc above it, up to this file's folder, merged over this one. Only the root config's counts.",
@@ -393,6 +459,17 @@
         "type": "string"
       },
       "type": "array"
+    },
+    "releaseTagsThreshold": {
+      "default": null,
+      "description": "The lowest percentage of top-level exports with exactly one of @public, @beta, @alpha and @internal that passes.",
+      "format": "double",
+      "maximum": 100,
+      "minimum": 0,
+      "type": [
+        "number",
+        "null"
+      ]
     },
     "reportUnusedIgnores": {
       "default": false,
@@ -487,6 +564,22 @@
       ],
       "default": null,
       "description": "The lowest documented percentage that passes, or thresholds by path: `global` for every file together, `perFile` for each file, and gitignore-style globs for the files each matches together."
+    },
+    "typesThreshold": {
+      "default": null,
+      "description": "The lowest percentage of JavaScript functions and methods with a {type} on each @param and @returns that passes.",
+      "format": "double",
+      "maximum": 100,
+      "minimum": 0,
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "virtual": {
+      "default": false,
+      "description": "Count a JavaScript file's named @typedef and @callback blocks as items of kind `type`, documented when they have a description. They then document nothing else.",
+      "type": "boolean"
     }
   },
   "title": "Config",

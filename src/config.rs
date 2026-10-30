@@ -14,6 +14,7 @@ use crate::{
     feature,
     glob::Globs,
     jsdoc::{self, Patterns},
+    report,
     root::Root,
     walk::Exclude,
 };
@@ -136,6 +137,11 @@ pub(crate) fn in_range(value: f64) -> Result<f64, String> {
     if (0.0..=100.0).contains(&value) { Ok(value) } else { Err("expected a number from 0 to 100".into()) }
 }
 
+/// Reads an optional percentage key, such as `typesThreshold`: a number from 0 to 100.
+pub fn percentage<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<f64>, D::Error> {
+    Option::<f64>::deserialize(deserializer)?.map(in_range).transpose().map_err(de::Error::custom)
+}
+
 /// The JSON Schema of the whole file: [`File`]'s own keys, then each feature's.
 fn schema() -> Value {
     let mut root = schemars::schema_for!(File).to_value();
@@ -152,13 +158,16 @@ fn schema() -> Value {
     root
 }
 
-/// Every key the file may have, in the schema's order.
+/// Every key the file may have, alphabetically, whether or not serde_json keeps the schema's keys
+/// in the order they were added.
 fn known_keys() -> &'static [&'static str] {
     static KEYS: OnceLock<Vec<&'static str>> = OnceLock::new();
     KEYS.get_or_init(|| {
         let schema = schema();
         let properties = schema["properties"].as_object().expect("the schema has properties");
-        properties.keys().map(|key| &*key.clone().leak()).collect()
+        let mut keys: Vec<&'static str> = properties.keys().map(|key| &*key.clone().leak()).collect();
+        keys.sort_unstable();
+        keys
     })
 }
 
@@ -277,7 +286,7 @@ impl Config {
 
     /// The JSON Schema for this file, as `docov --print-schema` prints it.
     pub fn json_schema() -> String {
-        serde_json::to_string_pretty(&schema()).expect("a schema serializes") + "\n"
+        serde_json::to_string_pretty(&report::sorted(schema())).expect("a schema serializes") + "\n"
     }
 }
 

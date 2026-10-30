@@ -9,6 +9,7 @@ use std::{
 use docov::{
     Context, FileReport, Item, Kind, Output, Rules, Scope, Settings, Totals, batch,
     cache::Cache,
+    collect::Facts,
     config,
     config::Config,
     feature,
@@ -472,13 +473,29 @@ fn packages_total_their_own_files(tc: TestCase) {
         }
     }
     // A file outside the root is in no package.
-    let outside = Item { name: "a".into(), kind: Kind::Variable, line: 1, column: 1, documented: false, ignore: None };
+    let outside = Item {
+        name: "a".into(),
+        kind: Kind::Variable,
+        line: 1,
+        column: 1,
+        documented: false,
+        facts: Facts::default(),
+        ignore: None,
+    };
     let mut reports = vec![FileReport { path: PathBuf::from("outside.ts"), items: vec![outside] }];
     let mut expected: Vec<(String, Totals)> = Vec::new();
     for f in 0..tc.draw(gs::integers::<usize>().max_value(8)) {
         let (folder, package) = tc.draw(gs::sampled_from(folders.to_vec()));
         let documented = tc.draw(gs::booleans());
-        let item = Item { name: "a".into(), kind: Kind::Variable, line: 1, column: 1, documented, ignore: None };
+        let item = Item {
+            name: "a".into(),
+            kind: Kind::Variable,
+            line: 1,
+            column: 1,
+            documented,
+            facts: Facts::default(),
+            ignore: None,
+        };
         reports.push(FileReport { path: root.join(folder).join(format!("f{f}.ts")), items: vec![item] });
         if let Some(package) = package {
             let path = root.join(package).display().to_string();

@@ -24,5 +24,5 @@ fn render(context: &Context) -> String {
         })
         .collect();
     let source = json!({ "name": "docov", "url": env!("CARGO_PKG_REPOSITORY") });
-    json(&json!({ "source": source, "severity": "WARNING", "diagnostics": diagnostics }))
+    json(json!({ "source": source, "severity": "WARNING", "diagnostics": diagnostics }))
 }

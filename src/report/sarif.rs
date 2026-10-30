@@ -42,7 +42,7 @@ fn render(context: &Context) -> String {
         "informationUri": env!("CARGO_PKG_REPOSITORY"),
         "rules": [rule],
     });
-    json(&json!({
+    json(json!({
         "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
         "version": "2.1.0",
         "runs": [{ "tool": { "driver": driver }, "results": results }],

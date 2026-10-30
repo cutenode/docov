@@ -24,7 +24,7 @@ fn render(context: &Context) -> String {
             })
         })
         .collect();
-    json(&issues)
+    json(issues.into())
 }
 
 /// A hash of an issue's parts that stays the same between runs and docov versions, which GitLab

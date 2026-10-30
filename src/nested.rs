@@ -5,6 +5,7 @@
 use std::{
     fs,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use clap::ArgMatches;
@@ -12,13 +13,14 @@ use indexmap::IndexMap;
 use rustc_hash::FxHashMap;
 
 use crate::{
-    Config, FileReport, Rules, Settings,
+    Config, FileReport, Rules, Scope, Settings,
     config::FILE_NAMES,
     feature::{
         baseline::{Baseline, Excused},
         nested::Nested,
         overrides::Overrides,
     },
+    public::Api,
     root::Root,
     walk,
 };
@@ -33,6 +35,8 @@ pub struct Group {
     pub rules: Rules,
     /// Its folder, and those of the files it extends, which its keys' globs are relative to.
     pub root: Root,
+    /// Its config file's folder, where the public scope looks for package.json.
+    dir: PathBuf,
     /// The folder its baseline's path and items are relative to, as a path from the current
     /// folder: that of the file that names it, else the root config's.
     baseline_dir: PathBuf,
@@ -55,8 +59,8 @@ impl Group {
     ) -> Result<Self, String> {
         let baseline_dir = config.dirs.get("baseline").unwrap_or(&top.dir).clone();
         let excused = settings.get::<Baseline>().read(&baseline_dir)?;
-        let (rules, root) = (settings.rules(), config.root());
-        Ok(Self { config: path, settings, rules, root, baseline_dir, excused, files })
+        let (rules, root, dir) = (settings.rules(), config.root(), config.dir.clone());
+        Ok(Self { config: path, settings, rules, root, dir, baseline_dir, excused, files })
     }
 
     /// Its own of `reports`.
@@ -122,6 +126,15 @@ impl Plan {
             groups.push(Group::new(Some(path), &nested, settings, root, files)?);
         }
         Ok(Self { groups })
+    }
+
+    /// Reads what the package's entry points reach for each group under the public scope: the
+    /// package.json in its config's folder, or else the nearest one above one of `paths`.
+    pub fn load_public(&mut self, paths: &[PathBuf]) -> Result<(), Vec<String>> {
+        for group in self.groups.iter_mut().filter(|group| group.rules.scope == Scope::Public) {
+            group.rules.public = Some(Arc::new(Api::load(&group.dir, paths)?));
+        }
+        Ok(())
     }
 
     /// The root config's settings.

@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     FileReport,
     feature::{Entry, Feature},
+    report,
     root::Root,
 };
 
@@ -68,7 +69,7 @@ impl Known {
 impl File {
     /// The JSON Schema of a baseline file, as `docov --print-schema baseline` prints it.
     pub fn json_schema() -> String {
-        serde_json::to_string_pretty(&schemars::schema_for!(File)).expect("a schema serializes") + "\n"
+        serde_json::to_string_pretty(&report::sorted(schemars::schema_for!(File).to_value())).expect("a schema serializes") + "\n"
     }
 }
 

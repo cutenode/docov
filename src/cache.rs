@@ -10,7 +10,10 @@ use std::{
 use rustc_hash::{FxHashMap, FxHasher};
 use serde::{Deserialize, Serialize};
 
-use crate::{FileReport, Item, Rules, collect::Ignore};
+use crate::{
+    FileReport, Item, Rules,
+    collect::{Facts, Ignore},
+};
 
 /// What a file's items were scanned from: the file as it was, by its size and modified time, and
 /// the rules, which change a scan's items.
@@ -32,6 +35,11 @@ impl Stamp {
         // FxHasher has no random seed, so the same rules hash the same in every run.
         let mut hasher = FxHasher::default();
         serde_json::to_string(rules).expect("rules serialize").hash(&mut hasher);
+        // Under the public scope, what the entry points reach in the file changes its items too.
+        let mut reached: Option<Vec<&String>> =
+            rules.public.as_ref().map(|api| api.reach(path).into_iter().flatten().collect());
+        reached.iter_mut().for_each(|names| names.sort_unstable());
+        reached.hash(&mut hasher);
         Some(Self { size: metadata.len(), modified, rules: hasher.finish() })
     }
 }
@@ -44,19 +52,29 @@ struct Entry {
     items: Vec<Kept>,
 }
 
-/// An item as the cache keeps it: with its `docov-ignore` comment, which reports leave out of
-/// the item itself.
+/// An item as the cache keeps it: with its `docov-ignore` comment and the facts the reports order
+/// and measure by, which reports leave out of the item itself.
 #[derive(Debug, Serialize, Deserialize)]
 struct Kept {
     #[serde(flatten)]
     item: Item,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     ignore: Option<Ignore>,
+    /// Its facts' `params`, `exported`, `release_tagged` and `typed`.
+    about: (usize, bool, bool, Option<bool>),
 }
 
 impl Kept {
     fn of(item: &Item) -> Self {
-        Self { item: item.clone(), ignore: item.ignore.clone() }
+        let Facts { params, exported, release_tagged, typed, .. } = item.facts;
+        Self { item: item.clone(), ignore: item.ignore.clone(), about: (params, exported, release_tagged, typed) }
+    }
+
+    /// The item it keeps.
+    fn item(&self) -> Item {
+        let (params, exported, release_tagged, typed) = self.about;
+        let facts = Facts { params, exported, release_tagged, typed, ..self.item.facts.clone() };
+        Item { ignore: self.ignore.clone(), facts, ..self.item.clone() }
     }
 }
 
@@ -95,7 +113,7 @@ impl Cache {
     /// The items the file at `path` had when it last had `stamp`.
     pub fn get(&self, path: &Path, stamp: Stamp) -> Option<Vec<Item>> {
         let entry = self.files.get(&*path.to_string_lossy()).filter(|entry| entry.stamp == stamp)?;
-        Some(entry.items.iter().map(|kept| Item { ignore: kept.ignore.clone(), ..kept.item.clone() }).collect())
+        Some(entry.items.iter().map(Kept::item).collect())
     }
 
     /// Writes `reports`, each with its stamp, to the cache file, in place of what it held.

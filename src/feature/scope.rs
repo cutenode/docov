@@ -21,6 +21,9 @@ pub enum Scope {
     Exports,
     /// Every module-level declaration, exported or not.
     All,
+    /// What the package's entry points (package.json's `exports`, `main`, `module`, `types` and
+    /// `typings`) export, following re-exports through the module graph.
+    Public,
 }
 
 /// The flag.

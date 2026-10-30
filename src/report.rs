@@ -11,8 +11,14 @@ use std::{
 
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
-use crate::{FileReport, Item, Kind, feature::color::Styled, packages::Package};
+use crate::{
+    FileReport, Item, Kind,
+    feature::{color::Styled, sort::Sort},
+    metric::Metric,
+    packages::Package,
+};
 
 include!(concat!(env!("OUT_DIR"), "/formats.rs"));
 
@@ -70,6 +76,12 @@ pub struct Context<'a> {
     pub packages: Option<&'a [Package]>,
     /// Whether `text` is colored on stdout, which drops the colors where they don't belong.
     pub color: bool,
+    /// The order of each file's undocumented items in `text`.
+    pub sort: Sort,
+    /// Whether `text`'s lines say how many of their items have an `@example`.
+    pub examples: bool,
+    /// The metrics past coverage and examples that `text` and `json` add, from the features.
+    pub metrics: &'a [Metric],
 }
 
 /// How much `text` shows.
@@ -105,9 +117,24 @@ fn escape(text: &str) -> String {
 /// The rule each undocumented item breaks, in formats that name one.
 const RULE: &str = "docov/undocumented";
 
-/// `value` as pretty JSON, ending in a newline.
-fn json(value: &impl Serialize) -> String {
-    serde_json::to_string_pretty(value).expect("a report serializes") + "\n"
+/// `value` as pretty JSON, ending in a newline, with its keys in order.
+fn json(value: Value) -> String {
+    serde_json::to_string_pretty(&sorted(value)).expect("a report serializes") + "\n"
+}
+
+/// `value` with every object's keys in order, whether or not serde_json keeps them in the order
+/// they were added (a dependency turns that on for the whole build), so what docov prints from a
+/// JSON value doesn't change with the build.
+pub(crate) fn sorted(value: Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let mut entries: Vec<_> = map.into_iter().map(|(key, value)| (key, sorted(value))).collect();
+            entries.sort_by(|a, b| a.0.cmp(&b.0));
+            Value::Object(entries.into_iter().collect())
+        }
+        Value::Array(values) => Value::Array(values.into_iter().map(sorted).collect()),
+        value => value,
+    }
 }
 
 /// A line record for each line with counted items, hit when they're all documented. Items come
