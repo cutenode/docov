@@ -4,7 +4,7 @@ use super::*;
 
 /// `(name, kind, documented)` for each item `source` has, as TypeScript.
 fn items(source: &str, scope: Scope) -> Vec<(String, Kind, bool)> {
-    scan(source, SourceType::ts(), scope).unwrap().into_iter().map(|i| (i.name, i.kind, i.documented)).collect()
+    scan(source, SourceType::ts(), &scope.into()).unwrap().into_iter().map(|i| (i.name, i.kind, i.documented)).collect()
 }
 
 fn item(name: &str, kind: Kind, documented: bool) -> (String, Kind, bool) {
@@ -269,14 +269,14 @@ export const { a, b } = { a: 1, b: 2 };
 #[test]
 fn items_point_at_the_line_and_column_their_doc_goes_on() {
     let source = "const é = 1;\n\n  export function f() {}\n";
-    let items = scan(source, SourceType::ts(), Scope::All).unwrap();
+    let items = scan(source, SourceType::ts(), &Scope::All.into()).unwrap();
     assert_eq!((items[0].line, items[0].column), (1, 1));
     assert_eq!((items[1].line, items[1].column), (3, 3));
 }
 
 #[test]
 fn syntax_errors_fail_the_scan() {
-    let error = scan("export function (", SourceType::ts(), Scope::All).unwrap_err();
+    let error = scan("export function (", SourceType::ts(), &Scope::All.into()).unwrap_err();
     assert!(error.offset > 0, "{error:?}");
 }
 
@@ -285,15 +285,45 @@ fn files_are_read_by_their_extension() {
     let dir = tempfile::tempdir().unwrap();
     let jsx = dir.path().join("a.jsx");
     fs::write(&jsx, "/** A */\nexport const A = () => <div />;\n").unwrap();
-    assert_eq!(scan_file(&jsx, Scope::Exports).unwrap().totals(), Totals { documented: 1, total: 1 });
+    assert_eq!(scan_file(&jsx, &Scope::Exports.into()).unwrap().totals(), Totals { documented: 1, total: 1 });
 
     let broken = dir.path().join("b.ts");
     fs::write(&broken, "\n  export function (").unwrap();
-    let error = scan_file(&broken, Scope::Exports).unwrap_err().to_string();
+    let error = scan_file(&broken, &Scope::Exports.into()).unwrap_err().to_string();
     assert!(error.starts_with(&format!("{}:2:", broken.display())), "{error}");
 
     let text = dir.path().join("c.txt");
-    assert!(matches!(scan_file(&text, Scope::Exports), Err(Error::Language { .. })));
+    assert!(matches!(scan_file(&text, &Scope::Exports.into()), Err(Error::Language { .. })));
     let missing = dir.path().join("missing.ts");
-    assert!(matches!(scan_file(&missing, Scope::Exports), Err(Error::Read { .. })));
+    assert!(matches!(scan_file(&missing, &Scope::Exports.into()), Err(Error::Read { .. })));
+}
+
+#[test]
+fn require_description_leaves_out_blocks_with_tags_alone() {
+    let source = "
+/** @type {string} */
+export const a = '';
+/** @deprecated */
+export function b() {}
+/** Docs. @internal */
+export function c() {}
+/**
+ * @summary Docs.
+ */
+export function d() {}
+/** @description */
+export function e() {}
+/** @classdesc Docs. */
+export class F {
+    /** @classdesc Docs. */
+    g() {}
+    /** @inheritDoc */
+    h() {}
+}
+";
+    let rules = Rules { require_description: true, ..Rules::default() };
+    let documented: Vec<bool> =
+        scan(source, SourceType::ts(), &rules).unwrap().into_iter().map(|i| i.documented).collect();
+    assert_eq!(documented, [false, false, true, true, false, true, false, true]);
+    assert!(items(source, Scope::Exports).iter().all(|(.., documented)| *documented));
 }

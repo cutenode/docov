@@ -2,17 +2,22 @@
 
 use std::{fs, io, path::Path, path::PathBuf};
 
+mod doc;
+mod rules;
+
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
     AssignmentExpression, Class, ClassElement, CommentContent, Declaration, ExportDefaultDeclarationKind, Expression,
     Function, MemberExpression, MethodDefinitionKind, ObjectPropertyKind, PropertyKey, Statement, TSAccessibility,
     TSInterfaceDeclaration, TSSignature,
 };
+use oxc_jsdoc::JSDoc;
 use oxc_parser::Parser;
-use oxc_span::{GetSpan, SourceType};
-use rustc_hash::FxHashSet;
+use oxc_span::{GetSpan, SourceType, Span};
+use rustc_hash::{FxHashMap, FxHashSet};
 use serde::Serialize;
 
+pub use self::rules::Rules;
 use crate::{Scope, Totals};
 
 /// What kind of declaration an item is.
@@ -79,7 +84,8 @@ pub struct Item {
     pub line: usize,
     /// 1-based, in characters.
     pub column: usize,
-    /// Whether a JSDoc block with something in it comes right before it.
+    /// Whether a JSDoc block with something in it comes right before it (and, by the rules, says
+    /// enough).
     pub documented: bool,
 }
 
@@ -124,10 +130,10 @@ pub struct SyntaxError {
 }
 
 /// Reads and scans one file.
-pub fn scan_file(path: &Path, scope: Scope) -> Result<FileReport, Error> {
+pub fn scan_file(path: &Path, rules: &Rules) -> Result<FileReport, Error> {
     let source_type = SourceType::from_path(path).map_err(|_| Error::Language { path: path.to_owned() })?;
     let source = fs::read_to_string(path).map_err(|source| Error::Read { path: path.to_owned(), source })?;
-    match scan(&source, source_type, scope) {
+    match scan(&source, source_type, rules) {
         Ok(items) => Ok(FileReport { path: path.to_owned(), items }),
         Err(e) => {
             let (line, column) = Lines::new(&source).position(e.offset);
@@ -136,8 +142,9 @@ pub fn scan_file(path: &Path, scope: Scope) -> Result<FileReport, Error> {
     }
 }
 
-/// The items in `source`. Any syntax error fails the scan: a partial AST would undercount.
-pub fn scan(source: &str, source_type: SourceType, scope: Scope) -> Result<Vec<Item>, SyntaxError> {
+/// The items in `source` that count by `rules`. Any syntax error fails the scan: a partial AST
+/// would undercount.
+pub fn scan(source: &str, source_type: SourceType, rules: &Rules) -> Result<Vec<Item>, SyntaxError> {
     let allocator = Allocator::default();
     let parsed = Parser::new(&allocator, source, source_type).parse();
     if let Some(error) = parsed.diagnostics.errors().next() {
@@ -145,15 +152,20 @@ pub fn scan(source: &str, source_type: SourceType, scope: Scope) -> Result<Vec<I
         return Err(SyntaxError { offset, message: error.message.to_string() });
     }
 
-    // The positions that a JSDoc block with something in it is attached to: the first token after
-    // it. Legal comments (`/** @license */`) are file headers, not docs.
+    // The JSDoc block with something in it attached to each position: the first token after it.
+    // With several, the nearest is the item's, as in jsdoc. Legal comments (`/** @license */`) are
+    // file headers, not docs.
     let docs = parsed
         .program
         .comments
         .iter()
         .filter(|c| c.content == CommentContent::Jsdoc && c.is_leading())
-        .filter(|c| c.content_span().source_text(source).chars().any(|ch| !ch.is_whitespace() && ch != '*'))
-        .map(|c| c.attached_to)
+        .filter_map(|c| {
+            // Past the `/**`, as oxc_jsdoc reads it.
+            let span = Span::new(c.content_span().start + 1, c.content_span().end);
+            let text = span.source_text(source);
+            text.chars().any(|ch| !ch.is_whitespace() && ch != '*').then(|| (c.attached_to, JSDoc::new(text, span)))
+        })
         .collect();
     let mut collector = Collector { source, docs, found: Vec::new(), exported: FxHashSet::default(), overload: None };
     for statement in &parsed.program.body {
@@ -164,27 +176,30 @@ pub fn scan(source: &str, source_type: SourceType, scope: Scope) -> Result<Vec<I
     let Collector { found, exported, .. } = collector;
     Ok(found
         .into_iter()
-        .filter(|f| scope == Scope::All || f.exported || f.binding.is_some_and(|b| exported.contains(b)))
+        .filter(|f| rules.scope == Scope::All || f.exported || f.binding.is_some_and(|b| exported.contains(b)))
         .map(|f| {
             let (line, column) = lines.position(f.at as usize);
-            Item { name: f.name, kind: f.kind, line, column, documented: f.documented }
+            let documented =
+                f.doc.as_ref().is_some_and(|doc| !rules.require_description || doc::describes(doc, f.kind));
+            Item { name: f.name, kind: f.kind, line, column, documented }
         })
         .collect())
 }
 
-struct Found<'a> {
+struct Found<'s> {
     name: String,
     kind: Kind,
     at: u32,
-    documented: bool,
+    /// Its JSDoc block, if it has one with something in it.
+    doc: Option<JSDoc<'s>>,
     /// The module-level name that exports it (a member's class), when `export { name }` can.
-    binding: Option<&'a str>,
+    binding: Option<&'s str>,
     exported: bool,
 }
 
 struct Collector<'s> {
     source: &'s str,
-    docs: FxHashSet<u32>,
+    docs: FxHashMap<u32, JSDoc<'s>>,
     found: Vec<Found<'s>>,
     /// Names exported apart from their declarations: `export { a }`, `export default a`,
     /// `export = a`, `exports.a = a`.
@@ -205,10 +220,10 @@ struct Site<'s> {
 
 impl<'s> Collector<'s> {
     fn push(&mut self, site: Site<'s>, start: u32, name: String, kind: Kind) {
-        let documented = self.docs.contains(&site.at) || self.docs.contains(&start);
+        let doc = self.docs.get(&site.at).or_else(|| self.docs.get(&start)).cloned();
         // A decorator before `export` starts the declaration, and is where its doc goes.
         let at = site.at.min(start);
-        self.found.push(Found { name, kind, at, documented, binding: site.binding, exported: site.exported });
+        self.found.push(Found { name, kind, at, doc, binding: site.binding, exported: site.exported });
     }
 
     fn statement(&mut self, statement: &Statement<'s>) {

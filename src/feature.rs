@@ -7,7 +7,7 @@ use clap::{ArgMatches, Args, Command, FromArgMatches};
 use schemars::{JsonSchema, Schema};
 use serde::de::DeserializeOwned;
 
-use crate::FileReport;
+use crate::{FileReport, Rules};
 
 include!(concat!(env!("OUT_DIR"), "/features.rs"));
 
@@ -25,6 +25,9 @@ pub trait Feature: Sized + Send + Sync + 'static {
 
     /// The setting, from its flags and keys. A flag wins over its key.
     fn new(flags: Self::Flags, keys: Self::Keys) -> Self;
+
+    /// Sets its part of what counts and when an item is documented.
+    fn rules(&self, _rules: &mut Rules) {}
 
     /// Why the scan fails, when this setting fails it (exit 1).
     fn gate(&self, _reports: &[FileReport]) -> Option<String> {
@@ -122,12 +125,16 @@ impl PartialEq for Keys {
 /// A feature, made.
 trait Loaded: Send + Sync {
     fn as_any(&self) -> &dyn Any;
+    fn rules(&self, rules: &mut Rules);
     fn gate(&self, reports: &[FileReport]) -> Option<String>;
 }
 
 impl<F: Feature> Loaded for F {
     fn as_any(&self) -> &dyn Any {
         self
+    }
+    fn rules(&self, rules: &mut Rules) {
+        Feature::rules(self, rules);
     }
     fn gate(&self, reports: &[FileReport]) -> Option<String> {
         Feature::gate(self, reports)
@@ -146,6 +153,15 @@ impl Settings {
     /// Feature `F`'s setting.
     pub fn get<F: Feature>(&self) -> &F {
         self.0.iter().find_map(|f| f.as_any().downcast_ref()).expect("every feature is registered")
+    }
+
+    /// The scan's rules, with each feature's part set.
+    pub fn rules(&self) -> Rules {
+        let mut rules = Rules::default();
+        for feature in &self.0 {
+            feature.rules(&mut rules);
+        }
+        rules
     }
 
     /// Why the scan fails, from each feature that fails it.

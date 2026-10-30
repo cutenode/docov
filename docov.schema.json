@@ -46,6 +46,11 @@
       },
       "type": "array"
     },
+    "requireDescription": {
+      "default": false,
+      "description": "Count a JSDoc block only with text before its first tag, or @description, @summary, @classdesc or @inheritdoc.",
+      "type": "boolean"
+    },
     "scope": {
       "$ref": "#/$defs/Scope",
       "default": "exports",
