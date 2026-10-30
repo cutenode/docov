@@ -27,6 +27,7 @@ The npm package runs a prebuilt binary for macOS, Linux or Windows on x64 or arm
 ```
 docov [PATHS]... [--config FILE] [--threshold PERCENT] [--scope exports|all|public] [--format FORMAT[=FILE]]... [--output FILE] [--badge FILE] [--compare FILE] [--omit-covered] [--quiet]
 docov init
+docov lsp
 ```
 
 `docov --help` lists every flag.
@@ -43,7 +44,7 @@ It exits 0 when every gate passes (or there isn't one), 1 when one fails, such a
 
 `--watch` scans again whenever a JavaScript, TypeScript or config file under the paths changes, with a line between reports, until Ctrl-C.
 
-`--stdin-filename PATH` scans stdin in place of the paths, as the file at PATH, whose extension picks the language, for editors to check a buffer before it's saved. It can't go with `--add-ignore`, `--write-baseline`, `--update-threshold`, `--watch`, `--changed` or `--staged`, which would act on that one file.
+`--stdin-filename PATH` scans stdin in place of the paths, as the file at PATH, whose extension picks the language, for editors to check a buffer before it's saved. It can't go with `--add-ignore`, `--fix`, `--write-baseline`, `--update-threshold`, `--watch`, `--changed` or `--staged`, which would act on that one file.
 
 `--cache` keeps each file's items in `.docov-cache` in the config's folder (or the file `--cache-location` names), and the next scan reuses them for each file whose size and modified time haven't changed, as long as docov's version and the settings that change what counts are the same. Add it to `.gitignore`.
 
@@ -58,7 +59,7 @@ With the default scope, `exports`, an item is anything a module exports:
 - CommonJS: `exports.a = …`, `module.exports.a = …`, `module.exports = …`, and each property of `module.exports = { … }`
 - the public members of exported classes (methods, properties, accessors, with a getter and its setter as one) and interfaces (properties and methods)
 
-An item is documented when a `/** … */` block with something in it sits right before it, or before its `export` or decorators. Ordinary comments, an empty `/** */`, and license headers (`/** @license … */`) don't count.
+An item is documented when a `/** … */` block with something in it sits right before it, or before its `export` or decorators. Ordinary comments, an empty `/** */`, license headers (`/** @license … */`) and a block whose description is just `TODO`, as `--fix` writes them, don't count.
 
 `--require-description` (`"requireDescription": true`) also wants the block to describe the item: text before its first tag, or a `@description`, `@desc`, `@summary`, `@classdesc` (on a class) or `@inheritdoc` tag. Without it, `/** @type {string} */` counts. A block of `@inheritdoc` alone documents its item either way, and `"inherit": "override"` counts a TypeScript class member marked `override` as documented too, since it inherits its docs.
 
@@ -68,7 +69,9 @@ A `// docov-ignore-next-line` comment (with an optional reason, `// docov-ignore
 
 To adopt docov in a project that's far from documented, `--add-ignore` (or `--add-ignore=REASON`) writes a `// docov-ignore-next-line` above every undocumented item, indented like it, and reports how many it wrote instead of the coverage. It changes no other line.
 
-`--explain FILE` prints, in place of a report, a line for each item in `FILE` saying whether it counts by the config `FILE` is scanned with (a nested config's too) and why (documented by the block at a line, ignored by a comment, or left out by a rule), and one for each declaration or block the scan passed over there and why (a re-export, a constructor, an overload's implementation, a destructured variable, a `require()` binding, a license header, a private member). When a nested config leaves `FILE` out, it says so. It exits 0.
+`--fix` writes a JSDoc stub above every undocumented item that has no block yet, indented like it, for filling in: a `TODO` description, a `@template` for each type parameter, a `@param` for each parameter (a destructured one by its place, as `param0`), `@returns` when its body returns a value, and `@file` for a file's own item. A `TODO` description documents nothing, so the coverage stays where it was until each one is written. It reports how many stubs it wrote, leaves every existing block as it is, and skips an item that starts after something else on its line. It can't go with `--add-ignore`.
+
+`--explain FILE` prints, in place of a report, a line for each item in `FILE` saying whether it counts by the config `FILE` is scanned with (a nested config's too) and why (documented by the block at a line, ignored by a comment, or left out by a rule), and one for each declaration or block the scan passed over there and why (a re-export, a constructor, an overload's implementation, a destructured variable, a `require()` binding, a license header, a stub, a private member). When a nested config leaves `FILE` out, it says so. It exits 0.
 
 Some things never count: constructors (their class's doc covers them), private members (`#x` and `private x`), an overload's implementation (only its signatures), destructured variables, `require()` bindings, `declare module` and `declare global` blocks, and re-exports from another file (`export { x } from './x'`, `export * from`), whose declarations count in their own file.
 
@@ -196,6 +199,39 @@ docov --format text --format lcov=coverage/docov.lcov
 
 Badges are red under the threshold, yellow up to 10 points over it, and green past that. With no threshold they're blue.
 
+## Editors
+
+`docov lsp` is a language server on stdin and stdout. For each open JavaScript or TypeScript file it shows an information diagnostic at each undocumented item (`docov/undocumented`) and each doc check finding at its level, from the unsaved text, by the config `docov` would use for that file (nested configs included). It finds the config as if it ran in the workspace folder the file is in, or else in the file's own folder, and shows nothing for a file the config's `paths` or excludes leave out. On an undocumented item, a code action writes the stub `--fix` would. To stub every file at once, run `docov --fix`.
+
+VS Code needs an extension to start a language server, but editors with a generic LSP client can run it directly. In Neovim (0.10 or later):
+
+```lua
+vim.api.nvim_create_autocmd("FileType", {
+  pattern = { "javascript", "javascriptreact", "typescript", "typescriptreact" },
+  callback = function(args)
+    vim.lsp.start({
+      name = "docov",
+      cmd = { "docov", "lsp" }, -- or { "npx", "docov", "lsp" }
+      root_dir = vim.fs.root(args.buf, { "docov.json", "docov.jsonc", ".docovrc", "package.json", ".git" }),
+    })
+  end,
+})
+```
+
+In Helix's `languages.toml`, add it next to each language's own server:
+
+```toml
+[language-server.docov]
+command = "docov"
+args = ["lsp"]
+
+[[language]]
+name = "typescript"
+language-servers = ["typescript-language-server", "docov"]
+```
+
+and the same `[[language]]` for `javascript`, `jsx` and `tsx`.
+
 ## CI
 
 ### GitHub Action
@@ -295,6 +331,6 @@ git tag v1.2.3 && git push origin v1.2.3   # release Cargo.toml's version 1.2.3 
 
 Pushing a version tag runs `.github/workflows/release.yml`, which builds the binaries and publishes with trusted publishing, so there are no registry tokens. The npm packages are `@docov/cli` (`npm/docov`, a launcher) and an `@docov/<platform>-<arch>` package per binary. `tools/bootstrap-publishing.sh` publishes the first version by hand and sets up the trust, which both registries only allow for a package they already have.
 
-`cargo coverage` fails under the thresholds in `.cargo/config.toml`. On a pull request, lint and coverage are separate pass/fail checks for each OS. With `LCOV_DIR` set, `tools/coverage.sh` writes each Rust coverage run to `$LCOV_DIR/suite.lcov` and `props.lcov` in place of its table. CI sets it, puts each run's per-file numbers in the job summary, and uploads the lcov files as the `coverage-<os>` artifact. The property tests (`tests/props.rs`) use [Hegel](https://github.com/hegeldev/hegel-rust). They check scans against a model of generated modules, and the binary against generated projects.
+`cargo coverage` fails under the thresholds in `.cargo/config.toml`. On a pull request, lint and coverage are separate pass/fail checks for each OS. With `LCOV_DIR` set, `tools/coverage.sh` writes each Rust coverage run to `$LCOV_DIR/suite.lcov` and `props.lcov` in place of its table. CI sets it, puts each run's per-file numbers in the job summary, and uploads the lcov files as the `coverage-<os>` artifact. The property tests (`tests/props.rs`) use [Hegel](https://github.com/hegeldev/hegel-rust). They check scans against a model of generated modules, the language server over an in-memory connection, and the binary against generated projects.
 
 `tools/jsdoc-oracle.sh` runs jsdoc 4 (`npx --yes jsdoc@4 -X`, so it needs Node and the network) and `docov --scope all --format json` on the same files, and lists each declaration only one of them counts, or that they disagree on documenting. It isn't part of the checks: some disagreements are by design (jsdoc counts constructors, `this.x =` members, object literal members, destructured variables and `/** */` and `@license` blocks), and a `@typedef` or `@file` block right before an undocumented declaration documents it for docov but not for jsdoc unless `"virtual"` or `"fileDocs"` is on.

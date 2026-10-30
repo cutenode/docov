@@ -18,22 +18,30 @@ pub(super) fn describes(doc: &JSDoc, kind: Kind) -> bool {
         })
 }
 
+/// Whether `doc` is a stub nobody has filled in, as `--fix` writes them: its description is just
+/// `TODO`. Its tags, a stub's empty `@param`s included, don't make it docs.
+pub(crate) fn placeholder(doc: &JSDoc) -> bool {
+    doc.comment().parsed() == "TODO"
+}
+
 /// The tags that make a block about its file.
 const FILE_TAGS: [&str; 5] = ["file", "fileoverview", "overview", "module", "packageDocumentation"];
 
 /// Whether `doc` is about its file, and if it is, whether it says something: a description, or
-/// text on one of its file tags.
+/// text on one of its file tags, unless it's a [placeholder].
 pub(super) fn file(doc: &JSDoc) -> Option<bool> {
     let tags: Vec<_> = doc.tags().iter().filter(|tag| FILE_TAGS.contains(&tag.kind.parsed())).collect();
     let text = !doc.comment().parsed().is_empty() || tags.iter().any(|tag| !tag.comment().parsed().is_empty());
+    let text = text && !placeholder(doc);
     (!tags.is_empty()).then_some(text)
 }
 
 /// The type `doc` declares with its first `@typedef` or `@callback`, if that names one, and
-/// whether it's described: a description, or text after the name.
+/// whether it's described: a description, or text after the name, unless it's a [placeholder].
 pub(super) fn declared_type(doc: &JSDoc) -> Option<(String, bool)> {
     let (name, text) = declares(doc)?;
-    Some((name.to_owned(), !doc.comment().parsed().is_empty() || !text.is_empty()))
+    let described = !doc.comment().parsed().is_empty() || !text.is_empty();
+    Some((name.to_owned(), described && !placeholder(doc)))
 }
 
 /// The name of the type `doc` declares, as [`declared_type`] finds it.

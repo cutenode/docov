@@ -201,11 +201,15 @@ impl<'de> Visitor<'de> for KnownKeys {
 /// up).
 fn find() -> Option<PathBuf> {
     // This fails only when the current folder is gone, and then there's nothing to find.
-    let here = env::current_dir().unwrap_or_default();
-    here.ancestors().enumerate().find_map(|(up, dir)| {
-        let name = FILE_NAMES.iter().find(|name| dir.join(name).is_file())?;
-        Some(iter::repeat_n(Path::new(".."), up).collect::<PathBuf>().join(name))
-    })
+    let (up, name) = nearest(&env::current_dir().unwrap_or_default())?;
+    Some(iter::repeat_n(Path::new(".."), up).collect::<PathBuf>().join(name))
+}
+
+/// The nearest of [`FILE_NAMES`] in `dir` or a folder above it: how many folders up, and its name.
+pub fn nearest(dir: &Path) -> Option<(usize, &'static str)> {
+    dir.ancestors()
+        .enumerate()
+        .find_map(|(up, dir)| Some((up, *FILE_NAMES.iter().find(|name| dir.join(name).is_file())?)))
 }
 
 /// Why the config file couldn't be loaded. Each `path` is the file's.

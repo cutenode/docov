@@ -24,6 +24,10 @@ use oxc_span::SourceType;
 mod combined;
 #[path = "props/config_cli.rs"]
 mod config_cli;
+#[path = "props/fix.rs"]
+mod fix;
+#[path = "props/lsp.rs"]
+mod lsp;
 
 /// The docov binary, without the environment it reads to change its output: GitHub Actions'
 /// annotations and color. Properties that want them set them again.
@@ -51,6 +55,9 @@ struct Module {
     generated: bool,
     /// How many declarations and blocks it has that a scan passes over.
     skipped: usize,
+    /// Whether the comments just written end with a JSDoc block, empty or not, for the item after
+    /// them, which then gets no stub.
+    block: bool,
 }
 
 /// `docov-ignore-next-line` comments and comments that aren't quite, with the reason each one
@@ -88,6 +95,10 @@ struct Expected {
     overrides: bool,
     /// For a function or method, its parameters' names.
     params: Option<&'static [&'static str]>,
+    /// Whether a JSDoc block, empty or not, sits right before it.
+    block: bool,
+    /// Whether it's a function whose body returns a value.
+    returns: bool,
 }
 
 impl Expected {
@@ -141,8 +152,17 @@ impl Expected {
             // The generated modules are TypeScript.
             typed: None,
             diagnostics: Vec::new(),
+            stub: (!documented && self.item.ignore.is_none() && !self.block).then(|| self.stub()),
         };
         Some(Item { documented, facts, ..self.item.clone() })
+    }
+
+    /// The stub `--fix` writes above it: a `@param` for each parameter and `@returns` if it returns.
+    fn stub(&self) -> collect::Stub {
+        let params = self.params.unwrap_or_default().iter().map(|p| format!(" * @param {p}\n"));
+        let tags: String = params.chain(self.returns.then(|| " * @returns\n".to_owned())).collect();
+        let text = if tags.is_empty() { "/** TODO */".to_owned() } else { format!("/**\n * TODO\n{tags} */") };
+        collect::Stub { line: self.item.line, text }
     }
 }
 
@@ -268,13 +288,16 @@ impl Module {
     /// Writes ordinary comments and maybe a JSDoc block, and says which block it wrote.
     fn doc(&mut self, tc: &TestCase) -> Option<Block> {
         let noise = ["// note", "/* note */", "/** */", "/**\n *\n */", "/** @license MIT */"];
+        self.block = false;
         if tc.draw(gs::booleans()) {
             let noise = tc.draw(gs::sampled_from(noise.to_vec()));
             self.skipped += usize::from(noise.contains("@license"));
+            self.block = noise.starts_with("/**") && !noise.contains("@license");
             self.write(noise);
         }
         let doc = tc.draw(gs::booleans()).then(|| tc.draw(gs::sampled_from(BLOCKS.to_vec())));
         if let Some(block) = doc {
+            self.block = true;
             self.write(block.text);
         }
         if tc.draw(gs::booleans()) {
@@ -290,7 +313,9 @@ impl Module {
         let ignore = self.next_ignore.take().filter(|ignore| ignore.line + 1 == line);
         let item = Item { name, kind, line, column: 1, documented: doc.is_some(), facts: Facts::default(), ignore };
         let params = matches!(kind, Kind::Function | Kind::Method).then_some(&[][..]);
-        self.expected.push(Expected { via, value: false, item, doc, protected: false, overrides: false, params });
+        let (block, returns) = (self.block, false);
+        let (protected, overrides, value) = (false, false, false);
+        self.expected.push(Expected { via, value, item, doc, protected, overrides, params, block, returns });
     }
 
     /// A statement that exports and declares nothing, and whether a scan passes over it.
@@ -369,6 +394,7 @@ impl Module {
                         }
                         2 => {
                             self.expect(Some(Via::Cjs), format!("a{i}_{j}"), Kind::Function, doc);
+                            self.expected.last_mut().unwrap().returns = true;
                             self.write(&format!("a{i}_{j}: () => 1,"));
                         }
                         // Exports a name nothing here declares.

@@ -32,7 +32,7 @@ use docov::{
         update_threshold::UpdateThreshold,
         watch,
     },
-    init, nested, report, walk,
+    init, lsp, nested, report, walk,
 };
 
 /// Checks how much of a JavaScript or TypeScript project's API has JSDoc.
@@ -61,6 +61,8 @@ struct Cli {
 enum Command {
     /// Write a docov.json here with a threshold of the current coverage, rounded down
     Init,
+    /// Run a language server on stdin and stdout, for editors
+    Lsp,
 }
 
 /// A file docov reads, by its JSON Schema.
@@ -83,11 +85,15 @@ fn main() -> ExitCode {
         }
         return ExitCode::SUCCESS;
     }
-    if let Some(Command::Init) = cli.command {
-        return ExitCode::from(exit(init::init(Path::new(".")).map(|threshold| {
-            eprintln!("docov: wrote docov.json, with a {threshold}% threshold");
-            true
-        })));
+    match cli.command {
+        Some(Command::Init) => {
+            return ExitCode::from(exit(init::init(Path::new(".")).map(|threshold| {
+                eprintln!("docov: wrote docov.json, with a {threshold}% threshold");
+                true
+            })));
+        }
+        Some(Command::Lsp) => return ExitCode::from(exit(lsp::stdio())),
+        None => {}
     }
     ExitCode::from(watch::run(watch::enabled(&matches), &mut |watched| exit(run(&cli, &matches, watched))))
 }

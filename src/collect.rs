@@ -9,6 +9,7 @@ mod facts;
 mod ignore;
 mod rules;
 mod shape;
+mod stub;
 
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
@@ -24,7 +25,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use self::ignore::Ignores;
-pub use self::{explain::explain, facts::Facts, ignore::Ignore, rules::Rules, shape::Shape};
+pub use self::{explain::explain, facts::Facts, ignore::Ignore, rules::Rules, shape::Shape, stub::Stub};
 use crate::{
     Totals,
     feature::{file_docs::FileDocs, members::Members},
@@ -246,6 +247,10 @@ impl Collected<'_> {
                 if let Some(checks) = rules.checks.as_ref().filter(|_| !item.ignored()) {
                     item.facts.diagnostics = diagnose::diagnose(checks, f, is_exported, &lines, &names);
                 }
+                // `--fix` leaves a block that's there already alone, a stub included.
+                if !item.documented && !item.ignored() && !f.block {
+                    item.facts.stub = Stub::of(f, &lines);
+                }
                 item
             })
             .collect()
@@ -272,11 +277,10 @@ fn collect<T>(
     // The JSDoc block with something in it attached to each position: the first token after it.
     // With several, the nearest is the item's, as in jsdoc. Legal comments (`/** @license */`) are
     // file headers, not docs.
-    let docs = parsed
-        .program
-        .comments
-        .iter()
-        .filter(|c| c.content == CommentContent::Jsdoc && c.is_leading())
+    let leading = parsed.program.comments.iter().filter(|c| c.content == CommentContent::Jsdoc && c.is_leading());
+    // Every position with a block, empty or not, where `--fix` writes no stub.
+    let blocks = leading.clone().map(|c| c.attached_to).collect();
+    let docs = leading
         .map(|c| (c.attached_to, jsdoc(c, source)))
         .filter(|(_, doc)| doc.span.source_text(source).chars().any(|ch| !ch.is_whitespace() && ch != '*'))
         .collect();
@@ -286,7 +290,8 @@ fn collect<T>(
     // At the top of a CommonJS file, `this` is `module.exports`.
     let this_exports = rules.commonjs_members && !parsed.program.source_type.is_module();
     let skips = skips.then(Vec::new);
-    let mut collector = Collector { source, rules, docs, found, exported, overload, declared, this_exports, skips };
+    let mut collector =
+        Collector { source, rules, docs, blocks, found, exported, overload, declared, this_exports, skips };
     let generated = parsed.program.comments.first().is_some_and(|c| c.span.source_text(source).contains("@generated"));
     if rules.skip_generated && generated {
         collector.skip(0, || "the file".into(), "its first comment says it's @generated");
@@ -297,6 +302,11 @@ fn collect<T>(
     let legal = parsed.program.comments.iter().filter(|c| c.content == CommentContent::JsdocLegal && c.is_leading());
     for comment in legal {
         collector.skip(comment.span.start, || "a block".into(), "a license header, not docs");
+    }
+    let stubs: Vec<u32> =
+        collector.docs.values().filter(|doc| doc::placeholder(doc)).map(|doc| doc.span.start - 3).collect();
+    for at in stubs {
+        collector.skip(at, || "a block".into(), "a stub, whose description is still TODO");
     }
     if rules.file_docs == FileDocs::Require {
         collector.file(&parsed.program.comments, path);
@@ -338,6 +348,8 @@ struct Found<'s> {
     shape: Shape<'s>,
     /// Whether it's documented, for an item whose own rule says: a file's, or a comment's type.
     documented: Option<bool>,
+    /// Whether a JSDoc block sits right before it, even an empty one or a stub.
+    block: bool,
     /// Whether it counts under any scope, as a file's own item and a comment's type do.
     standalone: bool,
     /// Whether its parent's block has a matching `@property`, which documents it too.
@@ -347,8 +359,23 @@ struct Found<'s> {
 impl<'s> Found<'s> {
     fn new(name: String, kind: Kind, at: u32, doc: Option<JSDoc<'s>>) -> Self {
         let (binding, via, protected, overrides, params, documented) = (None, None, false, false, None, None);
-        let (shape, standalone, listed) = (Shape::default(), false, false);
-        Self { name, kind, at, doc, binding, via, protected, overrides, params, shape, documented, standalone, listed }
+        let (shape, block, standalone, listed) = (Shape::default(), false, false, false);
+        Self {
+            name,
+            kind,
+            at,
+            doc,
+            binding,
+            via,
+            protected,
+            overrides,
+            params,
+            shape,
+            documented,
+            block,
+            standalone,
+            listed,
+        }
     }
 
     /// Sets its parameters and shape from a value assigned to it, when that's a function.
@@ -362,6 +389,8 @@ struct Collector<'s> {
     source: &'s str,
     rules: &'s Rules,
     docs: FxHashMap<u32, JSDoc<'s>>,
+    /// Every position a JSDoc block attaches to, empty or not.
+    blocks: FxHashSet<u32>,
     found: Vec<Found<'s>>,
     /// Names exported apart from their declarations, and how: `export { a }`, `export default a`,
     /// `export = a`, `exports.a = a`, `window.a = a`.
@@ -400,10 +429,13 @@ struct Site<'s> {
 
 impl<'s> Collector<'s> {
     fn push(&mut self, site: Site<'s>, start: u32, name: String, kind: Kind) -> &mut Found<'s> {
-        let doc = self.docs.get(&site.at).or_else(|| self.docs.get(&start)).cloned();
+        // A stub nobody filled in is no doc.
+        let doc = self.docs.get(&site.at).or_else(|| self.docs.get(&start)).filter(|doc| !doc::placeholder(doc));
+        let block = self.blocks.contains(&site.at) || self.blocks.contains(&start);
         // A decorator before `export` starts the declaration, and is where its doc goes.
         let at = site.at.min(start);
-        self.found.push(Found { binding: site.binding, via: site.via, ..Found::new(name, kind, at, doc) });
+        let found = Found::new(name, kind, at, doc.cloned());
+        self.found.push(Found { binding: site.binding, via: site.via, block, ..found });
         self.found.last_mut().expect("just pushed")
     }
 
@@ -445,7 +477,7 @@ impl<'s> Collector<'s> {
             let Some((name, documented)) = doc::declared_type(&block) else { continue };
             self.detach(comment, &block);
             let found = Found::new(name, Kind::Type, comment.span.start, Some(block));
-            self.found.push(Found { documented: Some(documented), standalone: true, ..found });
+            self.found.push(Found { documented: Some(documented), block: true, standalone: true, ..found });
         }
     }
 
@@ -462,7 +494,8 @@ impl<'s> Collector<'s> {
         let name = block.as_ref().and_then(|b| doc::text(b, "module"));
         let name = name.and_then(|name| name.split_whitespace().next().map(str::to_owned));
         let name = name.or_else(|| path.map(|path| path.display().to_string())).unwrap_or_default();
-        self.found.push(Found { documented, standalone: true, ..Found::new(name, Kind::Module, 0, block) });
+        let found = Found::new(name, Kind::Module, 0, block.as_ref().filter(|b| !doc::placeholder(b)).cloned());
+        self.found.push(Found { documented, block: block.is_some(), standalone: true, ..found });
     }
 
     fn statement(&mut self, statement: &Statement<'s>) {
