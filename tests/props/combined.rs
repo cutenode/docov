@@ -100,7 +100,7 @@ fn gates_go_by_the_file_that_wrote_them(tc: TestCase) {
         Layout::Nested => {
             configs[0]["nested"] = true.into();
             write(root, "docov.json", &configs[0].to_string());
-            (root.join("docov.json"), format!("{}: ", root.join("pkg/docov.json").display()))
+            (root.join("docov.json"), format!("{}: ", root.join("pkg").join("docov.json").display()))
         }
     };
     write(root, "pkg/docov.json", &configs[1].to_string());

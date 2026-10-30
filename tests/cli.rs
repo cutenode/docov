@@ -828,7 +828,10 @@ fn a_config_extends_others_relative_to_itself() {
 
     fs::write(dir.path().join("base.json"), r#"{ "extends": ["pkg/docov.json"] }"#).unwrap();
     let (code, _, err) = docov(&dir.path().join("pkg"), &[]);
-    let chain = ["docov.json", "../base.json", "../pkg/docov.json"].map(|p| Path::new(p).display().to_string());
+    // docov puts the OS's separator between the parts of the files it extends.
+    let up = Path::new("..");
+    let chain = [Path::new("docov.json"), &up.join("base.json"), &up.join("pkg").join("docov.json")]
+        .map(|p| p.display().to_string());
     assert_eq!((code, err), (2, format!("docov: config files extend each other in a cycle: {}\n", chain.join(" -> "))));
 }
 
