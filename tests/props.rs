@@ -3,7 +3,8 @@
 use std::{fs, path::Path, path::PathBuf, process::Command};
 
 use docov::feature::{
-    Feature, access::Access, add_ignore::AddIgnore, kinds::Kinds, report_unused_ignores::ReportUnusedIgnores,
+    Feature, access::Access, add_ignore::AddIgnore, inherit::Inherit, kinds::Kinds,
+    report_unused_ignores::ReportUnusedIgnores,
 };
 use docov::{
     FileReport, Format, Item, Kind, Rules, Scope, Totals, collect, collect::Ignore, config, feature, report, rewrite,
@@ -55,6 +56,8 @@ struct Expected {
     doc: Option<Block>,
     /// Whether it's a TypeScript `protected` member.
     protected: bool,
+    /// Whether it's a TypeScript `override` member.
+    overrides: bool,
 }
 
 impl Expected {
@@ -82,7 +85,8 @@ impl Expected {
             return None;
         }
         let described = |b: Block| if self.item.kind == Kind::Class { b.class_described } else { b.described };
-        let documented = self.doc.is_some_and(|b| !rules.require_description || described(b));
+        let inherits = rules.inherit == Inherit::Override && self.overrides;
+        let documented = inherits || self.doc.is_some_and(|b| !rules.require_description || described(b));
         Some(Item { documented, ..self.item.clone() })
     }
 }
@@ -195,7 +199,7 @@ impl Module {
         let line = self.line();
         let ignore = self.next_ignore.take().filter(|ignore| ignore.line + 1 == line);
         let item = Item { name, kind, line, column: 1, documented: doc.is_some(), ignore };
-        self.expected.push(Expected { exported, item, doc, protected: false });
+        self.expected.push(Expected { exported, item, doc, protected: false, overrides: false });
     }
 
     /// A statement that exports and declares nothing.
@@ -398,7 +402,7 @@ impl Module {
         for j in 0..tc.draw(gs::integers::<usize>().max_value(4)) {
             let doc = self.doc(tc);
             let item = |m: &mut Self, name: String, kind| m.expect(exported, format!("{class}.{name}"), kind, doc);
-            match tc.draw(gs::integers::<u8>().max_value(10)) {
+            match tc.draw(gs::integers::<u8>().max_value(11)) {
                 0 => {
                     item(self, format!("m{j}"), Kind::Method);
                     if tc.draw(gs::booleans()) {
@@ -442,6 +446,11 @@ impl Module {
                     item(self, format!("t{j}"), Kind::Property);
                     self.expected.last_mut().unwrap().protected = true;
                     self.write(&format!("protected t{j} = 1;"));
+                }
+                10 => {
+                    item(self, format!("u{j}"), Kind::Method);
+                    self.expected.last_mut().unwrap().overrides = true;
+                    self.write(&format!("override u{j}() {{}}"));
                 }
                 _ => self.write(&format!("#h{j} = 1;\nprivate q{j} = 1;\nprivate r{j}() {{}}")),
             }
@@ -513,6 +522,7 @@ fn rules_decide_what_counts_and_what_is_documented(tc: TestCase) {
             .map(String::from)
             .collect(),
         kinds: tc.draw(gs::optional(gs::vecs(gs::sampled_from(ALL_KINDS.to_vec())).max_size(4))),
+        inherit: tc.draw(gs::sampled_from(vec![Inherit::Tag, Inherit::Override])),
         access: tc.draw(gs::optional(gs::vecs(gs::sampled_from(LEVELS.to_vec())).max_size(3))),
         ignore_names: tc
             .draw(
@@ -522,8 +532,15 @@ fn rules_decide_what_counts_and_what_is_documented(tc: TestCase) {
             .map(|re| regex::Regex::new(re).unwrap())
             .collect(),
     };
-    let items = scan(&source, SourceType::ts(), &rules).unwrap();
-    assert_eq!(items, expected.iter().filter_map(|e| e.by(&rules)).collect::<Vec<_>>(), "{source}");
+    // And each rule for what's documented with nothing left out, for the filters not to hide.
+    let mut all = vec![rules];
+    for (require_description, inherit) in [(false, Inherit::Tag), (true, Inherit::Tag), (true, Inherit::Override)] {
+        all.push(Rules { scope: Scope::All, require_description, inherit, ..Rules::default() });
+    }
+    for rules in all {
+        let items = scan(&source, SourceType::ts(), &rules).unwrap();
+        assert_eq!(items, expected.iter().filter_map(|e| e.by(&rules)).collect::<Vec<_>>(), "{source}");
+    }
 }
 
 /// A module read from a file has the items its text does. One that doesn't parse fails with its
@@ -1233,8 +1250,11 @@ fn rules_come_from_flags_over_the_config(tc: TestCase) {
         vec!["--access".into(), names.join(",")]
     });
 
+    let inherit = run.set(&tc, "inherit", vec![Inherit::Tag, Inherit::Override], |_| vec![]);
+
     let settings = run.settings(dir.path());
     let rules = settings.rules();
+    assert_eq!(rules.inherit, inherit.unwrap_or_default());
     assert_eq!(rules.access, access);
     let patterns: Vec<&str> = rules.ignore_names.iter().map(regex::Regex::as_str).collect();
     assert_eq!(patterns, names.unwrap_or_default());

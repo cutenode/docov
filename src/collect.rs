@@ -217,6 +217,8 @@ struct Found<'s> {
     exported: bool,
     /// Whether it's a TypeScript `protected` member.
     protected: bool,
+    /// Whether it's a TypeScript `override` member.
+    overrides: bool,
 }
 
 struct Collector<'s> {
@@ -246,7 +248,16 @@ impl<'s> Collector<'s> {
         // A decorator before `export` starts the declaration, and is where its doc goes.
         let at = site.at.min(start);
         let exported = site.exported;
-        self.found.push(Found { name, kind, at, doc, binding: site.binding, exported, protected: false });
+        self.found.push(Found {
+            name,
+            kind,
+            at,
+            doc,
+            binding: site.binding,
+            exported,
+            protected: false,
+            overrides: false,
+        });
         self.found.last_mut().expect("just pushed")
     }
 
@@ -406,7 +417,7 @@ impl<'s> Collector<'s> {
         let mut overload = None;
         for element in &class.body.body {
             let previous = overload.take();
-            let (start, key, kind, accessibility) = match element {
+            let (start, key, kind, accessibility, overrides) = match element {
                 ClassElement::MethodDefinition(m) => {
                     if m.kind.is_constructor() || is_private(&m.key, m.accessibility) {
                         continue;
@@ -421,18 +432,19 @@ impl<'s> Collector<'s> {
                         continue;
                     }
                     let kind = if m.kind == MethodDefinitionKind::Method { Kind::Method } else { Kind::Accessor };
-                    (m.span.start, key, kind, m.accessibility)
+                    (m.span.start, key, kind, m.accessibility, m.r#override)
                 }
                 ClassElement::PropertyDefinition(p) if !is_private(&p.key, p.accessibility) => {
-                    (p.span.start, self.key(&p.key), Kind::Property, p.accessibility)
+                    (p.span.start, self.key(&p.key), Kind::Property, p.accessibility, p.r#override)
                 }
                 ClassElement::AccessorProperty(a) if !is_private(&a.key, a.accessibility) => {
-                    (a.span.start, self.key(&a.key), Kind::Accessor, a.accessibility)
+                    (a.span.start, self.key(&a.key), Kind::Accessor, a.accessibility, a.r#override)
                 }
                 _ => continue,
             };
             let found = self.push(Site { at: start, ..site }, start, format!("{class_name}.{key}"), kind);
             found.protected = accessibility == Some(TSAccessibility::Protected);
+            found.overrides = overrides;
         }
     }
 
