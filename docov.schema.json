@@ -366,6 +366,27 @@
             }
           ],
           "description": "A generator that yields a value has @yields."
+        },
+        "valid-link": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Level"
+            },
+            {
+              "items": false,
+              "minItems": 1,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Level"
+                },
+                {
+                  "$ref": "#/$defs/NoOptions"
+                }
+              ],
+              "type": "array"
+            }
+          ],
+          "description": "Each {@link} is well formed, and a target that's a name is declared or imported in its file."
         }
       },
       "type": "object"

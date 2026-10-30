@@ -101,6 +101,7 @@ Each finding prints to stderr as `docov: path:line:column: rule-id: message`, an
 - `require-template`: each type parameter of a declaration has a `@template`.
 - `empty-tag-description`: each `@param`, `@returns`, `@throws` and `@yields` says something past its type and name, except a `@returns` of nothing.
 - `informative-docs`: a description says more than its item's name (`/** The user name. */` on `userName` doesn't).
+- `valid-link`: each `{@link}`, `{@linkcode}` and `{@linkplain}` is closed, has a target and no unescaped `{`, and each `@see` has text. A target that's a name, or a namepath like `A#b` by its first part, is declared or imported in the same file or is a JavaScript, browser or Node.js global. Names in other files aren't looked up.
 
 `const f = () => …` is a variable to docov, so the checks on parameters, returns and throws don't look at it.
 

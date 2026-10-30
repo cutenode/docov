@@ -15,6 +15,7 @@ use std::{
 };
 
 use oxc_jsdoc::JSDoc;
+use rustc_hash::FxHashSet;
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -83,6 +84,8 @@ pub struct Subject<'a, 's> {
     pub shape: &'a Shape<'s>,
     /// The file's text, which the block's spans are offsets into.
     pub source: &'s str,
+    /// The names the file declares or imports at its top level, and the types its blocks declare.
+    pub names: &'a FxHashSet<&'s str>,
 }
 
 impl Subject<'_, '_> {

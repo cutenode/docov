@@ -2853,3 +2853,81 @@ fn descriptions_say_more_than_the_name(tc: TestCase) {
     let on = [("informative-docs", informative_level)];
     assert_eq!(diagnose(&source, &on, Rules::default()), at_level(wanted, informative_on), "{source}");
 }
+
+/// `valid-link` finds each `{@link}`, `{@linkcode}` or `{@linkplain}` that isn't closed, has an
+/// unescaped `{` inside or no target, or whose target is a plain name or namepath whose first part
+/// the file doesn't declare or import (nor a block declare as a type, nor a JavaScript, browser or
+/// Node.js global define), and each `@see` with no text or whose lone word is such a name. Escaped
+/// links and links in code spans are left be, as are URLs and other targets.
+#[hegel::test(test_cases = 100)]
+fn links_are_well_formed_and_resolve(tc: TestCase) {
+    let (link_level, link_on) = level(&tc);
+    let (default, named) = tc.draw(gs::sampled_from(vec![
+        ("export default function main() {}", Some("main")),
+        ("export default class Main {}", Some("Main")),
+        ("export default 1;", None),
+    ]));
+    let prelude = format!(
+        "import {{ Thing }} from './thing';\nimport * as ns from './ns';\nimport req = require('req');\n\
+         const {{ dest }} = ns;\nexport interface Shape {{}}\nexport type Alias = 1;\nexport enum Color {{}}\n\
+         export namespace Space {{}}\ndeclare module 'm' {{}}\n{default}\nns.call();\n\
+         /** @typedef {{object}} Opt */\nexport function f() {{}}\nexport class K {{}}\n"
+    );
+    let unresolved = |name: &str| format!("`{name}` isn't declared or imported in this file");
+    let undeclared = |name: &str| (named != Some(name)).then(|| (0, unresolved(name)));
+    // Each link, and where in it the finding is and what it says, if it has one.
+    let links: Vec<(&str, Option<(usize, String)>)> = vec![
+        ("{@link Thing}", None),
+        ("{@linkcode ns.x}", None),
+        ("{@linkplain dest}", None),
+        ("{@link Shape#area}", None),
+        ("{@link Alias}", None),
+        ("{@link Color~red}", None),
+        ("{@link Space}", None),
+        ("{@link req}", None),
+        ("{@link Opt}", None),
+        ("{@link K.m()}", None),
+        ("{@link Array}", None),
+        ("{@link document}", None),
+        ("{@link process}", None),
+        ("{@link f|the function}", None),
+        ("{@link Thing more text}", None),
+        ("{@link https://x.dev}", None),
+        ("{@link module:a/b}", None),
+        ("{@link main}", undeclared("main")),
+        ("{@link Main}", undeclared("Main")),
+        ("{@link Nope}", Some((0, unresolved("Nope")))),
+        ("{@linkcode Nope.x|text}", Some((0, unresolved("Nope.x")))),
+        ("{@link}", Some((0, "{@link} has no target".into()))),
+        ("{@linkplain  }", Some((0, "{@linkplain} has no target".into()))),
+        ("{@link Thing", Some((0, "{@link} isn't closed".into()))),
+        ("{@link {a}}", Some((7, "an unescaped `{` in {@link}".into()))),
+        ("{@link a\\{b}", None),
+        ("\\{@link Nope}", None),
+        ("`{@link Nope}`", None),
+    ];
+    let sees: Vec<(&str, Option<(usize, String)>)> = vec![
+        ("@see Thing", None),
+        ("@see https://x.dev", None),
+        ("@see the docs for more", None),
+        ("@see Nope", Some((0, unresolved("Nope")))),
+        ("@see", Some((0, "@see has no text".into()))),
+        ("@see {@link Nope}", Some((5, unresolved("Nope")))),
+    ];
+    let drawn = tc.draw(gs::vecs(gs::sampled_from(links)).max_size(4));
+    let see = tc.draw(gs::optional(gs::sampled_from(sees)));
+    let mut source = prelude;
+    let mut wanted = Vec::new();
+    for (i, (link, finding)) in drawn.iter().enumerate() {
+        let line = source.matches('\n').count() + 2;
+        source += &format!("/**\n * See {link}.\n */\nexport const v{i} = 1;\n");
+        wanted.extend(finding.clone().map(|(at, message)| (line, 8 + at, "valid-link", message)));
+    }
+    if let Some((tag, finding)) = see {
+        let line = source.matches('\n').count() + 3;
+        source += &format!("/**\n * Docs.\n * {tag}\n */\nexport const seen = 1;\n");
+        wanted.extend(finding.map(|(at, message)| (line, 4 + at, "valid-link", message)));
+    }
+    let on = [("valid-link", link_level)];
+    assert_eq!(diagnose(&source, &on, Rules::from(Scope::All)), at_level(wanted, link_on), "{source}");
+}

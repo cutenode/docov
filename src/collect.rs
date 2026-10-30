@@ -212,6 +212,8 @@ struct Collected<'s> {
     lines: Lines<'s>,
     /// What it passed over, when asked to keep that.
     skips: Vec<Skip>,
+    /// The names it declares or imports at its top level, when the doc checks are on.
+    names: FxHashSet<&'s str>,
 }
 
 /// A declaration, or a block, the scan passed over, and why, for `--explain`.
@@ -277,8 +279,9 @@ fn collect<T>(
     let generated = parsed.program.comments.first().is_some_and(|c| c.span.source_text(source).contains("@generated"));
     if rules.skip_generated && generated {
         collector.skip(0, || "the file".into(), "its first comment says it's @generated");
-        let skips = collector.skips.unwrap_or_default();
-        return Ok(finish(Collected { found: Vec::new(), exported: FxHashSet::default(), ignores, lines, skips }));
+        let (skips, found, exported, names) =
+            (collector.skips.unwrap_or_default(), Vec::new(), FxHashSet::default(), FxHashSet::default());
+        return Ok(finish(Collected { found, exported, ignores, lines, skips, names }));
     }
     let legal = parsed.program.comments.iter().filter(|c| c.content == CommentContent::JsdocLegal && c.is_leading());
     for comment in legal {
@@ -300,7 +303,8 @@ fn collect<T>(
     }
 
     let Collector { found, exported, skips, .. } = collector;
-    Ok(finish(Collected { found, exported, ignores, lines, skips: skips.unwrap_or_default() }))
+    let names = diagnose::names(&parsed.program, source, rules);
+    Ok(finish(Collected { found, exported, ignores, lines, skips: skips.unwrap_or_default(), names }))
 }
 
 struct Found<'s> {

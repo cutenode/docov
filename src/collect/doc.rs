@@ -32,9 +32,20 @@ pub(super) fn file(doc: &JSDoc) -> Option<bool> {
 /// The type `doc` declares with its first `@typedef` or `@callback`, if that names one, and
 /// whether it's described: a description, or text after the name.
 pub(super) fn declared_type(doc: &JSDoc) -> Option<(String, bool)> {
+    let (name, text) = declares(doc)?;
+    Some((name.to_owned(), !doc.comment().parsed().is_empty() || !text.is_empty()))
+}
+
+/// The name of the type `doc` declares, as [`declared_type`] finds it.
+pub(super) fn declared_name<'a>(doc: &JSDoc<'a>) -> Option<&'a str> {
+    declares(doc).map(|(name, _)| name)
+}
+
+/// The name and text of `doc`'s first `@typedef` or `@callback`, if that names a type.
+fn declares<'a>(doc: &JSDoc<'a>) -> Option<(&'a str, String)> {
     let tag = doc.tags().iter().find(|tag| matches!(tag.kind.parsed(), "typedef" | "callback"))?;
     let (_, name, text) = tag.type_name_comment();
-    Some((name?.parsed().to_owned(), !doc.comment().parsed().is_empty() || !text.parsed().is_empty()))
+    Some((name?.parsed(), text.parsed()))
 }
 
 /// Whether `doc` has a `@property` (or `@prop`) named `name`.
