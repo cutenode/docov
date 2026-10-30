@@ -97,7 +97,9 @@ impl Excused {
 impl Baseline {
     /// The baseline file, as a path from the current folder: `--baseline`, else docov.json's.
     fn path(&self, dir: &Path) -> Option<PathBuf> {
-        self.flag.clone().or_else(|| self.key.as_ref().map(|key| dir.join(key)))
+        // Collected, the key's path shows with the OS's separators: on Windows, `dir.join` would
+        // keep the `/`s it was written with after a `\`.
+        self.flag.clone().or_else(|| self.key.as_ref().map(|key| dir.join(key).components().collect()))
     }
 
     /// The baseline's items, if there is one to read. `dir` is the config's folder.
