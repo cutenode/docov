@@ -216,3 +216,22 @@ fn print_config_and_list_files_show_what_a_scan_would_use() {
     let files = [Path::new("src").join("a.ts"), Path::new("src").join("c.js")].map(|p| p.display().to_string() + "\n");
     assert_eq!((code, out), (0, files.concat()));
 }
+
+#[test]
+fn init_writes_a_config_with_the_current_coverage() {
+    let dir = project();
+    let (code, _, err) = docov(dir.path(), &["init"]);
+    assert_eq!((code, err.as_str()), (0, "docov: wrote docov.json, with a 66% threshold\n"));
+    let json: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(dir.path().join("docov.json")).unwrap()).unwrap();
+    let schema =
+        format!("https://raw.githubusercontent.com/cutenode/docov/v{}/docov.schema.json", env!("CARGO_PKG_VERSION"));
+    assert_eq!(json, serde_json::json!({ "$schema": schema, "threshold": 66 }));
+    assert_eq!(docov(dir.path(), &["init"]), (2, String::new(), "docov: docov.json is already there\n".into()));
+    // Paths still scan: a folder named init as `./init`, and one named help as it is.
+    fs::create_dir(dir.path().join("init")).unwrap();
+    fs::create_dir(dir.path().join("help")).unwrap();
+    for path in ["./init", "help"] {
+        assert_eq!(docov(dir.path(), &[path]), (0, " 100.0%  0/0  total\n".into(), String::new()), "{path}");
+    }
+}

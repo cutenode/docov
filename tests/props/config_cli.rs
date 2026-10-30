@@ -1,11 +1,12 @@
 //! Properties of config loading and the command line's conveniences.
 
 use std::{
+    fs,
     path::{Path, PathBuf},
     process::Command,
 };
 
-use docov::{config, config::Config, walk::Exclude};
+use docov::{Totals, config, config::Config, init, walk::Exclude};
 use hegel::{TestCase, generators as gs};
 
 use super::write;
@@ -199,8 +200,8 @@ fn docov(dir: &Path, args: &[&str], closed: bool) -> (i32, String, String) {
 #[hegel::test(test_cases = 5)]
 fn the_cli_prints_its_settings_and_files(tc: TestCase) {
     let dir = tempfile::tempdir().unwrap();
-    std::fs::create_dir_all(dir.path().join("lib/gen")).unwrap();
-    std::fs::create_dir(dir.path().join("src")).unwrap();
+    fs::create_dir_all(dir.path().join("lib/gen")).unwrap();
+    fs::create_dir(dir.path().join("src")).unwrap();
     let mut listed = Vec::new();
     for f in 0..tc.draw(gs::integers::<usize>().max_value(4)) {
         let folder = tc.draw(gs::sampled_from(vec!["src", "lib", "lib/gen"]));
@@ -248,4 +249,45 @@ fn the_cli_prints_its_settings_and_files(tc: TestCase) {
         assert_eq!(code, expected, "{args:?} {err}");
         assert!(code == 0 || err.starts_with("docov: "), "{err}");
     }
+}
+
+/// `docov init` writes a docov.json pinned to this version's schema, with the coverage it measures,
+/// rounded down, as the threshold, which a scan then meets. It won't write over a config file,
+/// and fails on a file that doesn't scan, a folder that isn't there, or a folder in its way.
+#[hegel::test(test_cases = 5)]
+fn init_writes_a_threshold_the_project_meets(tc: TestCase) {
+    let dir = tempfile::tempdir().unwrap();
+    let docs = tc.draw(gs::vecs(gs::booleans()).max_size(7));
+    let mut text = String::new();
+    for (i, doc) in docs.iter().enumerate() {
+        text.push_str(&format!("{}export const e{i} = 1;\n", if *doc { "/** Docs. */\n" } else { "" }));
+    }
+    write(dir.path(), "src/a.ts", &text);
+    let totals = Totals { documented: docs.iter().filter(|d| **d).count(), total: docs.len() };
+
+    let (code, _, err) = docov(dir.path(), &["init"], false);
+    let threshold = totals.percent().floor();
+    assert_eq!((code, err), (0, format!("docov: wrote docov.json, with a {threshold}% threshold\n")));
+    let json: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(dir.path().join("docov.json")).unwrap()).unwrap();
+    assert_eq!(json, serde_json::json!({ "$schema": init::SCHEMA_URL, "threshold": threshold as u8 }));
+    assert_eq!(docov(dir.path(), &[], false).0, 0);
+    let (code, _, err) = docov(dir.path(), &["init"], false);
+    assert_eq!((code, err.as_str()), (2, "docov: docov.json is already there\n"));
+
+    // The rest in-process: each run of the binary is slow under coverage.
+    fs::remove_file(dir.path().join("docov.json")).unwrap();
+    let name = tc.draw(gs::sampled_from(config::FILE_NAMES.to_vec()));
+    write(dir.path(), name, "{}");
+    assert_eq!(init::init(dir.path()), Err(vec![format!("{name} is already there")]));
+    fs::remove_file(dir.path().join(name)).unwrap();
+    fs::create_dir(dir.path().join("docov.json")).unwrap();
+    let error = init::init(dir.path()).unwrap_err();
+    assert!(error[0].starts_with("docov.json: "), "{error:?}");
+    fs::remove_dir(dir.path().join("docov.json")).unwrap();
+    write(dir.path(), "src/broken.ts", "export function (");
+    let error = init::init(dir.path()).unwrap_err();
+    assert!(error[0].contains("broken.ts"), "{error:?}");
+    let error = init::init(&dir.path().join("gone")).unwrap_err();
+    assert!(error[0].contains("gone"), "{error:?}");
 }

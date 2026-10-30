@@ -2,28 +2,30 @@
 
 use std::{
     io::{self, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::ExitCode,
 };
 
 use clap::{CommandFactory, FromArgMatches, Parser};
 use docov::{
-    Config, Format, Scope, Settings,
+    Config, Format, Scope, Settings, batch,
     feature::{
         self,
         list_files::{self, ListFiles},
         print_config::{self, PrintConfig},
     },
-    report, scan_file, walk,
+    init, report, walk,
 };
-use rayon::{iter::Either, prelude::*};
 
 /// Checks how much of a JavaScript or TypeScript project's API has JSDoc.
 ///
 /// Exits 1 when coverage is under the threshold, 2 when a file or the config can't be read.
 #[derive(Parser)]
-#[command(version)]
+// No `help` subcommand: `docov help` would no longer scan a folder named help.
+#[command(version, args_conflicts_with_subcommands = true, disable_help_subcommand = true)]
 struct Cli {
+    #[command(subcommand)]
+    command: Option<Command>,
     /// Files and folders to scan [default: the config's `paths`, or the current folder]
     paths: Vec<PathBuf>,
     /// The config file [default: docov.json, docov.jsonc or .docovrc here or in the nearest folder above]
@@ -37,6 +39,13 @@ struct Cli {
     print_schema: bool,
 }
 
+/// What docov does besides scanning.
+#[derive(clap::Subcommand)]
+enum Command {
+    /// Write a docov.json here with a threshold of the current coverage, rounded down
+    Init,
+}
+
 fn main() -> ExitCode {
     // Each feature adds its own flags.
     let matches = feature::args(Cli::command()).get_matches();
@@ -45,7 +54,19 @@ fn main() -> ExitCode {
         print!("{}", Config::json_schema());
         return ExitCode::SUCCESS;
     }
-    match run(cli, &matches) {
+    if let Some(Command::Init) = cli.command {
+        return exit(init::init(Path::new(".")).map(|threshold| {
+            eprintln!("docov: wrote docov.json, with a {threshold}% threshold");
+            true
+        }));
+    }
+    exit(run(cli, &matches))
+}
+
+/// Prints `result`'s errors, and exits by it: 0 when coverage passed, 1 when it didn't, and 2 on
+/// an error.
+fn exit(result: Result<bool, Vec<String>>) -> ExitCode {
+    match result {
         Ok(passed) => ExitCode::from(u8::from(!passed)),
         Err(errors) => {
             for error in errors {
@@ -70,13 +91,7 @@ fn run(cli: Cli, matches: &clap::ArgMatches) -> Result<bool, Vec<String>> {
     if settings.get::<ListFiles>().0 {
         return wrote(list_files::write(&files, &mut io::stdout().lock()));
     }
-    let (reports, errors): (Vec<_>, Vec<_>) = files.par_iter().partition_map(|path| match scan_file(path, scope) {
-        Ok(report) => Either::Left(report),
-        Err(e) => Either::Right(e.to_string()),
-    });
-    if !errors.is_empty() {
-        return Err(errors);
-    }
+    let reports = batch::scan(&files, scope)?;
     report::write(cli.format, &reports, &mut io::stdout().lock()).map_err(|e| vec![e.to_string()])?;
 
     let failures = settings.gates(&reports);
