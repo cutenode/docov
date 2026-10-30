@@ -2,7 +2,7 @@
 
 use serde::Serialize;
 
-use crate::report::{Context, Format};
+use crate::report::{Context, Format, json};
 use crate::{Item, Totals};
 
 /// The format.
@@ -37,6 +37,5 @@ fn render(context: &Context) -> String {
             items: &f.items,
         })
         .collect();
-    serde_json::to_string_pretty(&Report { totals, percent: totals.percent(), files }).expect("a report serializes")
-        + "\n"
+    json(&Report { totals, percent: totals.percent(), files })
 }

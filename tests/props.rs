@@ -646,6 +646,41 @@ fn markdown_reads_back_as_written(tc: TestCase) {
     assert_eq!(details, drawn.files.iter().filter(|f| f.items.iter().any(|i| !i.documented)).count());
 }
 
+/// Each undocumented item and its file, with the file's path as CI services want it.
+fn undocumented(files: &[FileReport]) -> Vec<(String, &Item)> {
+    let slash = |path: &Path| path.display().to_string().replace(std::path::MAIN_SEPARATOR, "/");
+    files.iter().flat_map(|f| f.items.iter().filter(|i| !i.documented).map(move |i| (slash(&f.path), i))).collect()
+}
+
+/// `sarif` has the fields SARIF 2.1.0 requires, one rule, and a result at each undocumented item
+/// whose location is a URI reference that decodes to the item's file.
+#[hegel::test(test_cases = 100)]
+fn sarif_has_a_result_at_each_undocumented_item(tc: TestCase) {
+    let drawn = Drawn::draw(&tc);
+    let out = report::format("sarif").unwrap().render(&drawn.context());
+    let sarif: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(sarif["version"], "2.1.0");
+    let run = &sarif["runs"][0];
+    assert_eq!(sarif["runs"].as_array().unwrap().len(), 1);
+    assert_eq!(run["tool"]["driver"]["name"], "docov");
+    assert_eq!(run["tool"]["driver"]["rules"][0]["id"], "docov/undocumented");
+    let results = run["results"].as_array().unwrap();
+    let wanted = undocumented(&drawn.files);
+    assert_eq!(results.len(), wanted.len());
+    for (result, (path, item)) in results.iter().zip(wanted) {
+        assert_eq!(result["ruleId"], "docov/undocumented");
+        assert_eq!(result["message"]["text"], format!("{} {} is undocumented", item.kind.as_str(), item.name));
+        let location = &result["locations"][0]["physicalLocation"];
+        let uri = location["artifactLocation"]["uri"].as_str().unwrap();
+        assert!(uri.chars().all(|c| c.is_ascii_alphanumeric() || "-._~/%".contains(c)), "{uri}");
+        assert_eq!(percent_encoding::percent_decode_str(uri).decode_utf8().unwrap(), path);
+        assert_eq!(
+            (&location["region"]["startLine"], &location["region"]["startColumn"]),
+            (&item.line.into(), &item.column.into())
+        );
+    }
+}
+
 /// Every format reports the same items and totals, and documenting one more item never lowers
 /// coverage.
 #[hegel::test(test_cases = 100)]

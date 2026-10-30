@@ -70,6 +70,14 @@ fn escape(text: &str) -> String {
     text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&#39;")
 }
 
+/// The rule each undocumented item breaks, in formats that name one.
+const RULE: &str = "docov/undocumented";
+
+/// `value` as pretty JSON, ending in a newline.
+fn json(value: &impl Serialize) -> String {
+    serde_json::to_string_pretty(value).expect("a report serializes") + "\n"
+}
+
 /// What a finding at an undocumented item says: `function a is undocumented`.
 fn message(item: &Item) -> String {
     format!("{} {} is undocumented", item.kind.as_str(), item.name)

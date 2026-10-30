@@ -251,6 +251,7 @@ dependencies = [
  "oxc_ast",
  "oxc_parser",
  "oxc_span",
+ "percent-encoding",
  "pulldown-cmark",
  "rayon",
  "rustc-hash",
