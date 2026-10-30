@@ -10,11 +10,13 @@ use std::{
 };
 
 use rustc_hash::FxHashMap;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{FileReport, Item, Kind};
 
 include!(concat!(env!("OUT_DIR"), "/formats.rs"));
+
+pub use json::Base;
 
 /// An output format. Register one by giving its file a `pub const FORMAT: Format`.
 #[derive(Debug)]
@@ -62,6 +64,8 @@ pub struct Context<'a> {
     pub threshold: Option<f64>,
     /// How much `text` shows.
     pub text: Text,
+    /// The earlier report `--compare` names, which `markdown` shows the change from.
+    pub base: Option<&'a Base>,
 }
 
 /// How much `text` shows.
@@ -138,7 +142,7 @@ fn message(item: &Item) -> String {
 }
 
 /// How many items are documented, out of how many.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Totals {
     /// Items with docs.
     pub documented: usize,
@@ -210,6 +214,9 @@ pub struct Flags {
     /// Write an SVG badge of the total to FILE, as `--format badge=FILE` does
     #[arg(long, value_name = "FILE")]
     pub badge: Option<PathBuf>,
+    /// Show the change from FILE, an earlier `--format json` report, in the markdown report
+    #[arg(long, value_name = "FILE")]
+    pub compare: Option<PathBuf>,
     #[expect(missing_docs, reason = "clap shows the fields' docs")]
     #[command(flatten)]
     pub text: Text,

@@ -1,5 +1,9 @@
 //! `markdown`: a summary for `$GITHUB_STEP_SUMMARY` or a pull request comment.
 
+use std::path::Path;
+
+use rustc_hash::FxHashMap;
+
 use crate::Totals;
 use crate::report::{Context, Format, escape, slash};
 
@@ -8,23 +12,36 @@ pub const FORMAT: Format =
     Format { name: "markdown", help: "A summary for $GITHUB_STEP_SUMMARY or a pull request comment", render };
 
 /// The total and any failed gates, a table of the files, and each file's undocumented items,
-/// folded away.
+/// folded away. With `--compare`, the total and each file's row show the change from the earlier
+/// report too, and files it had that are gone get a row of their own.
 fn render(context: &Context) -> String {
     let totals = Totals::of(context.files);
     let (percent, documented, total) = (totals.percent(), totals.documented, totals.total);
-    let mut out = format!("## docov\n\n**{percent:.1}%** documented ({documented}/{total})\n");
+    let mut out = format!("## docov\n\n**{percent:.1}%** documented ({documented}/{total})");
+    if let Some(base) = context.base {
+        out += &format!(", {} from {:.1}%", change(base.totals, totals), base.totals.percent());
+    }
+    out += "\n";
     for failure in context.failures {
         out += &format!("\n**Failed:** {}\n", plain(failure));
     }
     let files: Vec<_> = context.files.iter().filter(|f| f.counted().next().is_some()).collect();
-    if !files.is_empty() {
-        out += "\n| Documented | Items | File |\n| ---: | ---: | :--- |\n";
+    // A file without counted items has no row, so one the base had without them doesn't either.
+    let base = context.base.iter().flat_map(|base| &base.files).filter(|f| f.totals.total > 0);
+    let mut before: FxHashMap<&str, Totals> = base.map(|f| (&*f.path, f.totals)).collect();
+    let compared = context.base.is_some();
+    if !files.is_empty() || !before.is_empty() {
+        out += if compared { COMPARED } else { HEADER };
     }
     for file in &files {
-        let totals = file.totals();
-        // GitHub splits table cells at `|`, even in code.
-        let path = code(&slash(&file.path)).replace('|', "\\|");
-        out += &format!("| {:.1}% | {}/{} | {path} |\n", totals.percent(), totals.documented, totals.total);
+        // The base has paths as `json` writes them.
+        let old = before.remove(&*file.path.display().to_string());
+        out += &row(Some(file.totals()), old, compared, &file.path);
+    }
+    let mut gone: Vec<_> = before.into_iter().collect();
+    gone.sort_unstable_by_key(|&(path, _)| path);
+    for (path, old) in gone {
+        out += &row(None, Some(old), compared, Path::new(path));
     }
     for file in files.iter().filter(|f| f.counted().any(|i| !i.documented)) {
         let totals = file.totals();
@@ -37,6 +54,39 @@ fn render(context: &Context) -> String {
         out += "\n</details>\n";
     }
     out
+}
+
+/// The table's header.
+const HEADER: &str = "\n| Documented | Items | File |\n| ---: | ---: | :--- |\n";
+
+/// The table's header with `--compare`.
+const COMPARED: &str =
+    "\n| Documented | Before | Change | Items | File |\n| ---: | ---: | ---: | ---: | :--- |\n";
+
+/// A table row: a file's totals `now`, or none when it's gone, and `before`, from the base when
+/// `compared`, or none when the file is new.
+fn row(now: Option<Totals>, before: Option<Totals>, compared: bool, path: &Path) -> String {
+    let percent = |totals: Totals| format!("{:.1}%", totals.percent());
+    let mut cells = vec![now.map_or_else(String::new, percent)];
+    if compared {
+        cells.push(before.map_or_else(String::new, percent));
+        cells.push(match (now, before) {
+            (Some(now), Some(before)) => change(before, now),
+            (Some(_), None) => "new".into(),
+            (None, _) => "gone".into(),
+        });
+    }
+    cells.push(now.map_or_else(String::new, |totals| format!("{}/{}", totals.documented, totals.total)));
+    // GitHub splits table cells at `|`, even in code.
+    cells.push(code(&slash(path)).replace('|', "\\|"));
+    format!("| {} |\n", cells.join(" | "))
+}
+
+/// The change in percentage points from `before` to `now`, as `+6.7`. It's the difference of the
+/// percentages as shown, so it's what a reader gets subtracting them.
+fn change(before: Totals, now: Totals) -> String {
+    let shown = |totals: Totals| format!("{:.1}", totals.percent()).parse::<f64>().expect("a formatted number parses");
+    format!("{:+.1}", shown(now) - shown(before))
 }
 
 /// `text` as a code span: fenced by more backticks than it has in a row, and padded where it
