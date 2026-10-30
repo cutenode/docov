@@ -44,6 +44,7 @@ thiserror = "2.0.21"
 # Property-based tests. Pinned: Hegel is in beta and makes breaking changes. `static-engine`
 # links its engine as an ordinary dependency, so it's in Cargo.lock.
 hegeltest = { version = "=0.50.4", features = ["static-engine"] }
+pulldown-cmark = { version = "0.13.6", default-features = false }
 tempfile = "3.27.0"
 
 [profile.release]

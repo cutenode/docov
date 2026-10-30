@@ -65,6 +65,11 @@ fn undocumented(files: &[FileReport]) -> impl Iterator<Item = (&FileReport, &Ite
     files.iter().flat_map(|file| file.items.iter().filter(|item| !item.documented).map(move |item| (file, item)))
 }
 
+/// `text` with what XML and HTML read as markup escaped, for text and attribute values alike.
+fn escape(text: &str) -> String {
+    text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&#39;")
+}
+
 /// What a finding at an undocumented item says: `function a is undocumented`.
 fn message(item: &Item) -> String {
     format!("{} {} is undocumented", item.kind.as_str(), item.name)

@@ -387,7 +387,7 @@ const ALL_KINDS: [Kind; 11] = [
 ];
 
 /// Names and paths with what each format has to escape: separators, markup and quotes.
-const NAMES: [&str; 5] = ["n", "C.m", "[`k`]", "[a, b]", "p|q*_<&>%:\"'"];
+const NAMES: [&str; 5] = ["n", "C.m", "`k``", "[a, b]", "p|q*_<&>%:\"'"];
 const FOLDERS: [&str; 4] = ["", "src/", "src/deep/", "a b/"];
 const FILE_NAMES: [&str; 4] = ["", ",%:", "<&>'\"", "`|`"];
 
@@ -600,6 +600,50 @@ fn github_annotates_each_undocumented_item_and_failure(tc: TestCase) {
         })
         .collect();
     assert_eq!(read, wanted, "{out}");
+}
+
+/// `markdown` reads back as written: the total, each failure as a line of text, a table row per
+/// file with items with its path as code, and each undocumented item's name as code, folded away
+/// under its file. Names and paths come back whole however many backticks, pipes or spaces they
+/// have, and failures as plain text whatever Markdown they look like.
+#[hegel::test(test_cases = 100)]
+fn markdown_reads_back_as_written(tc: TestCase) {
+    use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
+    let drawn = Drawn::draw(&tc);
+    let out = report::format("markdown").unwrap().render(&drawn.context());
+    let totals = Totals::of(&drawn.files);
+    let heading =
+        format!("## docov\n\n**{:.1}%** documented ({}/{})\n", totals.percent(), totals.documented, totals.total);
+    assert!(out.starts_with(&heading), "{out}");
+
+    let (mut code, mut paragraphs, mut rows, mut details) = (Vec::new(), Vec::new(), 0, 0);
+    let mut in_paragraph = false;
+    for event in Parser::new_ext(&out, Options::ENABLE_TABLES) {
+        match event {
+            Event::Code(text) => code.push(text.into_string()),
+            Event::Start(Tag::Paragraph) => {
+                in_paragraph = true;
+                paragraphs.push(String::new());
+            }
+            Event::End(TagEnd::Paragraph) => in_paragraph = false,
+            Event::Text(text) if in_paragraph => paragraphs.last_mut().unwrap().push_str(&text),
+            Event::End(TagEnd::TableRow) => rows += 1,
+            Event::Html(html) if html.starts_with("<details>") => details += 1,
+            _ => {}
+        }
+    }
+    let slash = |path: &Path| path.display().to_string().replace(std::path::MAIN_SEPARATOR, "/");
+    let with_items: Vec<_> = drawn.files.iter().filter(|f| !f.items.is_empty()).collect();
+    let mut wanted: Vec<String> = with_items.iter().map(|f| slash(&f.path)).collect();
+    wanted.extend(drawn.files.iter().flat_map(|f| f.items.iter().filter(|i| !i.documented).map(|i| i.name.clone())));
+    assert_eq!(code, wanted, "{out}");
+    let failed: Vec<String> =
+        paragraphs.into_iter().filter_map(|p| p.strip_prefix("Failed: ").map(String::from)).collect();
+    let failures: Vec<String> =
+        drawn.failures.iter().map(|f| f.replace(['\r', '\n'], " ").trim_end().to_owned()).collect();
+    assert_eq!(failed.iter().map(|f| f.trim_end()).collect::<Vec<_>>(), failures, "{out}");
+    assert_eq!(rows, with_items.len());
+    assert_eq!(details, drawn.files.iter().filter(|f| f.items.iter().any(|i| !i.documented)).count());
 }
 
 /// Every format reports the same items and totals, and documenting one more item never lowers
