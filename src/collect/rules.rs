@@ -26,6 +26,10 @@ pub struct Rules {
     pub access: Option<Vec<Access>>,
     /// What documents an item by inheriting its docs.
     pub inherit: Inherit,
+    /// Whether items whose JSDoc has `@deprecated` are left out.
+    pub ignore_deprecated: bool,
+    /// Whether a file whose first comment has `@generated` has nothing to count.
+    pub skip_generated: bool,
     /// Which ways of exporting count.
     pub exports: Exports,
 }
@@ -69,7 +73,9 @@ impl Rules {
         let level = level.unwrap_or(if found.protected { Access::Protected } else { Access::Public });
         let access = self.access.as_ref().is_some_and(|levels| !levels.contains(&level));
         let tagged = |tag: &String| found.doc.as_ref().is_some_and(|doc| doc::has_tag(doc, tag));
-        kind || access || self.exclude_tags.iter().any(tagged) || self.ignore_names.iter().any(named)
+        let deprecated =
+            self.ignore_deprecated && found.doc.as_ref().is_some_and(|doc| doc::has_tag(doc, "deprecated"));
+        kind || access || deprecated || self.exclude_tags.iter().any(tagged) || self.ignore_names.iter().any(named)
     }
 
     /// Whether `found` is documented.
