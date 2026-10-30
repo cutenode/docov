@@ -314,3 +314,19 @@ fn override_members_count_as_documented_with_inherit_override() {
     fs::write(dir.path().join("docov.json"), r#"{ "inherit": "override" }"#).unwrap();
     assert_eq!(total(&[]), " 100.0%  2/2  total");
 }
+
+#[test]
+fn the_config_picks_which_exports_count() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("a.js"), "export const a = 1;\nexports.b = 1;\nwindow.c = 1;\n").unwrap();
+    let total = || docov(dir.path(), &[]).1.lines().last().unwrap().to_owned();
+    assert_eq!(total(), "   0.0%  0/2  total");
+    fs::write(dir.path().join("docov.json"), r#"{ "exports": { "esm": false, "globals": true } }"#).unwrap();
+    assert_eq!(total(), "   0.0%  0/2  total");
+    fs::write(dir.path().join("docov.json"), r#"{ "exports": { "cjs": false } }"#).unwrap();
+    assert_eq!(total(), "   0.0%  0/1  total");
+    fs::write(dir.path().join("docov.json"), r#"{ "exports": { "amd": true } }"#).unwrap();
+    let (code, _, err) = docov(dir.path(), &[]);
+    assert_eq!(code, 2);
+    assert!(err.contains("unknown field `amd`"), "{err}");
+}

@@ -214,7 +214,8 @@ struct Found<'s> {
     doc: Option<JSDoc<'s>>,
     /// The module-level name that exports it (a member's class), when `export { name }` can.
     binding: Option<&'s str>,
-    exported: bool,
+    /// How it's exported, where it's declared.
+    via: Option<Via>,
     /// Whether it's a TypeScript `protected` member.
     protected: bool,
     /// Whether it's a TypeScript `override` member.
@@ -225,12 +226,23 @@ struct Collector<'s> {
     source: &'s str,
     docs: FxHashMap<u32, JSDoc<'s>>,
     found: Vec<Found<'s>>,
-    /// Names exported apart from their declarations: `export { a }`, `export default a`,
-    /// `export = a`, `exports.a = a`.
-    exported: FxHashSet<&'s str>,
+    /// Names exported apart from their declarations, and how: `export { a }`, `export default a`,
+    /// `export = a`, `exports.a = a`, `window.a = a`.
+    exported: FxHashSet<(&'s str, Via)>,
     /// The name of the function the last statement declared without a body. An overload's
     /// implementation follows its signatures, and only the signatures are documented.
     overload: Option<&'s str>,
+}
+
+/// How a module exports something.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum Via {
+    /// `export`.
+    Esm,
+    /// `exports.a =`, `module.exports =` or TypeScript's `export =`.
+    Cjs,
+    /// `window.a =` or `globalThis.a =`.
+    Global,
 }
 
 /// The owner of a declaration being collected: where its docs go and how it's exported.
@@ -239,7 +251,7 @@ struct Site<'s> {
     /// The start of the statement, where JSDoc attaches when the declaration is exported.
     at: u32,
     binding: Option<&'s str>,
-    exported: bool,
+    via: Option<Via>,
 }
 
 impl<'s> Collector<'s> {
@@ -247,17 +259,8 @@ impl<'s> Collector<'s> {
         let doc = self.docs.get(&site.at).or_else(|| self.docs.get(&start)).cloned();
         // A decorator before `export` starts the declaration, and is where its doc goes.
         let at = site.at.min(start);
-        let exported = site.exported;
-        self.found.push(Found {
-            name,
-            kind,
-            at,
-            doc,
-            binding: site.binding,
-            exported,
-            protected: false,
-            overrides: false,
-        });
+        let via = site.via;
+        self.found.push(Found { name, kind, at, doc, binding: site.binding, via, protected: false, overrides: false });
         self.found.last_mut().expect("just pushed")
     }
 
@@ -265,18 +268,18 @@ impl<'s> Collector<'s> {
         let overload = self.overload.take();
         let at = statement.span().start;
         match statement {
-            Statement::ExportDeclaration(e) => self.declaration(&e.declaration, at, true, overload),
+            Statement::ExportDeclaration(e) => self.declaration(&e.declaration, at, Some(Via::Esm), overload),
             Statement::ExportNamedDeclaration(e) => {
-                self.exported.extend(e.specifiers.iter().map(|s| s.local.name().as_str()));
+                self.exported.extend(e.specifiers.iter().map(|s| (s.local.name().as_str(), Via::Esm)));
             }
             Statement::ExportDefaultDeclaration(e) => {
-                let site = Site { at, binding: None, exported: true };
+                let site = Site { at, binding: None, via: Some(Via::Esm) };
                 match &e.declaration {
                     ExportDefaultDeclarationKind::FunctionDeclaration(f) => self.function(f, site, overload),
                     ExportDefaultDeclarationKind::ClassDeclaration(c) => self.class(c, site),
                     ExportDefaultDeclarationKind::TSInterfaceDeclaration(i) => self.interface(i, site),
                     ExportDefaultDeclarationKind::Identifier(id) => {
-                        self.exported.insert(id.name.as_str());
+                        self.exported.insert((id.name.as_str(), Via::Esm));
                     }
                     expression => {
                         self.push(site, expression.span().start, "default".into(), Kind::Default);
@@ -285,7 +288,7 @@ impl<'s> Collector<'s> {
             }
             Statement::TSExportAssignment(e) => {
                 if let Expression::Identifier(id) = &e.expression {
-                    self.exported.insert(id.name.as_str());
+                    self.exported.insert((id.name.as_str(), Via::Cjs));
                 }
             }
             Statement::ExpressionStatement(e) => {
@@ -295,15 +298,15 @@ impl<'s> Collector<'s> {
             }
             _ => {
                 if let Some(declaration) = statement.as_declaration() {
-                    self.declaration(declaration, at, false, overload);
+                    self.declaration(declaration, at, None, overload);
                 }
             }
         }
     }
 
-    fn declaration(&mut self, declaration: &Declaration<'s>, at: u32, exported: bool, overload: Option<&'s str>) {
+    fn declaration(&mut self, declaration: &Declaration<'s>, at: u32, via: Option<Via>, overload: Option<&'s str>) {
         let site =
-            |binding: &oxc_ast::ast::BindingIdentifier<'s>| Site { at, binding: Some(binding.name.as_str()), exported };
+            |binding: &oxc_ast::ast::BindingIdentifier<'s>| Site { at, binding: Some(binding.name.as_str()), via };
         match declaration {
             Declaration::VariableDeclaration(v) => {
                 // Destructured bindings (`const { a } = b`) have nowhere for a doc of their own, and
@@ -318,11 +321,11 @@ impl<'s> Collector<'s> {
                 }
             }
             Declaration::FunctionDeclaration(f) => {
-                let site = Site { at, binding: f.id.as_ref().map(|id| id.name.as_str()), exported };
+                let site = Site { at, binding: f.id.as_ref().map(|id| id.name.as_str()), via };
                 self.function(f, site, overload);
             }
             Declaration::ClassDeclaration(c) => {
-                self.class(c, Site { at, binding: c.id.as_ref().map(|id| id.name.as_str()), exported });
+                self.class(c, Site { at, binding: c.id.as_ref().map(|id| id.name.as_str()), via });
             }
             Declaration::TSInterfaceDeclaration(i) => self.interface(i, site(&i.id)),
             Declaration::TSTypeAliasDeclaration(t) => {
@@ -342,23 +345,28 @@ impl<'s> Collector<'s> {
         }
     }
 
-    /// CommonJS exports: `module.exports = …`, `module.exports.name = …` and `exports.name = …`.
-    /// An identifier exports its declaration, which carries the doc; anything else is an item
-    /// here. `module.exports = { … }` exports each property.
+    /// CommonJS exports: `module.exports = …`, `module.exports.name = …` and `exports.name = …`,
+    /// and globals: `window.name = …` and `globalThis.name = …`. An identifier exports its
+    /// declaration, which carries the doc; anything else is an item here. `module.exports = { … }`
+    /// exports each property.
     fn commonjs(&mut self, assignment: &AssignmentExpression<'s>, at: u32) {
         let Some(target) = assignment.left.as_member_expression() else { return };
-        let site = Site { at, binding: None, exported: true };
         let value = &assignment.right;
         let is_module_exports = target.is_specific_member_access("module", "exports");
+        let via = if is_module_exports || is_commonjs_export(target) {
+            Via::Cjs
+        } else if target.object().is_specific_id("window") || target.object().is_specific_id("globalThis") {
+            Via::Global
+        } else {
+            return;
+        };
+        let site = Site { at, binding: None, via: Some(via) };
         if let Expression::Identifier(id) = value {
-            if is_module_exports || is_commonjs_export(target) {
-                self.exported.insert(id.name.as_str());
-            }
+            self.exported.insert((id.name.as_str(), via));
             return;
         }
         if !is_module_exports {
-            let name = target.static_property_name().and_then(|name| name.as_str());
-            if let Some(name) = name.filter(|_| is_commonjs_export(target)) {
+            if let Some(name) = target.static_property_name().and_then(|name| name.as_str()) {
                 self.push(site, at, name.to_owned(), value_kind(value));
             }
             return;
@@ -379,7 +387,7 @@ impl<'s> Collector<'s> {
         for property in &object.properties {
             let ObjectPropertyKind::ObjectProperty(p) = property else { continue };
             if let Expression::Identifier(id) = &p.value {
-                self.exported.insert(id.name.as_str());
+                self.exported.insert((id.name.as_str(), Via::Cjs));
                 continue;
             }
             let start = p.span.start;

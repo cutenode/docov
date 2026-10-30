@@ -3,7 +3,7 @@
 use std::{fs, path::Path, path::PathBuf, process::Command};
 
 use docov::feature::{
-    Feature, access::Access, add_ignore::AddIgnore, inherit::Inherit, kinds::Kinds,
+    Feature, access::Access, add_ignore::AddIgnore, exports::Exports, inherit::Inherit, kinds::Kinds,
     report_unused_ignores::ReportUnusedIgnores,
 };
 use docov::{
@@ -48,8 +48,10 @@ const FILE_IGNORES: [(&str, Option<Option<&str>>); 4] = [
 
 /// An item a generated module declares.
 struct Expected {
-    /// Whether the module exports it.
-    exported: bool,
+    /// How the module exports it, if it does.
+    via: Option<Via>,
+    /// Whether its export declares it (`exports.a = 1`), rather than exporting a declaration.
+    value: bool,
     /// The item, documented when it has a JSDoc block.
     item: Item,
     /// Its JSDoc block.
@@ -63,7 +65,15 @@ struct Expected {
 impl Expected {
     /// The item, if it counts by `rules`.
     fn by(&self, rules: &Rules) -> Option<Item> {
-        if rules.scope == Scope::Exports && !self.exported {
+        let counts = |via| match via {
+            Via::Esm => rules.exports.esm,
+            Via::Cjs => rules.exports.cjs,
+            Via::Global => rules.exports.globals,
+        };
+        if self.value && self.via == Some(Via::Global) && !rules.exports.globals {
+            return None;
+        }
+        if rules.scope == Scope::Exports && !self.via.is_some_and(counts) {
             return None;
         }
         let tags = self.doc.map_or(&[][..], |b| b.tags);
@@ -139,6 +149,14 @@ const LEVELS: [Access; 4] = [Access::Public, Access::Protected, Access::Package,
 /// Tags `excludeTags` may name.
 const TAGS: [&str; 6] = ["internal", "ignore", "hidden", "deprecated", "param", "inheritdoc"];
 
+/// How a module exports an item.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Via {
+    Esm,
+    Cjs,
+    Global,
+}
+
 /// How a generated declaration is exported.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Export {
@@ -151,6 +169,8 @@ enum Export {
     DefaultInline,
     /// `exports.name = name;` and the like.
     CommonJs,
+    /// `window.name = name;` or `globalThis.name = name;`
+    Global,
 }
 
 impl Module {
@@ -195,17 +215,17 @@ impl Module {
     }
 
     /// Expects an item on the line about to be written.
-    fn expect(&mut self, exported: bool, name: String, kind: Kind, doc: Option<Block>) {
+    fn expect(&mut self, via: Option<Via>, name: String, kind: Kind, doc: Option<Block>) {
         let line = self.line();
         let ignore = self.next_ignore.take().filter(|ignore| ignore.line + 1 == line);
         let item = Item { name, kind, line, column: 1, documented: doc.is_some(), ignore };
-        self.expected.push(Expected { exported, item, doc, protected: false, overrides: false });
+        self.expected.push(Expected { via, value: false, item, doc, protected: false, overrides: false });
     }
 
     /// A statement that exports and declares nothing.
     fn nothing(&mut self, tc: &TestCase) {
         let statements = vec![
-            "window.x = 1;",
+            "window.x.y = 1;",
             "x = 1;",
             "exports[key] = 1;",
             "other.exports.y = 1;",
@@ -219,31 +239,40 @@ impl Module {
 
     /// A CommonJS export of a value rather than a declaration.
     fn commonjs(&mut self, tc: &TestCase, i: usize) {
+        let first = self.expected.len();
         let doc = self.doc(tc);
-        match tc.draw(gs::integers::<u8>().max_value(6)) {
+        match tc.draw(gs::integers::<u8>().max_value(7)) {
             6 => self.nothing(tc),
+            7 => {
+                let (global, kind, value) = tc.draw(gs::sampled_from(vec![
+                    ("window", Kind::Function, "function () {}"),
+                    ("globalThis", Kind::Variable, "1"),
+                ]));
+                self.expect(Some(Via::Global), format!("c{i}"), kind, doc);
+                self.write(&format!("{global}.c{i} = {value};"));
+            }
             0 => {
-                self.expect(true, format!("c{i}"), Kind::Function, doc);
+                self.expect(Some(Via::Cjs), format!("c{i}"), Kind::Function, doc);
                 self.write(&format!("exports.c{i} = function () {{}};"));
             }
             1 => {
-                self.expect(true, format!("c{i}"), Kind::Variable, doc);
+                self.expect(Some(Via::Cjs), format!("c{i}"), Kind::Variable, doc);
                 self.write(&format!("module.exports.c{i} = 1;"));
             }
             2 => {
-                self.expect(true, format!("f{i}"), Kind::Function, doc);
+                self.expect(Some(Via::Cjs), format!("f{i}"), Kind::Function, doc);
                 self.write(&format!("module.exports = function f{i}() {{}};"));
             }
             3 if tc.draw(gs::booleans()) => {
-                self.expect(true, format!("G{i}"), Kind::Class, doc);
+                self.expect(Some(Via::Cjs), format!("G{i}"), Kind::Class, doc);
                 self.write(&format!("module.exports = class G{i} {{}};"));
             }
             3 => {
-                self.expect(true, "default".into(), Kind::Class, doc);
+                self.expect(Some(Via::Cjs), "default".into(), Kind::Class, doc);
                 self.write("module.exports = class {};");
             }
             4 => {
-                self.expect(true, "default".into(), Kind::Default, doc);
+                self.expect(Some(Via::Cjs), "default".into(), Kind::Default, doc);
                 self.write("module.exports = 1;");
             }
             _ => {
@@ -253,15 +282,15 @@ impl Module {
                     match tc.draw(gs::integers::<u8>().max_value(4)) {
                         4 => self.write("...rest,"),
                         0 => {
-                            self.expect(true, format!("p{i}_{j}"), Kind::Variable, doc);
+                            self.expect(Some(Via::Cjs), format!("p{i}_{j}"), Kind::Variable, doc);
                             self.write(&format!("p{i}_{j}: 1,"));
                         }
                         1 => {
-                            self.expect(true, format!("m{i}_{j}"), Kind::Function, doc);
+                            self.expect(Some(Via::Cjs), format!("m{i}_{j}"), Kind::Function, doc);
                             self.write(&format!("m{i}_{j}() {{}},"));
                         }
                         2 => {
-                            self.expect(true, format!("a{i}_{j}"), Kind::Function, doc);
+                            self.expect(Some(Via::Cjs), format!("a{i}_{j}"), Kind::Function, doc);
                             self.write(&format!("a{i}_{j}: () => 1,"));
                         }
                         // Exports a name nothing here declares.
@@ -273,6 +302,9 @@ impl Module {
         }
         if tc.draw(gs::booleans()) {
             self.write(&format!("const r{i} = require('r{i}');"));
+        }
+        for expected in &mut self.expected[first..] {
+            expected.value = true;
         }
     }
 
@@ -292,7 +324,7 @@ impl Module {
             Kind::Default,
         ];
         let kind = tc.draw(gs::sampled_from(kinds));
-        let mut exports = vec![Export::No, Export::Inline, Export::Specifier, Export::CommonJs];
+        let mut exports = vec![Export::No, Export::Inline, Export::Specifier, Export::CommonJs, Export::Global];
         if !self.has_default {
             exports.push(Export::DefaultName);
             if matches!(kind, Kind::Function | Kind::Class | Kind::Interface) {
@@ -304,7 +336,30 @@ impl Module {
             return;
         }
         self.has_default |= matches!(export, Export::DefaultName | Export::DefaultInline);
-        let exported = export != Export::No;
+        // The statement after the declaration that exports it, if one does.
+        let after = match export {
+            Export::CommonJs => vec![
+                format!("exports.{name} = {name};"),
+                format!("module.exports.{name} = {name};"),
+                format!("module.exports = {name};"),
+                format!("module.exports = {{ {name} }};"),
+            ],
+            Export::DefaultName => vec![
+                format!("export default {name};"),
+                format!("export = {name};"),
+                format!("export {{ {name} as default }};"),
+            ],
+            Export::Global => vec![format!("window.{name} = {name};"), format!("globalThis.{name} = {name};")],
+            _ => vec![String::new()],
+        };
+        let after = tc.draw(gs::sampled_from(after));
+        let via = match export {
+            Export::No => None,
+            Export::CommonJs => Some(Via::Cjs),
+            Export::Global => Some(Via::Global),
+            Export::DefaultName if after.starts_with("export =") => Some(Via::Cjs),
+            _ => Some(Via::Esm),
+        };
         let prefix = match export {
             Export::Inline => "export ",
             Export::DefaultInline => "export default ",
@@ -317,7 +372,7 @@ impl Module {
         let doc = self.doc(tc);
         match kind {
             Kind::Function => {
-                self.expect(exported, name.clone(), kind, doc);
+                self.expect(via, name.clone(), kind, doc);
                 if export != Export::DefaultInline && tc.draw(gs::booleans()) {
                     // Only the signature counts; the implementation after it doesn't.
                     self.write(&format!("{prefix}function {name}(a: string): void;"));
@@ -329,11 +384,11 @@ impl Module {
                 self.write(&format!("{prefix}const {{ d{i} }} = {{ d{i}: 1 }};"));
             }
             Kind::Variable => {
-                self.expect(exported, name.clone(), kind, doc);
+                self.expect(via, name.clone(), kind, doc);
                 self.write(&format!("{prefix}const {name} = 1;"));
             }
             Kind::Type | Kind::Enum | Kind::Namespace => {
-                self.expect(exported, name.clone(), kind, doc);
+                self.expect(via, name.clone(), kind, doc);
                 let body = match kind {
                     Kind::Type => format!("type {name} = string;"),
                     Kind::Enum => format!("enum {name} {{ A }}"),
@@ -342,30 +397,30 @@ impl Module {
                 self.write(&format!("{prefix}{body}"));
             }
             Kind::Default => {
-                self.expect(true, "default".into(), kind, doc);
+                self.expect(Some(Via::Esm), "default".into(), kind, doc);
                 self.write("export default { a: 1 };");
             }
             Kind::Class => {
-                self.expect(exported, name.clone(), kind, doc);
+                self.expect(via, name.clone(), kind, doc);
                 if tc.draw(gs::booleans()) {
                     self.write("@sealed");
                 }
                 self.write(&format!("{prefix}class {name} {{"));
-                self.class_members(tc, &name, exported);
+                self.class_members(tc, &name, via);
                 self.write("}");
             }
             Kind::Interface => {
-                self.expect(exported, name.clone(), kind, doc);
+                self.expect(via, name.clone(), kind, doc);
                 self.write(&format!("{prefix}interface {name} {{"));
                 for j in 0..tc.draw(gs::integers::<usize>().max_value(3)) {
                     let doc = self.doc(tc);
                     match tc.draw(gs::integers::<u8>().max_value(2)) {
                         0 => {
-                            self.expect(exported, format!("{name}.p{j}"), Kind::Property, doc);
+                            self.expect(via, format!("{name}.p{j}"), Kind::Property, doc);
                             self.write(&format!("p{j}: 1;"));
                         }
                         1 => {
-                            self.expect(exported, format!("{name}.m{j}"), Kind::Method, doc);
+                            self.expect(via, format!("{name}.m{j}"), Kind::Method, doc);
                             self.write(&format!("m{j}(): void;"));
                         }
                         _ => self.write("[key: string]: unknown;"),
@@ -375,33 +430,19 @@ impl Module {
             }
             _ => unreachable!(),
         }
-        if export == Export::CommonJs {
-            let statements = vec![
-                format!("exports.{name} = {name};"),
-                format!("module.exports.{name} = {name};"),
-                format!("module.exports = {name};"),
-                format!("module.exports = {{ {name} }};"),
-            ];
-            self.write(&tc.draw(gs::sampled_from(statements)));
-        }
-        if export == Export::DefaultName {
-            let statements = vec![
-                format!("export default {name};"),
-                format!("export = {name};"),
-                format!("export {{ {name} as default }};"),
-            ];
-            self.write(&tc.draw(gs::sampled_from(statements)));
+        if !after.is_empty() {
+            self.write(&after);
         }
         if tc.draw(gs::weighted_booleans(0.2)) {
             self.write(&format!("declare module 'm{i}' {{ export function f(): void; }}"));
         }
     }
 
-    fn class_members(&mut self, tc: &TestCase, class: &str, exported: bool) {
+    fn class_members(&mut self, tc: &TestCase, class: &str, via: Option<Via>) {
         let mut constructed = false;
         for j in 0..tc.draw(gs::integers::<usize>().max_value(4)) {
             let doc = self.doc(tc);
-            let item = |m: &mut Self, name: String, kind| m.expect(exported, format!("{class}.{name}"), kind, doc);
+            let item = |m: &mut Self, name: String, kind| m.expect(via, format!("{class}.{name}"), kind, doc);
             match tc.draw(gs::integers::<u8>().max_value(11)) {
                 0 => {
                     item(self, format!("m{j}"), Kind::Method);
@@ -498,9 +539,9 @@ fn scans_find_what_modules_declare(tc: TestCase) {
 
     for scope in [Scope::Exports, Scope::All] {
         let items = scan(&source, SourceType::ts(), &scope.into()).unwrap();
-        let wanted: Vec<&Item> =
-            expected.iter().filter(|e| scope == Scope::All || e.exported).map(|e| &e.item).collect();
-        assert_eq!(items.iter().collect::<Vec<_>>(), wanted, "{source}");
+        // Globals count only when asked, so by default they're nothing.
+        let wanted: Vec<Item> = expected.iter().filter_map(|e| e.by(&scope.into())).collect();
+        assert_eq!(items, wanted, "{source}");
     }
 
     let broken = format!("{source}export function (");
@@ -523,6 +564,11 @@ fn rules_decide_what_counts_and_what_is_documented(tc: TestCase) {
             .collect(),
         kinds: tc.draw(gs::optional(gs::vecs(gs::sampled_from(ALL_KINDS.to_vec())).max_size(4))),
         inherit: tc.draw(gs::sampled_from(vec![Inherit::Tag, Inherit::Override])),
+        exports: Exports {
+            esm: tc.draw(gs::booleans()),
+            cjs: tc.draw(gs::booleans()),
+            globals: tc.draw(gs::booleans()),
+        },
         access: tc.draw(gs::optional(gs::vecs(gs::sampled_from(LEVELS.to_vec())).max_size(3))),
         ignore_names: tc
             .draw(
@@ -1252,8 +1298,18 @@ fn rules_come_from_flags_over_the_config(tc: TestCase) {
 
     let inherit = run.set(&tc, "inherit", vec![Inherit::Tag, Inherit::Override], |_| vec![]);
 
+    let exports = tc.draw(gs::optional(gs::sampled_from(vec![
+        (serde_json::json!({}), Exports::default()),
+        (serde_json::json!({ "esm": false }), Exports { esm: false, ..Exports::default() }),
+        (serde_json::json!({ "cjs": false, "globals": true }), Exports { esm: true, cjs: false, globals: true }),
+    ])));
+    if let Some((keys, _)) = &exports {
+        run.keys.insert("exports".into(), keys.clone());
+    }
+
     let settings = run.settings(dir.path());
     let rules = settings.rules();
+    assert_eq!(rules.exports, exports.map_or(Exports::default(), |(_, e)| e));
     assert_eq!(rules.inherit, inherit.unwrap_or_default());
     assert_eq!(rules.access, access);
     let patterns: Vec<&str> = rules.ignore_names.iter().map(regex::Regex::as_str).collect();
