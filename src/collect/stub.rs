@@ -9,7 +9,7 @@ use super::{Found, Kind, Lines};
 /// A block to put above an undocumented item.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Stub {
-    /// The 1-based line to put it above.
+    /// The 1-based line to put it above, as [`insert_above`](crate::rewrite::insert_above) does.
     pub line: usize,
     /// The block, unindented.
     pub text: String,
@@ -35,12 +35,9 @@ impl Stub {
         if found.shape.returns && !found.shape.void {
             tags.push("@returns".into());
         }
-        // A file's block goes below its shebang, which has to be the first line.
-        let module = found.kind == Kind::Module;
-        if module {
+        if found.kind == Kind::Module {
             tags.push("@file".into());
         }
-        let line = line + usize::from(module && lines.source.starts_with("#!"));
         let text = if tags.is_empty() {
             "/** TODO */".to_owned()
         } else {
