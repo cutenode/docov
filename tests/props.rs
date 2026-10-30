@@ -6,6 +6,9 @@ use docov::{FileReport, Format, Item, Kind, Scope, Totals, collect, config, repo
 use hegel::{TestCase, generators as gs};
 use oxc_span::SourceType;
 
+#[path = "props/config_cli.rs"]
+mod config_cli;
+
 /// A generated module, and the items a scan of it should find.
 #[derive(Default)]
 struct Module {

@@ -183,3 +183,21 @@ fn the_readme_points_at_this_versions_schema() {
         format!("https://raw.githubusercontent.com/cutenode/docov/v{}/docov.schema.json", env!("CARGO_PKG_VERSION"));
     assert!(readme.contains(&url), "point the README's $schema at {url}");
 }
+
+#[test]
+fn a_config_extends_others_relative_to_itself() {
+    let dir = project();
+    fs::create_dir(dir.path().join("pkg")).unwrap();
+    // `paths` and `exclude` stay relative to the base's folder, and the extending file's keys win.
+    let base = r#"{ "paths": ["src"], "exclude": ["*.js"], "threshold": 100, "scope": "all" }"#;
+    fs::write(dir.path().join("base.json"), base).unwrap();
+    fs::write(dir.path().join("pkg/docov.json"), r#"{ "extends": "../base.json", "scope": "exports" }"#).unwrap();
+    let (code, out, _) = docov(&dir.path().join("pkg"), &["--format", "json"]);
+    let json: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!((code, &json["documented"], &json["total"]), (1, &1.into(), &2.into()));
+
+    fs::write(dir.path().join("base.json"), r#"{ "extends": ["pkg/docov.json"] }"#).unwrap();
+    let (code, _, err) = docov(&dir.path().join("pkg"), &[]);
+    let chain = ["docov.json", "../base.json", "../pkg/docov.json"].map(|p| Path::new(p).display().to_string());
+    assert_eq!((code, err), (2, format!("docov: config files extend each other in a cycle: {}\n", chain.join(" -> "))));
+}

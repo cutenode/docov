@@ -1,5 +1,21 @@
 {
   "$defs": {
+    "Extends": {
+      "anyOf": [
+        {
+          "description": "One file.",
+          "type": "string"
+        },
+        {
+          "description": "Files, each winning over the ones before it.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      ],
+      "description": "A config file to extend, or a list of them."
+    },
     "Scope": {
       "description": "Which declarations count toward coverage.",
       "oneOf": [
@@ -37,6 +53,10 @@
         "type": "string"
       },
       "type": "array"
+    },
+    "extends": {
+      "$ref": "#/$defs/Extends",
+      "description": "Config files whose settings this one builds on, relative to this file's folder. This file's\nkeys win over theirs, and in a list each file's win over the ones before it."
     },
     "paths": {
       "default": [],
