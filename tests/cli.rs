@@ -421,3 +421,16 @@ fn virtual_types_count_typedefs_in_javascript() {
         (0, "  33.3%  1/3  a.js\n         a.js:5:1  type Done\n         a.js:6:1  variable a\n  33.3%  1/3  total\n")
     );
 }
+
+#[test]
+fn every_member_counts_with_members_all() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = "/**\n * Colors.\n * @property Red The red one.\n */\nexport enum Color {\n  Red,\n  Green,\n}\n";
+    fs::write(dir.path().join("a.ts"), source).unwrap();
+    fs::write(dir.path().join("docov.json"), r#"{ "members": "all" }"#).unwrap();
+    let (code, out, _) = docov(dir.path(), &[]);
+    assert_eq!(
+        (code, out.as_str()),
+        (0, "  66.7%  2/3  a.ts\n         a.ts:7:3  property Color.Green\n  66.7%  2/3  total\n")
+    );
+}

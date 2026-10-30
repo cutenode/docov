@@ -4,7 +4,7 @@ use std::{fs, path::Path, path::PathBuf, process::Command};
 
 use docov::feature::{
     Feature, access::Access, add_ignore::AddIgnore, examples::Examples, exports::Exports, file_docs::FileDocs,
-    inherit::Inherit, kinds::Kinds, report_unused_ignores::ReportUnusedIgnores, sort::Sort,
+    inherit::Inherit, kinds::Kinds, members::Members, report_unused_ignores::ReportUnusedIgnores, sort::Sort,
     virtual_types::VirtualTypes,
 };
 use docov::{
@@ -1023,6 +1023,89 @@ fn comment_types_are_items_in_javascript(tc: TestCase) {
     assert!(items.iter().all(|i| i.facts.exported));
 }
 
+/// With `"members": "all"`, enum members, the members of a type alias's object type and the
+/// properties of an object literal tagged `@enum`, `@namespace` or `@lends X` count as members of
+/// their parent (or of `X`), documented by a block of their own or a matching `@property` in the
+/// parent's. They count where their parent does. By default only the parents count.
+#[hegel::test(test_cases = 100)]
+fn every_member_counts_when_asked(tc: TestCase) {
+    let mut module = Module::default();
+    // Each item's (name, kind, line, documented), whether it's a member, and whether it's exported.
+    let mut wanted = Vec::new();
+    for i in 0..tc.draw(gs::integers::<usize>().max_value(3)) {
+        let exported = tc.draw(gs::booleans());
+        let (shape, tag) = tc.draw(gs::sampled_from(vec![
+            ("enum", None),
+            ("type", None),
+            ("const", None),
+            ("const", Some("@enum {number}")),
+            ("const", Some("@namespace")),
+            ("const", Some("@lends Lent")),
+            ("const", Some("@readonly")),
+        ]));
+        let listed = tc.draw(gs::vecs(gs::sampled_from(vec!["a", "b", "c"])).max_size(2));
+        let parent_doc = tag.is_some() || tc.draw(gs::booleans());
+        if parent_doc {
+            module.write("/**\n * Parent.");
+            if let Some(tag) = tag {
+                module.write(&format!(" * {tag}"));
+            }
+            for name in &listed {
+                module.write(&format!(" * @property {{number}} {name} Docs."));
+            }
+            module.write(" */");
+        }
+        let name = format!("P{i}");
+        let kind = [("enum", Kind::Enum), ("type", Kind::Type), ("const", Kind::Variable)];
+        let kind = kind.iter().find(|(s, _)| *s == shape).unwrap().1;
+        wanted.push(((name.clone(), kind, module.line(), parent_doc), false, exported));
+        let (open, close) = match shape {
+            "type" => (" = {", "};"),
+            "const" => (" = {", "};"),
+            _ => (" {", "}"),
+        };
+        module.write(&format!("{}{shape} {name}{open}", if exported { "export " } else { "" }));
+        let owner = if tag == Some("@lends Lent") { "Lent".to_owned() } else { name.clone() };
+        let counts = shape != "const" || tag.is_some_and(|tag| tag != "@readonly");
+        for (j, key) in ["a", "b", "c"].into_iter().enumerate().take(tc.draw(gs::integers::<usize>().max_value(3))) {
+            let own = tc.draw(gs::booleans());
+            if own {
+                module.write("/** Docs. */");
+            }
+            let (text, kind) = match (shape, j) {
+                ("enum", _) => (format!("{key},"), Kind::Property),
+                ("type", 2) => (format!("{key}(): void;"), Kind::Method),
+                ("type", _) => (format!("{key}: number;"), Kind::Property),
+                (_, 2) => (format!("{key}() {{}},"), Kind::Method),
+                _ => (format!("{key}: 1,"), Kind::Property),
+            };
+            let documented = own || (parent_doc && listed.contains(&key));
+            if counts {
+                wanted.push(((format!("{owner}.{key}"), kind, module.line(), documented), true, exported));
+            }
+            module.write(&text);
+        }
+        // A spread has no member to count.
+        if shape == "const" && tc.draw(gs::booleans()) {
+            module.write("...rest,");
+        }
+        module.write(close);
+    }
+    let source = module.source;
+    for (members, scope) in
+        [(Members::Classes, Scope::Exports), (Members::All, Scope::Exports), (Members::All, Scope::All)]
+    {
+        let rules = Rules { members, scope, ..Rules::default() };
+        let items = scan(&source, SourceType::ts(), &rules).unwrap();
+        let found: Vec<_> = items.into_iter().map(|i| (i.name, i.kind, i.line, i.documented)).collect();
+        let counts =
+            |member: bool, exported: bool| (members == Members::All || !member) && (scope == Scope::All || exported);
+        let expected: Vec<_> =
+            wanted.iter().filter(|(_, m, e)| counts(*m, *e)).map(|(item, _, _)| item.clone()).collect();
+        assert_eq!(found, expected, "{members:?} {scope:?}: {source}");
+    }
+}
+
 fn render(format: Format, files: &[FileReport]) -> String {
     let mut out = Vec::new();
     report::write(format, files, &mut out).unwrap();
@@ -1597,6 +1680,7 @@ fn rules_come_from_flags_over_the_config(tc: TestCase) {
     let skip_generated = run.set(&tc, "skipGenerated", vec![false, true], |_| vec![]);
     let file_docs = run.set(&tc, "fileDocs", vec![FileDocs::Off, FileDocs::Require], |_| vec![]);
     let virtual_types = run.set(&tc, "virtual", vec![false, true], |_| vec![]);
+    let members = run.set(&tc, "members", vec![Members::Classes, Members::All], |_| vec![]);
 
     let settings = run.settings(dir.path());
     let rules = settings.rules();
@@ -1608,6 +1692,7 @@ fn rules_come_from_flags_over_the_config(tc: TestCase) {
     assert_eq!(rules.file_docs, file_docs.unwrap_or_default());
     assert_eq!(*settings.get::<VirtualTypes>(), VirtualTypes(virtual_types.unwrap_or_default()));
     assert_eq!(rules.virtual_types, virtual_types.unwrap_or_default());
+    assert_eq!(rules.members, members.unwrap_or_default());
     assert_eq!(rules.inherit, inherit.unwrap_or_default());
     assert_eq!(rules.access, access);
     let patterns: Vec<&str> = rules.ignore_names.iter().map(regex::Regex::as_str).collect();

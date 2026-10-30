@@ -6,7 +6,7 @@ use rustc_hash::FxHashSet;
 use super::{Found, Via, doc};
 use crate::{
     Kind, Scope,
-    feature::{access::Access, exports::Exports, file_docs::FileDocs, inherit::Inherit},
+    feature::{access::Access, exports::Exports, file_docs::FileDocs, inherit::Inherit, members::Members},
 };
 
 /// Which items count, and when one is documented. The default is docov's out of the box.
@@ -36,6 +36,8 @@ pub struct Rules {
     pub file_docs: FileDocs,
     /// Whether a JavaScript file's named `@typedef` and `@callback` blocks are items.
     pub virtual_types: bool,
+    /// Which members count.
+    pub members: Members,
 }
 
 impl From<Scope> for Rules {
@@ -94,6 +96,8 @@ impl Rules {
             return documented;
         }
         let inherits = self.inherit == Inherit::Override && found.overrides;
-        inherits || found.doc.as_ref().is_some_and(|doc| !self.require_description || doc::describes(doc, found.kind))
+        inherits
+            || found.listed
+            || found.doc.as_ref().is_some_and(|doc| !self.require_description || doc::describes(doc, found.kind))
     }
 }

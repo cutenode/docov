@@ -37,6 +37,12 @@ pub(super) fn declared_type(doc: &JSDoc) -> Option<(String, bool)> {
     Some((name?.parsed().to_owned(), !doc.comment().parsed().is_empty() || !text.parsed().is_empty()))
 }
 
+/// Whether `doc` has a `@property` (or `@prop`) named `name`.
+pub(super) fn lists(doc: &JSDoc, name: &str) -> bool {
+    let properties = doc.tags().iter().filter(|tag| matches!(tag.kind.parsed(), "property" | "prop"));
+    properties.filter_map(|tag| tag.type_name_comment().1).any(|named| named.parsed() == name)
+}
+
 /// Whether `doc` has the tag `name` (without its `@`).
 pub(super) fn has_tag(doc: &JSDoc, name: &str) -> bool {
     doc.tags().iter().any(|tag| tag.kind.parsed() == name)

@@ -10,8 +10,8 @@ mod rules;
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
     AssignmentExpression, Class, ClassElement, Comment, CommentContent, Declaration, ExportDefaultDeclarationKind,
-    Expression, FormalParameters, Function, MemberExpression, MethodDefinitionKind, ObjectPropertyKind, PropertyKey,
-    Statement, TSAccessibility, TSInterfaceDeclaration, TSSignature,
+    Expression, FormalParameters, Function, MemberExpression, MethodDefinitionKind, ObjectExpression,
+    ObjectPropertyKind, PropertyKey, Statement, TSAccessibility, TSInterfaceDeclaration, TSSignature, TSType,
 };
 use oxc_jsdoc::JSDoc;
 use oxc_parser::Parser;
@@ -22,7 +22,10 @@ use serde::{Deserialize, Serialize};
 
 use self::ignore::Ignores;
 pub use self::{facts::Facts, ignore::Ignore, rules::Rules};
-use crate::{Totals, feature::file_docs::FileDocs};
+use crate::{
+    Totals,
+    feature::{file_docs::FileDocs, members::Members},
+};
 
 /// What kind of declaration an item is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Deserialize, JsonSchema, clap::ValueEnum)]
@@ -204,7 +207,8 @@ pub fn scan(source: &str, source_type: SourceType, rules: &Rules) -> Result<Vec<
 
     let lines = Lines::new(source);
     let ignores = Ignores::find(&parsed.program, &lines);
-    let mut collector = Collector { source, docs, found: Vec::new(), exported: FxHashSet::default(), overload: None };
+    let (found, exported, overload) = (Vec::new(), FxHashSet::default(), None);
+    let mut collector = Collector { source, rules, docs, found, exported, overload };
     if rules.file_docs == FileDocs::Require {
         collector.file(&parsed.program.comments);
     }
@@ -252,17 +256,21 @@ struct Found<'s> {
     documented: Option<bool>,
     /// Whether it counts under any scope, as a file's own item and a comment's type do.
     standalone: bool,
+    /// Whether its parent's block has a matching `@property`, which documents it too.
+    listed: bool,
 }
 
 impl<'s> Found<'s> {
     fn new(name: String, kind: Kind, at: u32, doc: Option<JSDoc<'s>>) -> Self {
         let (binding, via, protected, overrides, params, documented) = (None, None, false, false, None, None);
-        Self { name, kind, at, doc, binding, via, protected, overrides, params, documented, standalone: false }
+        let (standalone, listed) = (false, false);
+        Self { name, kind, at, doc, binding, via, protected, overrides, params, documented, standalone, listed }
     }
 }
 
 struct Collector<'s> {
     source: &'s str,
+    rules: &'s Rules,
     docs: FxHashMap<u32, JSDoc<'s>>,
     found: Vec<Found<'s>>,
     /// Names exported apart from their declarations, and how: `export { a }`, `export default a`,
@@ -300,6 +308,22 @@ impl<'s> Collector<'s> {
         let at = site.at.min(start);
         self.found.push(Found { binding: site.binding, via: site.via, ..Found::new(name, kind, at, doc) });
         self.found.last_mut().expect("just pushed")
+    }
+
+    /// Pushes `owner`'s member `key`, at `start`, which a matching `@property` in `parent`
+    /// documents too.
+    fn member(
+        &mut self,
+        site: Site<'s>,
+        start: u32,
+        (owner, key): (&str, &str),
+        kind: Kind,
+        parent: Option<&JSDoc>,
+    ) -> &mut Found<'s> {
+        let listed = parent.is_some_and(|parent| doc::lists(parent, key));
+        let found = self.push(Site { at: start, ..site }, start, format!("{owner}.{key}"), kind);
+        found.listed = listed;
+        found
     }
 
     /// Stops `comment`'s block from documenting the declaration after it.
@@ -387,7 +411,12 @@ impl<'s> Collector<'s> {
                         continue;
                     }
                     if let Some(id) = d.id.get_binding_identifier() {
-                        self.push(site(id), d.span.start, id.name.to_string(), Kind::Variable);
+                        let doc = self.push(site(id), d.span.start, id.name.to_string(), Kind::Variable).doc.clone();
+                        if let Some(Expression::ObjectExpression(object)) = &d.init
+                            && self.rules.members == Members::All
+                        {
+                            self.object(object, id.name.as_str(), doc, site(id));
+                        }
                     }
                 }
             }
@@ -400,10 +429,20 @@ impl<'s> Collector<'s> {
             }
             Declaration::TSInterfaceDeclaration(i) => self.interface(i, site(&i.id)),
             Declaration::TSTypeAliasDeclaration(t) => {
-                self.push(site(&t.id), t.span.start, t.id.name.to_string(), Kind::Type);
+                let doc = self.push(site(&t.id), t.span.start, t.id.name.to_string(), Kind::Type).doc.clone();
+                if let TSType::TSTypeLiteral(literal) = &t.type_annotation
+                    && self.rules.members == Members::All
+                {
+                    self.signatures(&literal.members, t.id.name.as_str(), site(&t.id), doc.as_ref());
+                }
             }
             Declaration::TSEnumDeclaration(e) => {
-                self.push(site(&e.id), e.span.start, e.id.name.to_string(), Kind::Enum);
+                let (name, site) = (e.id.name.as_str(), site(&e.id));
+                let doc = self.push(site, e.span.start, name.to_owned(), Kind::Enum).doc.clone();
+                for member in e.body.members.iter().filter(|_| self.rules.members == Members::All) {
+                    let key = member.id.static_name().display().to_string();
+                    self.member(site, member.span.start, (name, &key), Kind::Property, doc.as_ref());
+                }
             }
             Declaration::TSNamespaceDeclaration(n) => {
                 self.push(site(&n.id), n.span.start, n.id.name.to_string(), Kind::Namespace);
@@ -532,7 +571,13 @@ impl<'s> Collector<'s> {
     fn interface(&mut self, interface: &TSInterfaceDeclaration<'s>, site: Site<'s>) {
         let name = interface.id.name.as_str();
         self.push(site, interface.span.start, name.to_owned(), Kind::Interface);
-        for signature in &interface.body.body {
+        self.signatures(&interface.body.body, name, site, None);
+    }
+
+    /// The property and method signatures of an interface or object type, as members of `owner`,
+    /// which a matching `@property` in `parent` documents too.
+    fn signatures(&mut self, signatures: &[TSSignature<'s>], owner: &str, site: Site<'s>, parent: Option<&JSDoc>) {
+        for signature in signatures {
             let (start, key, kind, method_params) = match signature {
                 TSSignature::TSPropertySignature(p) => (p.span.start, self.key(&p.key), Kind::Property, None),
                 TSSignature::TSMethodSignature(m) => {
@@ -540,7 +585,23 @@ impl<'s> Collector<'s> {
                 }
                 _ => continue,
             };
-            self.push(Site { at: start, ..site }, start, format!("{name}.{key}"), kind).params = method_params;
+            self.member(site, start, (owner, &key), kind, parent).params = method_params;
+        }
+    }
+
+    /// The properties of an object literal whose block tags it `@enum`, `@namespace` or
+    /// `@lends X`, as members of `name` (or `X`), which a matching `@property` there documents too.
+    fn object(&mut self, object: &ObjectExpression<'s>, name: &str, parent: Option<JSDoc<'s>>, site: Site<'s>) {
+        let Some(parent) = parent.filter(|doc| ["enum", "namespace", "lends"].iter().any(|tag| doc::has_tag(doc, tag)))
+        else {
+            return;
+        };
+        let lends = doc::text(&parent, "lends").and_then(|text| text.split_whitespace().next().map(str::to_owned));
+        let owner = lends.as_deref().unwrap_or(name);
+        for property in &object.properties {
+            let ObjectPropertyKind::ObjectProperty(p) = property else { continue };
+            let (key, kind) = (self.key(&p.key), if p.value.is_function() { Kind::Method } else { Kind::Property });
+            self.member(site, p.span.start, (owner, &key), kind, Some(&parent)).params = value_params(&p.value);
         }
     }
 

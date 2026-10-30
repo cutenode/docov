@@ -156,6 +156,21 @@
         }
       ]
     },
+    "Members": {
+      "description": "Which members count.",
+      "oneOf": [
+        {
+          "const": "classes",
+          "description": "The public members of classes and interfaces.",
+          "type": "string"
+        },
+        {
+          "const": "all",
+          "description": "Those, and enum members, the members of a type alias's object type, and the properties of\nan object literal tagged `@enum`, `@namespace` or `@lends`. A matching `@property` in the\nparent's block documents one of these.",
+          "type": "string"
+        }
+      ]
+    },
     "Scope": {
       "description": "Which declarations count toward coverage.",
       "oneOf": [
@@ -257,6 +272,11 @@
         "array",
         "null"
       ]
+    },
+    "members": {
+      "$ref": "#/$defs/Members",
+      "default": "classes",
+      "description": "Which members count: those of classes and interfaces, or all of them, with enum members, a type alias's object members and the properties of an object literal tagged @enum, @namespace or @lends."
     },
     "paths": {
       "default": [],
