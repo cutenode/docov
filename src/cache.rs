@@ -2,32 +2,37 @@
 
 use std::{
     fs,
+    hash::{Hash, Hasher},
     path::{Path, PathBuf},
     time::{Duration, SystemTime},
 };
 
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHasher};
 use serde::{Deserialize, Serialize};
 
-use crate::{FileReport, Item, Scope};
+use crate::{FileReport, Item, Rules, collect::Ignore};
 
 /// What a file's items were scanned from: the file as it was, by its size and modified time, and
-/// the settings that change a scan's items.
+/// the rules, which change a scan's items.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Stamp {
     size: u64,
     /// Since 1970.
     modified: Duration,
-    scope: Scope,
+    /// A hash of the rules.
+    rules: u64,
 }
 
 impl Stamp {
-    /// The file at `path` as it is now, scanned with `scope`, if it can be read.
-    fn of(path: &Path, scope: Scope) -> Option<Self> {
+    /// The file at `path` as it is now, scanned with `rules`, if it can be read.
+    fn of(path: &Path, rules: &Rules) -> Option<Self> {
         let metadata = fs::metadata(path).ok()?;
         // A file from before 1970 isn't kept, having no time to keep it by.
         let modified = metadata.modified().ok().and_then(|time| time.duration_since(SystemTime::UNIX_EPOCH).ok())?;
-        Some(Self { size: metadata.len(), modified, scope })
+        // FxHasher has no random seed, so the same rules hash the same in every run.
+        let mut hasher = FxHasher::default();
+        serde_json::to_string(rules).expect("rules serialize").hash(&mut hasher);
+        Some(Self { size: metadata.len(), modified, rules: hasher.finish() })
     }
 }
 
@@ -36,7 +41,23 @@ impl Stamp {
 struct Entry {
     #[serde(flatten)]
     stamp: Stamp,
-    items: Vec<Item>,
+    items: Vec<Kept>,
+}
+
+/// An item as the cache keeps it: with its `docov-ignore` comment, which reports leave out of
+/// the item itself.
+#[derive(Debug, Serialize, Deserialize)]
+struct Kept {
+    #[serde(flatten)]
+    item: Item,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ignore: Option<Ignore>,
+}
+
+impl Kept {
+    fn of(item: &Item) -> Self {
+        Self { item: item.clone(), ignore: item.ignore.clone() }
+    }
 }
 
 /// The cache file's contents.
@@ -67,13 +88,14 @@ impl Cache {
     }
 
     /// The stamp to check and keep the file at `path` by, if there's a cache.
-    pub fn stamp(&self, path: &Path, scope: Scope) -> Option<Stamp> {
-        self.path.as_ref().and_then(|_| Stamp::of(path, scope))
+    pub fn stamp(&self, path: &Path, rules: &Rules) -> Option<Stamp> {
+        self.path.as_ref().and_then(|_| Stamp::of(path, rules))
     }
 
     /// The items the file at `path` had when it last had `stamp`.
     pub fn get(&self, path: &Path, stamp: Stamp) -> Option<Vec<Item>> {
-        self.files.get(&*path.to_string_lossy()).filter(|entry| entry.stamp == stamp).map(|entry| entry.items.clone())
+        let entry = self.files.get(&*path.to_string_lossy()).filter(|entry| entry.stamp == stamp)?;
+        Some(entry.items.iter().map(|kept| Item { ignore: kept.ignore.clone(), ..kept.item.clone() }).collect())
     }
 
     /// Writes `reports`, each with its stamp, to the cache file, in place of what it held.
@@ -84,7 +106,7 @@ impl Cache {
             .filter_map(|(report, stamp)| {
                 Some((
                     report.path.to_string_lossy().into_owned(),
-                    Entry { stamp: (*stamp)?, items: report.items.clone() },
+                    Entry { stamp: (*stamp)?, items: report.items.iter().map(Kept::of).collect() },
                 ))
             })
             .collect();

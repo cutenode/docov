@@ -4,16 +4,16 @@ use std::path::Path;
 
 use rayon::{iter::Either, prelude::*};
 
-use crate::{FileReport, Scope, cache::Cache, scan_file};
+use crate::{FileReport, Rules, cache::Cache, scan_file};
 
-/// Scans each file with its scope, in parallel, or says why each one that couldn't be scanned
+/// Scans each file with its rules, in parallel, or says why each one that couldn't be scanned
 /// couldn't. A file `cache` has unchanged isn't read, and `cache` is written with what's found.
-pub fn scan(files: &[(&Path, Scope)], cache: &Cache) -> Result<Vec<FileReport>, Vec<String>> {
-    let (scanned, errors): (Vec<_>, Vec<_>) = files.par_iter().partition_map(|&(path, scope)| {
-        let stamp = cache.stamp(path, scope);
+pub fn scan(files: &[(&Path, &Rules)], cache: &Cache) -> Result<Vec<FileReport>, Vec<String>> {
+    let (scanned, errors): (Vec<_>, Vec<_>) = files.par_iter().partition_map(|&(path, rules)| {
+        let stamp = cache.stamp(path, rules);
         let cached = stamp.and_then(|stamp| cache.get(path, stamp));
         let report = cached.map(|items| Ok(FileReport { path: path.to_owned(), items }));
-        match report.unwrap_or_else(|| scan_file(path, scope)) {
+        match report.unwrap_or_else(|| scan_file(path, rules)) {
             Ok(report) => Either::Left((report, stamp)),
             Err(e) => Either::Right(e.to_string()),
         }

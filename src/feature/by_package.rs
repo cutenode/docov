@@ -1,6 +1,12 @@
 //! `--by-package`: adds each workspace package's totals to the report.
 
-use crate::feature::{Entry, Feature, NoKeys};
+use std::path::Path;
+
+use crate::{
+    FileReport,
+    feature::{Entry, Feature, NoKeys},
+    packages::{self, Package},
+};
 
 pub(crate) fn entry() -> Entry {
     Entry::of::<ByPackage>()
@@ -25,5 +31,13 @@ impl Feature for ByPackage {
 
     fn new(flags: Flags, _: NoKeys) -> Self {
         Self(flags.by_package)
+    }
+}
+
+impl ByPackage {
+    /// The workspace packages under `root` with `reports`' files in them, and their totals, when
+    /// the report has them.
+    pub fn packages(self, root: &Path, reports: &[FileReport]) -> Result<Option<Vec<Package>>, String> {
+        self.0.then(|| packages::packages(root, reports)).transpose()
     }
 }

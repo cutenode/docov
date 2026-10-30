@@ -62,22 +62,19 @@ impl Color {
 }
 
 /// Colors the text report's lines on their way to `out`: undocumented items dim, and the
-/// percentage of a file, package or total under `threshold` red. Other formats go through as
-/// they are.
+/// percentage of a file, package or total under `threshold` red.
 pub struct Styled<'a> {
     // Not generic: coverage counts the best of a generic's copies, and each writer covers some.
     out: &'a mut dyn Write,
-    /// Whether it's the text report.
-    text: bool,
     threshold: Option<f64>,
     /// What's been written since the last line ended.
     line: Vec<u8>,
 }
 
 impl<'a> Styled<'a> {
-    /// Colors what's written to `out`, if it's the `text` report.
-    pub fn new(out: &'a mut dyn Write, text: bool, threshold: Option<f64>) -> Self {
-        Self { out, text, threshold, line: Vec::new() }
+    /// Colors the text report written to `out`.
+    pub fn new(out: &'a mut dyn Write, threshold: Option<f64>) -> Self {
+        Self { out, threshold, line: Vec::new() }
     }
 
     /// Writes one line, without its newline, and the newline.
@@ -108,9 +105,6 @@ fn totals(line: &str) -> Option<Totals> {
 
 impl Write for Styled<'_> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        if !self.text {
-            return self.out.write(buf);
-        }
         self.line.extend_from_slice(buf);
         while let Some(end) = self.line.iter().position(|&b| b == b'\n') {
             let line: Vec<u8> = self.line.drain(..=end).collect();

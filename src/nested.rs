@@ -8,9 +8,20 @@ use std::{
 };
 
 use clap::ArgMatches;
+use indexmap::IndexMap;
 use rustc_hash::FxHashMap;
 
-use crate::{Config, FileReport, Scope, Settings, config::FILE_NAMES, feature::nested::Nested, walk};
+use crate::{
+    Config, FileReport, Rules, Settings,
+    config::FILE_NAMES,
+    feature::{
+        baseline::{Baseline, Excused},
+        nested::Nested,
+        overrides::Overrides,
+    },
+    root::Root,
+    walk,
+};
 
 /// Files scanned with the same settings.
 pub struct Group {
@@ -18,8 +29,49 @@ pub struct Group {
     pub config: Option<PathBuf>,
     /// Its settings.
     pub settings: Settings,
+    /// What counts in its files, by its settings.
+    pub rules: Rules,
+    /// Its folder, and those of the files it extends, which its keys' globs are relative to.
+    pub root: Root,
+    /// The folder its baseline's path and items are relative to, as a path from the current
+    /// folder: that of the file that names it, else the root config's.
+    baseline_dir: PathBuf,
+    /// The items its baseline lets through, if it reads one.
+    excused: Option<Excused>,
     /// Its files, sorted.
     pub files: Vec<PathBuf>,
+}
+
+impl Group {
+    /// The group for the files of the config `config` (the merged settings of the file at `path`,
+    /// or the root config's with none), whose baseline is in `top`'s folder unless it names
+    /// its own.
+    fn new(
+        path: Option<PathBuf>,
+        config: &Config,
+        settings: Settings,
+        top: &Config,
+        files: Vec<PathBuf>,
+    ) -> Result<Self, String> {
+        let baseline_dir = config.dirs.get("baseline").unwrap_or(&top.dir).clone();
+        let excused = settings.get::<Baseline>().read(&baseline_dir)?;
+        let (rules, root) = (settings.rules(), config.root());
+        Ok(Self { config: path, settings, rules, root, baseline_dir, excused, files })
+    }
+
+    /// Its own of `reports`.
+    pub fn members(&self, reports: &[FileReport]) -> Vec<FileReport> {
+        reports.iter().filter(|r| self.files.binary_search(&r.path).is_ok()).cloned().collect()
+    }
+
+    /// Its own of `reports`, with its baseline's items let through.
+    fn own(&self, reports: &[FileReport]) -> Vec<FileReport> {
+        let own = self.members(reports);
+        match &self.excused {
+            Some(excused) => excused.apply(&Root::new(&self.baseline_dir), own),
+            None => own,
+        }
+    }
 }
 
 /// The files to scan, by the settings each is scanned with.
@@ -30,8 +82,8 @@ pub struct Plan {
 
 impl Plan {
     /// Puts each of `files`, sorted, in the group of the config it's scanned with, leaving out
-    /// those the jsdoc config's patterns or the file's nested config excludes. Without `nested`,
-    /// that's the root config for all of them.
+    /// those the jsdoc config's patterns or the file's nested config excludes, and reads each
+    /// group's baseline. Without `nested`, that's the root config for all of them.
     pub fn new(
         root: &Config,
         settings: Settings,
@@ -40,7 +92,7 @@ impl Plan {
     ) -> Result<Self, String> {
         files.retain(|file| root.patterns.keep(file));
         if !settings.get::<Nested>().0 {
-            return Ok(Self { groups: vec![Group { config: None, settings, files }] });
+            return Ok(Self { groups: vec![Group::new(None, root, settings, root, files)?] });
         }
         let top = real(&root.dir);
         let mut nearest_in: FxHashMap<PathBuf, Option<PathBuf>> = FxHashMap::default();
@@ -59,12 +111,15 @@ impl Plan {
 
         let mut members = members.into_iter();
         let (_, files) = members.next().expect("the root group is first");
-        let mut groups = vec![Group { config: None, settings, files }];
+        let mut groups = vec![Group::new(None, root, settings, root, files)?];
         for (config, mut files) in members {
             let path = config.expect("only the root group has no config");
-            let nested = root.under(&path).map_err(|e| e.to_string())?;
-            walk::retain(&mut files, &nested.exclude).map_err(|e| e.to_string())?;
-            groups.push(Group { config: Some(path), settings: Settings::new(matches, nested.keys), files });
+            let mut nested = root.under(&path).map_err(|e| e.to_string())?;
+            let settings = Settings::new(matches, std::mem::take(&mut nested.keys));
+            // The walk left out what the root config excludes; this is what the nested one does.
+            let excluded = settings.get::<Overrides>().clone().excluder(nested.exclude.clone(), &nested.root());
+            files.retain(|file| !walk::excludes(&excluded, file));
+            groups.push(Group::new(Some(path), &nested, settings, root, files)?);
         }
         Ok(Self { groups })
     }
@@ -74,29 +129,46 @@ impl Plan {
         &self.groups[0].settings
     }
 
-    /// Each file to scan, with the scope it's scanned with, sorted.
-    pub fn files(&self) -> Vec<(&Path, Scope)> {
+    /// Each file to scan, with the rules it's scanned with, sorted.
+    pub fn files(&self) -> Vec<(&Path, &Rules)> {
         let mut files: Vec<_> = self
             .groups
             .iter()
-            .flat_map(|group| group.files.iter().map(|file| (file.as_path(), *group.settings.get::<Scope>())))
+            .flat_map(|group| group.files.iter().map(|file| (file.as_path(), &group.rules)))
             .collect();
         files.sort_by_key(|&(file, _)| file);
         files
     }
 
-    /// Why the scan fails: each group's gates over its own files, naming its config file if it's
-    /// a nested one.
-    pub fn gates(&self, reports: &[FileReport]) -> Vec<String> {
-        let gates = |group: &Group| {
-            let own: Vec<_> = reports.iter().filter(|r| group.files.binary_search(&r.path).is_ok()).cloned().collect();
+    /// Each group's files of `reports`, with its baseline's items let through, and why the scan
+    /// fails: each group's gates over those, naming its config file if it's a nested one.
+    pub fn gates(&self, reports: &[FileReport]) -> (Vec<FileReport>, Vec<String>) {
+        let (mut gated, mut failures) = (Vec::new(), Vec::new());
+        for group in &self.groups {
+            let own = group.own(reports);
             let named = |failure| match &group.config {
                 Some(path) => format!("{}: {failure}", path.display()),
                 None => failure,
             };
-            group.settings.gates(&own).into_iter().map(named).collect::<Vec<_>>()
+            failures.extend(group.settings.gates(&own, &group.root).into_iter().map(named));
+            gated.extend(own);
+        }
+        (gated, failures)
+    }
+
+    /// Writes each group's undocumented items to its baseline file, the groups that share one
+    /// together, and says where.
+    pub fn save_baselines(&self, reports: &[FileReport]) -> Result<Vec<PathBuf>, String> {
+        let mut files: IndexMap<PathBuf, (&Group, Vec<FileReport>)> = IndexMap::new();
+        for group in &self.groups {
+            let file = group.settings.get::<Baseline>().file(&group.baseline_dir);
+            files.entry(file).or_insert((group, Vec::new())).1.extend(group.members(reports));
+        }
+        let save = |(group, reports): (&Group, Vec<FileReport>)| {
+            let dir = &group.baseline_dir;
+            group.settings.get::<Baseline>().save(dir, &Root::new(dir), &reports)
         };
-        self.groups.iter().flat_map(gates).collect()
+        files.into_values().map(save).collect()
     }
 }
 

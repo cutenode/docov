@@ -1,31 +1,40 @@
 //! The `docov` command.
 
 use std::{
+    env,
     io::{self, Write},
     path::{Path, PathBuf},
     process::ExitCode,
+    time::SystemTime,
 };
 
 use clap::{CommandFactory, FromArgMatches, Parser};
 use docov::{
-    Config, Format, Settings, Threshold, batch,
+    Config, Settings, Threshold, Totals, batch,
     feature::{
         self,
+        baseline::{self, Baseline},
+        by_package::ByPackage,
         cache::CacheFile,
-        color::{Color, Styled},
+        changed::Changed,
+        color::Color,
+        diff::Diff,
         jsdoc_config::JsdocConfig,
         list_files::{self, ListFiles},
+        overrides::Overrides,
         print_config::{self, PrintConfig},
         stdin_filename::{self, StdinFilename},
         threads::Threads,
+        threshold::Limit,
+        update_threshold::UpdateThreshold,
         watch,
     },
-    init, nested, packages, walk,
+    init, nested, report, walk,
 };
 
 /// Checks how much of a JavaScript or TypeScript project's API has JSDoc.
 ///
-/// Exits 1 when coverage is under the threshold, 2 when a file or the config can't be read.
+/// Exits 1 when a gate fails (a threshold, say), 2 when a file or the config can't be read.
 #[derive(Parser)]
 // No `help` subcommand: `docov help` would no longer scan a folder named help.
 #[command(version, args_conflicts_with_subcommands = true, disable_help_subcommand = true)]
@@ -37,12 +46,11 @@ struct Cli {
     /// The config file [default: docov.json, docov.jsonc or .docovrc here or in the nearest folder above]
     #[arg(long, value_name = "FILE")]
     config: Option<PathBuf>,
-    /// How to write the report
-    #[arg(long, value_enum, default_value_t)]
-    format: Format,
-    /// Print the config file's JSON Schema and exit
-    #[arg(long, exclusive = true)]
-    print_schema: bool,
+    #[command(flatten)]
+    report: report::Flags,
+    /// Print the config file's JSON Schema, or the baseline file's, and exit
+    #[arg(long, value_enum, value_name = "FILE", exclusive = true, num_args = 0..=1, default_missing_value = "config")]
+    print_schema: Option<Schema>,
 }
 
 /// What docov does besides scanning.
@@ -52,12 +60,24 @@ enum Command {
     Init,
 }
 
+/// A file docov reads, by its JSON Schema.
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum Schema {
+    /// docov.json.
+    Config,
+    /// The file `--write-baseline` writes.
+    Baseline,
+}
+
 fn main() -> ExitCode {
     // Each feature adds its own flags.
     let matches = feature::args(Cli::command()).get_matches();
     let cli = Cli::from_arg_matches(&matches).expect("the flags are the command's");
-    if cli.print_schema {
-        print!("{}", Config::json_schema());
+    if let Some(schema) = cli.print_schema {
+        match schema {
+            Schema::Config => print!("{}", Config::json_schema()),
+            Schema::Baseline => print!("{}", baseline::File::json_schema()),
+        }
         return ExitCode::SUCCESS;
     }
     if let Some(Command::Init) = cli.command {
@@ -69,8 +89,8 @@ fn main() -> ExitCode {
     ExitCode::from(watch::run(watch::enabled(&matches), &mut |watched| exit(run(&cli, &matches, watched))))
 }
 
-/// Prints `result`'s errors, and exits by it: 0 when coverage passed, 1 when it didn't, and 2 on
-/// an error.
+/// Prints `result`'s errors, and exits by it: 0 when every gate passed, 1 when one didn't, and 2
+/// on an error.
 fn exit(result: Result<bool, Vec<String>>) -> u8 {
     match result {
         Ok(passed) => u8::from(!passed),
@@ -83,12 +103,16 @@ fn exit(result: Result<bool, Vec<String>>) -> u8 {
     }
 }
 
-/// Scans and reports, and says whether coverage met the threshold. `watched` gets the paths it
-/// scans, for `--watch`.
+/// Scans and reports, and says whether every gate passed. `watched` gets the paths it scans, for
+/// `--watch`.
 fn run(cli: &Cli, matches: &clap::ArgMatches, watched: &mut Vec<PathBuf>) -> Result<bool, Vec<String>> {
     // The current folder, unless there are paths: no paths scan it, and a config that doesn't load
     // has none.
     *watched = vec![PathBuf::from(".")];
+    // GitHub Actions sets it, and reads annotations from the output.
+    let github_actions = env::var_os("GITHUB_ACTIONS").is_some_and(|value| value == "true");
+    let outputs = cli.report.outputs(github_actions).map_err(|e| vec![e])?;
+    let base = cli.report.compare.as_deref().map(report::Base::read).transpose().map_err(|e| vec![e])?;
     let mut config = Config::load(cli.config.as_deref()).map_err(|e| vec![e.to_string()])?;
     let settings = Settings::new(matches, std::mem::take(&mut config.keys));
     config.read_jsdoc(settings.get::<JsdocConfig>().0.as_deref()).map_err(|e| vec![e])?;
@@ -99,27 +123,73 @@ fn run(cli: &Cli, matches: &clap::ArgMatches, watched: &mut Vec<PathBuf>) -> Res
     if settings.get::<PrintConfig>().0 {
         return wrote(writeln!(io::stdout(), "{:#}", print_config::json(&config, &paths, &settings)));
     }
+
+    let root = config.root();
     let stdin = settings.get::<StdinFilename>().0.clone();
     let files = match &stdin {
         Some(path) => vec![path.clone()],
-        None => walk::files(&paths, &config.exclude).map_err(|e| vec![e.to_string()])?,
+        None => {
+            let excluded = settings.get::<Overrides>().clone().excluder(config.exclude.clone(), &root);
+            let files = walk::files(&paths, excluded).map_err(|e| vec![e.to_string()])?;
+            settings.get::<Changed>().filter(files, &root).map_err(|e| vec![e])?
+        }
     };
     let plan = nested::Plan::new(&config, settings, matches, files).map_err(|e| vec![e])?;
-    let files = plan.files();
-    if plan.settings().get::<ListFiles>().0 {
+    let (settings, files) = (plan.settings(), plan.files());
+    if settings.get::<ListFiles>().0 {
         return wrote(list_files::write(files.iter().map(|(file, _)| *file), &mut io::stdout().lock()));
     }
-    plan.settings().get::<Threads>().apply();
+    let added = settings.get::<Diff>().added(&root).map_err(|e| vec![e])?;
+    settings.get::<Threads>().apply();
     let reports = match stdin {
         Some(_) => stdin_filename::scan(&files, &mut io::stdin().lock())?,
-        None => batch::scan(&files, &plan.settings().get::<CacheFile>().open(&config.dir))?,
+        None => batch::scan(&files, &settings.get::<CacheFile>().open(&config.dir))?,
     };
-    let (settings, text) = (plan.settings(), cli.format == Format::Text);
-    let stream = &mut settings.get::<Color>().stream(io::stdout().lock());
-    let out = &mut Styled::new(stream, text, settings.get::<Threshold>().0);
-    packages::write(settings, &config.dir, cli.format, &reports, out).map_err(|e| vec![e])?;
+    if let Some(edited) = settings.edit(&reports) {
+        eprintln!("docov: {}", edited.map_err(|e| vec![e])?);
+        return Ok(true);
+    }
 
-    let failures = plan.gates(&reports);
+    // Writing a baseline exits 0, so no gate runs. The gates let the baseline's items through,
+    // which the report still lists.
+    let baseline = settings.get::<Baseline>();
+    let failures = if baseline.write {
+        Vec::new()
+    } else {
+        let (gated, mut failures) = plan.gates(&reports);
+        failures.extend(settings.get::<Diff>().gate(added.as_ref(), &gated, &root));
+        failures
+    };
+    let packages = settings.get::<ByPackage>().packages(&config.dir, &reports).map_err(|e| vec![e])?;
+    // Badges and colors go by the global percentage.
+    let threshold = match settings.get::<Threshold>().0.global {
+        Some(Limit::Percent(percent)) => Some(percent),
+        _ => None,
+    };
+    let color = *settings.get::<Color>();
+    let context = report::Context {
+        files: &reports,
+        failures: &failures,
+        now: SystemTime::now(),
+        threshold,
+        text: cli.report.text,
+        base: base.as_ref(),
+        packages: packages.as_deref(),
+        color: color != Color::Never,
+    };
+    report::write(&outputs, &context, &mut color.stream(io::stdout().lock())).map_err(|e| vec![e])?;
+    if baseline.write {
+        for path in plan.save_baselines(&reports).map_err(|e| vec![e])? {
+            eprintln!("docov: wrote the undocumented items to {}", path.display());
+        }
+        return Ok(true);
+    }
+    // The root config's threshold is for its own files.
+    let own = Totals::of(&plan.groups[0].members(&reports));
+    let raised = settings.get::<UpdateThreshold>().update(config.path(), own);
+    if let Some(raised) = raised.map_err(|e| vec![e])? {
+        eprintln!("docov: {raised}");
+    }
     for failure in &failures {
         eprintln!("docov: {failure}");
     }

@@ -8,19 +8,20 @@ use std::{
 };
 
 use docov::{
-    FileReport, Format, Item, Kind, Scope, Settings, Totals, batch,
+    Context, FileReport, Item, Kind, Output, Rules, Scope, Settings, Totals, batch,
     cache::Cache,
     config,
     config::Config,
     feature,
-    feature::{color, stdin_filename, threads::Threads, watch},
+    feature::{by_package::ByPackage, color, overrides::Overrides, stdin_filename, threads::Threads, watch},
+    glob::Globs,
     init, jsdoc, nested, packages, report, scan, scan_file, walk,
     walk::Exclude,
 };
 use hegel::{TestCase, generators as gs};
 use oxc_span::SourceType;
 
-use super::{Room, reports, write};
+use super::{Room, plain, render, reports, write};
 
 /// The folders generated config files go in.
 const FOLDERS: [&str; 4] = ["", "x/", "x/y/", "z/"];
@@ -78,7 +79,7 @@ fn model(files: &[File], i: usize, path: &Path) -> Model {
         scope: file.scope.or(merged.scope),
         paths: if file.paths { Some(vec![dir.join(format!("p{i}"))]) } else { merged.paths },
         exclude: if file.exclude {
-            Some(Exclude { root: dir.to_owned(), globs: vec![format!("e{i}/**")] })
+            Some(Exclude { root: dir.to_owned(), globs: Globs::new(vec![format!("e{i}/**")]).unwrap() })
         } else {
             merged.exclude
         },
@@ -192,7 +193,7 @@ fn extended_configs_merge_nearest_first(tc: TestCase) {
 
 /// Runs the binary in `dir`, with stdout closed if `closed` (a pipe whose reader has gone, as with
 /// `docov | head` after head exits), and returns its code, stdout and stderr.
-fn docov(dir: &Path, args: &[&str], closed: bool) -> (i32, String, String) {
+pub(super) fn docov(dir: &Path, args: &[&str], closed: bool) -> (i32, String, String) {
     let mut command = Command::new(env!("CARGO_BIN_EXE_docov"));
     command.args(args).current_dir(dir);
     if closed {
@@ -304,7 +305,7 @@ fn init_writes_a_threshold_the_project_meets(tc: TestCase) {
 }
 
 /// The flags in `args` (after `docov`), parsed the way the binary parses them.
-fn matches(args: &[&str]) -> clap::ArgMatches {
+pub(super) fn matches(args: &[&str]) -> clap::ArgMatches {
     feature::args(clap::Command::new("docov")).get_matches_from(std::iter::once("docov").chain(args.iter().copied()))
 }
 
@@ -369,8 +370,8 @@ fn nested_configs_set_their_own_files(tc: TestCase) {
         let settings = Settings::new(&matches(&[]), std::mem::take(&mut root.keys));
         nested::Plan::new(&root, settings, &matches(&[]), files)
     };
-    let plan = plan_of(walk::files(&[dir.path().to_owned()], &[]).unwrap()).unwrap();
-    let files: Vec<_> = plan.files().into_iter().map(|(path, scope)| (path.to_owned(), scope)).collect();
+    let plan = plan_of(walk::files(&[dir.path().to_owned()], |_, _| false).unwrap()).unwrap();
+    let files: Vec<_> = plan.files().into_iter().map(|(path, rules)| (path.to_owned(), rules.scope)).collect();
     assert_eq!(files, expected.iter().map(|e| (e.0.clone(), e.1)).collect::<Vec<_>>());
 
     // Each group's threshold, the root's 50 unless a nested config has its own, over its files.
@@ -396,7 +397,7 @@ fn nested_configs_set_their_own_files(tc: TestCase) {
             file.as_ref().map_or(failure.clone(), |file| format!("{}: {failure}", dir.path().join(file).display()))
         })
         .collect();
-    let mut gates = plan.gates(&reports);
+    let (_, mut gates) = plan.gates(&reports);
     failures.sort();
     gates.sort();
     assert_eq!(gates, failures);
@@ -412,7 +413,7 @@ fn nested_configs_set_their_own_files(tc: TestCase) {
         ]));
         write(dir.path(), "c/docov.json", text);
         write(dir.path(), "c/z.ts", "");
-        let error = plan_of(walk::files(&[dir.path().to_owned()], &[]).unwrap()).err().unwrap();
+        let error = plan_of(walk::files(&[dir.path().to_owned()], |_, _| false).unwrap()).err().unwrap();
         assert!(error.contains(culprit), "{error}");
     }
 }
@@ -470,13 +471,13 @@ fn packages_total_their_own_files(tc: TestCase) {
         }
     }
     // A file outside the root is in no package.
-    let outside = Item { name: "a".into(), kind: Kind::Variable, line: 1, column: 1, documented: false };
+    let outside = Item { name: "a".into(), kind: Kind::Variable, line: 1, column: 1, documented: false, ignore: None };
     let mut reports = vec![FileReport { path: PathBuf::from("outside.ts"), items: vec![outside] }];
     let mut expected: Vec<(String, Totals)> = Vec::new();
     for f in 0..tc.draw(gs::integers::<usize>().max_value(8)) {
         let (folder, package) = tc.draw(gs::sampled_from(folders.to_vec()));
         let documented = tc.draw(gs::booleans());
-        let item = Item { name: "a".into(), kind: Kind::Variable, line: 1, column: 1, documented };
+        let item = Item { name: "a".into(), kind: Kind::Variable, line: 1, column: 1, documented, ignore: None };
         reports.push(FileReport { path: root.join(folder).join(format!("f{f}.ts")), items: vec![item] });
         if let Some(package) = package {
             let path = root.join(package).display().to_string();
@@ -502,15 +503,15 @@ fn packages_total_their_own_files(tc: TestCase) {
     // The reports, with and without the flag.
     let by_package = Settings::new(&matches(&["--by-package"]), Default::default());
     let without = Settings::new(&matches(&[]), Default::default());
-    for format in [Format::Text, Format::Json, Format::Lcov] {
-        let written = |settings: &Settings| {
-            let mut out = Vec::new();
-            packages::write(settings, root, format, &reports, &mut out).unwrap();
-            String::from_utf8(out).unwrap()
-        };
-        let (plain, with) = (written(&without), written(&by_package));
-        match format {
-            Format::Text => {
+    assert_eq!(without.get::<ByPackage>().packages(root, &reports), Ok(None));
+    let listed = by_package.get::<ByPackage>().packages(root, &reports).unwrap().unwrap();
+    assert_eq!(listed, found);
+    for name in ["text", "json", "lcov"] {
+        let context = |packages| Context { packages, ..plain(&reports) };
+        let written = |packages| report::format(name).unwrap().render(&context(packages));
+        let (plain, with) = (written(None), written(Some(&found)));
+        match name {
+            "text" => {
                 let lines: Vec<_> = found
                     .iter()
                     .map(|p| {
@@ -519,20 +520,17 @@ fn packages_total_their_own_files(tc: TestCase) {
                     .collect();
                 assert_eq!(with, plain + &lines.concat());
             }
-            Format::Json => {
+            "json" => {
                 let mut json: serde_json::Value = serde_json::from_str(&plain).unwrap();
                 json["packages"] = serde_json::to_value(&found).unwrap();
                 assert_eq!(serde_json::from_str::<serde_json::Value>(&with).unwrap(), json);
             }
-            Format::Lcov => assert_eq!(with, plain),
+            _ => assert_eq!(with, plain),
         }
         // A writer with room for less than all of it fails.
-        let mut all = Vec::new();
-        packages::write(&by_package, root, format, &reports, &mut all).unwrap();
-        if !all.is_empty() {
-            let room = tc.draw(gs::integers::<usize>().max_value(all.len() - 1));
-            assert!(packages::write(&by_package, root, format, &reports, &mut Room(room)).is_err());
-        }
+        let format = report::format(name).unwrap();
+        let room = tc.draw(gs::integers::<usize>().max_value(with.len() - 1));
+        assert!(report::write(&[Output { format, path: None }], &context(Some(&found)), &mut Room(room)).is_err());
     }
 
     // What doesn't parse, and what its error says.
@@ -543,7 +541,7 @@ fn packages_total_their_own_files(tc: TestCase) {
         ("pnpm-workspace.yaml", "packages: [", "pnpm-workspace.yaml"),
     ]));
     write(root, file, text);
-    let error = packages::write(&by_package, root, Format::Text, &reports, &mut Vec::new()).unwrap_err();
+    let error = by_package.get::<ByPackage>().packages(root, &reports).unwrap_err();
     assert!(error.contains(culprit), "{error}");
 }
 
@@ -622,7 +620,8 @@ fn jsdoc_configs_pick_the_files(tc: TestCase) {
     let keys = std::mem::take(&mut config.keys);
     let jsdoc = root.join("docs/jsdoc.json");
     config.read_jsdoc(by_flag.then_some(jsdoc.as_path())).unwrap();
-    let files = walk::files(&config.paths, &config.exclude).unwrap();
+    let files =
+        walk::files(&config.paths, Overrides::default().excluder(config.exclude.clone(), &config.root())).unwrap();
     let plan = nested::Plan::new(&config, Settings::new(&matches(&[]), keys), &matches(&[]), files).unwrap();
     let found: Vec<_> = plan.files().into_iter().map(|(path, _)| path.to_owned()).collect();
     let expected: Vec<_> = if own_paths {
@@ -703,7 +702,7 @@ fn threads_size_the_pool_once(tc: TestCase) {
 }
 
 /// Runs the binary in `dir` with `stdin` as its standard input.
-fn docov_with_stdin(dir: &Path, args: &[&str], stdin: &[u8]) -> (i32, String, String) {
+pub(super) fn docov_with_stdin(dir: &Path, args: &[&str], stdin: &[u8]) -> (i32, String, String) {
     let mut child = Command::new(env!("CARGO_BIN_EXE_docov"))
         .args(args)
         .current_dir(dir)
@@ -730,8 +729,9 @@ fn stdin_scans_as_the_file_it_names(tc: TestCase) {
     }
     let name = tc.draw(gs::sampled_from(vec!["src/buffer.ts", "buffer.tsx", "unsaved.mts"]));
     let path = Path::new(name);
-    let scanned = stdin_filename::scan(&[(path, Scope::Exports)], &mut source.as_bytes()).unwrap();
-    let expected = scan(&source, SourceType::from_path(path).unwrap(), Scope::Exports).unwrap();
+    let rules = Rules::from(Scope::Exports);
+    let scanned = stdin_filename::scan(&[(path, &rules)], &mut source.as_bytes()).unwrap();
+    let expected = scan(&source, SourceType::from_path(path).unwrap(), &rules).unwrap();
     assert_eq!(scanned, vec![FileReport { path: path.to_owned(), items: expected }]);
     // With nothing to scan, stdin isn't read.
     assert_eq!(stdin_filename::scan(&[], &mut &b"\xff"[..]), Ok(Vec::new()));
@@ -740,9 +740,9 @@ fn stdin_scans_as_the_file_it_names(tc: TestCase) {
         (&b"// caf\xe9"[..], "stream did not contain valid UTF-8"),
         (b"export function (", ":1:"),
     ]));
-    let error = stdin_filename::scan(&[(path, Scope::Exports)], &mut &bytes[..]).unwrap_err();
+    let error = stdin_filename::scan(&[(path, &rules)], &mut &bytes[..]).unwrap_err();
     assert!(error[0].starts_with(&path.display().to_string()) && error[0].contains(culprit), "{error:?}");
-    let error = stdin_filename::scan(&[(Path::new("notes.md"), Scope::Exports)], &mut source.as_bytes()).unwrap_err();
+    let error = stdin_filename::scan(&[(Path::new("notes.md"), &rules)], &mut source.as_bytes()).unwrap_err();
     assert_eq!(error, vec!["notes.md: not a JavaScript or TypeScript file".to_owned()]);
 }
 
@@ -771,16 +771,14 @@ fn the_cli_reads_stdin_in_place_of_files(tc: TestCase) {
 /// What's left of an unfinished line goes out on a flush, and a write that doesn't fit fails.
 #[hegel::test(test_cases = 50)]
 fn color_marks_items_and_what_is_under_the_threshold(tc: TestCase) {
-    let files = reports(&tc);
+    let files = reports(&tc, false);
     let threshold = tc.draw(gs::optional(gs::integers::<u8>().max_value(100))).map(f64::from);
-    let mut text = Vec::new();
-    report::write(Format::Text, &files, &mut text).unwrap();
-    let text = String::from_utf8(text).unwrap();
+    let text = render("text", &files);
     // Lines that aren't the report's pass through too.
     let text = format!("{text}\nx\n5%\n5% a\n5% 1/x\n5% x/1\n");
 
     let mut out = Vec::new();
-    let mut styled = color::Styled::new(&mut out, true, threshold);
+    let mut styled = color::Styled::new(&mut out, threshold);
     // In pieces, split anywhere.
     let at = tc.draw(gs::integers::<usize>().max_value(text.len()));
     let (head, tail) = text.as_bytes().split_at(at);
@@ -809,23 +807,28 @@ fn color_marks_items_and_what_is_under_the_threshold(tc: TestCase) {
     }
     assert_eq!(out, expected + "unfinished");
 
-    // JSON goes through as it is.
-    let mut json = Vec::new();
-    report::write(Format::Json, &files, &mut json).unwrap();
-    let mut out = Vec::new();
-    std::io::Write::write_all(&mut color::Styled::new(&mut out, false, threshold), &json).unwrap();
-    assert_eq!(out, json);
+    // Written with colors on, the text report goes through it, and JSON as it is.
+    let context = Context { threshold, color: true, ..plain(&files) };
+    for name in ["text", "json"] {
+        let mut out = Vec::new();
+        report::write(&[Output { format: report::format(name).unwrap(), path: None }], &context, &mut out).unwrap();
+        let mut styled = Vec::new();
+        std::io::Write::write_all(&mut color::Styled::new(&mut styled, threshold), render(name, &files).as_bytes())
+            .unwrap();
+        let expected = if name == "text" { styled } else { render(name, &files).into_bytes() };
+        assert_eq!(out, expected, "{name}");
+    }
 
     // A writer with room for less fails.
     let room = tc.draw(gs::integers::<usize>().max_value(text.len().saturating_sub(1)));
     let mut room = Room(room);
-    let mut styled = color::Styled::new(&mut room, true, threshold);
+    let mut styled = color::Styled::new(&mut room, threshold);
     let wrote =
         std::io::Write::write_all(&mut styled, text.as_bytes()).and_then(|()| std::io::Write::flush(&mut styled));
     assert!(wrote.is_err() || text.is_empty());
     // And so does a flush with an unfinished line that doesn't fit.
     let mut full = Room(0);
-    let mut styled = color::Styled::new(&mut full, true, threshold);
+    let mut styled = color::Styled::new(&mut full, threshold);
     std::io::Write::write_all(&mut styled, b"unfinished").unwrap();
     assert!(std::io::Write::flush(&mut styled).is_err());
 }
@@ -916,8 +919,9 @@ fn the_cache_keeps_unchanged_files_items(tc: TestCase) {
     let cache_path = dir.path().join(".docov-cache");
     let path = dir.path().join("a.ts");
     let scope = tc.draw(gs::sampled_from(vec![Scope::Exports, Scope::All]));
+    let rules = Rules::from(scope);
     write(dir.path(), "a.ts", "export const a = 1;\nconst b = 2;\n");
-    let files = [(path.as_path(), scope)];
+    let files = [(path.as_path(), &rules)];
     let scanned = batch::scan(&files, &Cache::read(cache_path.clone())).unwrap();
     // What a cache holds is what it gives back, whatever the file says now, while the stamp's
     // the same: the file is rewritten with its size and time kept.
@@ -940,15 +944,15 @@ fn the_cache_keeps_unchanged_files_items(tc: TestCase) {
         }
         _ => Cache::default(),
     };
-    let reused = cache.stamp(&path, scope).and_then(|stamp| cache.get(&path, stamp)).is_some();
+    let reused = cache.stamp(&path, &rules).and_then(|stamp| cache.get(&path, stamp)).is_some();
     let again = batch::scan(&files, &cache).unwrap();
-    assert_eq!(again, if reused { scanned.clone() } else { scanned_now(&path, scope) });
+    assert_eq!(again, if reused { scanned.clone() } else { scanned_now(&path, &rules) });
     assert_eq!(reused, kept == 0);
-    assert_ne!(scanned, scanned_now(&path, scope));
+    assert_ne!(scanned, scanned_now(&path, &rules));
     // A scope that's changed doesn't count.
-    let other = if scope == Scope::All { Scope::Exports } else { Scope::All };
+    let other = Rules::from(if scope == Scope::All { Scope::Exports } else { Scope::All });
     let cache = Cache::read(cache_path.clone());
-    assert!(cache.stamp(&path, other).and_then(|stamp| cache.get(&path, stamp)).is_none());
+    assert!(cache.stamp(&path, &other).and_then(|stamp| cache.get(&path, stamp)).is_none());
 
     // A file with no time to keep it by, from before 1970, isn't kept, nor one that's gone.
     fs::File::options()
@@ -957,8 +961,8 @@ fn the_cache_keeps_unchanged_files_items(tc: TestCase) {
         .unwrap()
         .set_modified(std::time::UNIX_EPOCH - std::time::Duration::from_secs(1))
         .unwrap();
-    assert_eq!(cache.stamp(&path, scope), None);
-    assert_eq!(cache.stamp(&dir.path().join("gone.ts"), scope), None);
+    assert_eq!(cache.stamp(&path, &rules), None);
+    assert_eq!(cache.stamp(&dir.path().join("gone.ts"), &rules), None);
     let report = FileReport { path: path.clone(), items: Vec::new() };
     cache.write(&[(report, None)]).unwrap();
     assert!(!fs::read_to_string(&cache_path).unwrap().contains("a.ts"));
@@ -968,8 +972,8 @@ fn the_cache_keeps_unchanged_files_items(tc: TestCase) {
     assert!(error[0].starts_with(&dir.path().display().to_string()), "{error:?}");
 }
 
-fn scanned_now(path: &Path, scope: Scope) -> Vec<FileReport> {
-    vec![scan_file(path, scope).unwrap()]
+fn scanned_now(path: &Path, rules: &Rules) -> Vec<FileReport> {
+    vec![scan_file(path, rules).unwrap()]
 }
 
 /// The binary keeps its cache in .docov-cache in the config's folder, or at `--cache-location`,

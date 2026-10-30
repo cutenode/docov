@@ -3,7 +3,10 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::feature::{Entry, Feature};
+use crate::{
+    Rules,
+    feature::{Entry, Feature},
+};
 
 pub(crate) fn entry() -> Entry {
     Entry::of::<Scope>()
@@ -43,6 +46,10 @@ impl Feature for Scope {
 
     fn new(flags: Flags, keys: Keys) -> Self {
         flags.scope.unwrap_or(keys.scope)
+    }
+
+    fn rules(&self, rules: &mut Rules) {
+        rules.scope = *self;
     }
 
     fn describe(&self) -> Option<serde_json::Value> {

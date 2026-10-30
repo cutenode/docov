@@ -4,7 +4,6 @@
 use std::{
     fmt::Display,
     fs,
-    io::Write,
     path::{Path, PathBuf},
 };
 
@@ -13,7 +12,7 @@ use rustc_hash::FxHashMap;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::{FileReport, Format, Settings, Totals, feature::by_package::ByPackage, report};
+use crate::{FileReport, Totals};
 
 /// A workspace package's totals.
 #[derive(Debug, PartialEq, Serialize)]
@@ -27,42 +26,6 @@ pub struct Package {
     pub totals: Totals,
     /// Its documented percentage.
     pub percent: f64,
-}
-
-/// Writes `reports` in `format`, and with `--by-package` in `settings`, each package's totals:
-/// a line each after the text total, or a `packages` array in the JSON. Other formats have no
-/// totals to add to.
-pub fn write(
-    settings: &Settings,
-    root: &Path,
-    format: Format,
-    reports: &[FileReport],
-    mut out: &mut dyn Write,
-) -> Result<(), String> {
-    if !settings.get::<ByPackage>().0 {
-        return report::write(format, reports, &mut out).map_err(message);
-    }
-    let packages = packages(root, reports)?;
-    match format {
-        Format::Json => {
-            let mut json = Vec::new();
-            report::write(format, reports, &mut json).expect("a Vec takes any write");
-            let mut json: Value = serde_json::from_slice(&json).expect("the report is JSON");
-            json["packages"] = serde_json::to_value(&packages).expect("packages serialize");
-            writeln!(out, "{json:#}").map_err(message)
-        }
-        Format::Text => {
-            report::write(format, reports, &mut out).map_err(message)?;
-            packages
-                .iter()
-                .try_for_each(|p| {
-                    let Totals { documented, total } = p.totals;
-                    writeln!(out, "{:>6.1}%  {documented}/{total}  {} total", p.percent, p.path)
-                })
-                .map_err(message)
-        }
-        _ => report::write(format, reports, &mut out).map_err(message),
-    }
 }
 
 /// The workspace packages under `root` that `reports` have files in, with those files' totals,

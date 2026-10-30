@@ -2,6 +2,7 @@
 
 use std::{borrow::Cow, env, fmt, fs, io, iter, path::Path, path::PathBuf, sync::OnceLock};
 
+use rustc_hash::FxHashMap;
 use schemars::JsonSchema;
 use serde::{
     Deserialize, Deserializer,
@@ -11,7 +12,9 @@ use serde_json::{Map, Value};
 
 use crate::{
     feature,
+    glob::Globs,
     jsdoc::{self, Patterns},
+    root::Root,
     walk::Exclude,
 };
 
@@ -37,6 +40,9 @@ pub struct Config {
     pub keys: feature::Keys,
     /// The same keys as JSON, for nested configs to merge over.
     json: Map<String, Value>,
+    /// The folder of the file that wrote each of the keys, as a path from the current folder,
+    /// which the paths and globs in it are relative to.
+    pub dirs: FxHashMap<String, PathBuf>,
     /// The config file's folder, as a path from the current folder (empty for the current folder,
     /// or with no file).
     pub dir: PathBuf,
@@ -57,7 +63,7 @@ struct File {
     /// Files and folders to scan, relative to this file's folder. Defaults to the folder docov runs in.
     paths: Vec<PathBuf>,
     /// Gitignore-style globs of files to leave out, relative to this file's folder, on top of .gitignore.
-    exclude: Vec<String>,
+    exclude: Globs,
     /// A jsdoc.json, relative to this file's folder, whose `source` picks the files: its `include` is the paths unless `paths` is set, and its `exclude`, `includePattern` and `excludePattern` leave files out.
     #[serde(rename = "jsdocConfig")]
     jsdoc_config: Option<PathBuf>,
@@ -99,6 +105,8 @@ struct Layer {
     exclude: Option<Exclude>,
     /// `jsdocConfig`, if a file has it.
     jsdoc_config: Option<PathBuf>,
+    /// The folder of the file that wrote each of `keys`.
+    dirs: FxHashMap<String, PathBuf>,
     /// The files, the topmost first.
     files: Vec<PathBuf>,
 }
@@ -107,6 +115,7 @@ impl Layer {
     /// Puts `top`'s settings over these.
     fn over(&mut self, top: Self) {
         self.keys.extend(top.keys);
+        self.dirs.extend(top.dirs);
         self.paths = top.paths.or(self.paths.take());
         self.exclude = top.exclude.or(self.exclude.take());
         self.jsdoc_config = top.jsdoc_config.or(self.jsdoc_config.take());
@@ -122,14 +131,9 @@ pub fn percent(value: &str) -> Result<f64, String> {
     in_range(value.parse().unwrap_or(f64::NAN))
 }
 
-/// `value`, if it's from 0 to 100. [`percent`] and [`percentage`] both check with this.
-fn in_range(value: f64) -> Result<f64, String> {
+/// `value`, if it's from 0 to 100. [`percent`] and docov.json's thresholds both check with this.
+pub(crate) fn in_range(value: f64) -> Result<f64, String> {
     if (0.0..=100.0).contains(&value) { Ok(value) } else { Err("expected a number from 0 to 100".into()) }
-}
-
-/// Reads an optional percentage key, such as `threshold`: a number from 0 to 100.
-pub fn percentage<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<f64>, D::Error> {
-    Option::<f64>::deserialize(deserializer)?.map(in_range).transpose().map_err(de::Error::custom)
 }
 
 /// The JSON Schema of the whole file: [`File`]'s own keys, then each feature's.
@@ -224,7 +228,8 @@ impl Config {
     /// The config file at `path` merged over this one, the way a nested config is: its `paths`
     /// and `exclude` are its own, with none of this one's.
     pub fn under(&self, path: &Path) -> Result<Self, Error> {
-        let mut merged = Layer { keys: self.json.clone(), files: self.files.clone(), ..Layer::default() };
+        let (keys, dirs, files) = (self.json.clone(), self.dirs.clone(), self.files.clone());
+        let mut merged = Layer { keys, dirs, files, ..Layer::default() };
         merged.over(layer(path, &mut Vec::new())?);
         Ok(Self::of(merged, path))
     }
@@ -241,6 +246,7 @@ impl Config {
             patterns: Patterns::default(),
             keys,
             json: layer.keys,
+            dirs: layer.dirs,
             dir: path.parent().map(Path::to_path_buf).unwrap_or_default(),
         }
     }
@@ -257,6 +263,16 @@ impl Config {
         self.exclude.extend(sources.exclude);
         self.patterns = sources.patterns;
         Ok(())
+    }
+
+    /// The config file, if there is one.
+    pub fn path(&self) -> Option<&Path> {
+        self.files.first().map(PathBuf::as_path)
+    }
+
+    /// Its folder, and those of the files it extends, which their keys' globs are relative to.
+    pub fn root(&self) -> Root {
+        Root::with_keys(&self.dir, &self.dirs)
     }
 
     /// The JSON Schema for this file, as `docov --print-schema` prints it.
@@ -298,6 +314,7 @@ fn layer(path: &Path, chain: &mut Vec<(PathBuf, PathBuf)>) -> Result<Layer, Erro
     let exclude = keys.remove("exclude").map(|_| Exclude { root: dir.clone(), globs: file.exclude });
     let jsdoc_config = file.jsdoc_config.map(|path| dir.join(path));
     keys.remove("jsdocConfig");
+    let dirs = keys.keys().map(|key| (key.clone(), dir.clone())).collect();
 
     chain.push((real, path.to_owned()));
     let mut merged = Layer::default();
@@ -305,6 +322,6 @@ fn layer(path: &Path, chain: &mut Vec<(PathBuf, PathBuf)>) -> Result<Layer, Erro
         merged.over(layer(&dir.join(base), chain)?);
     }
     chain.pop();
-    merged.over(Layer { keys, paths, exclude, jsdoc_config, files: vec![path.to_owned()] });
+    merged.over(Layer { keys, paths, exclude, jsdoc_config, dirs, files: vec![path.to_owned()] });
     Ok(merged)
 }

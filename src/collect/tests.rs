@@ -1,10 +1,14 @@
 use oxc_span::SourceType;
 
 use super::*;
+use crate::{
+    Scope,
+    feature::{access::Access, exports::Exports, inherit::Inherit},
+};
 
 /// `(name, kind, documented)` for each item `source` has, as TypeScript.
 fn items(source: &str, scope: Scope) -> Vec<(String, Kind, bool)> {
-    scan(source, SourceType::ts(), scope).unwrap().into_iter().map(|i| (i.name, i.kind, i.documented)).collect()
+    scan(source, SourceType::ts(), &scope.into()).unwrap().into_iter().map(|i| (i.name, i.kind, i.documented)).collect()
 }
 
 fn item(name: &str, kind: Kind, documented: bool) -> (String, Kind, bool) {
@@ -269,14 +273,14 @@ export const { a, b } = { a: 1, b: 2 };
 #[test]
 fn items_point_at_the_line_and_column_their_doc_goes_on() {
     let source = "const é = 1;\n\n  export function f() {}\n";
-    let items = scan(source, SourceType::ts(), Scope::All).unwrap();
+    let items = scan(source, SourceType::ts(), &Scope::All.into()).unwrap();
     assert_eq!((items[0].line, items[0].column), (1, 1));
     assert_eq!((items[1].line, items[1].column), (3, 3));
 }
 
 #[test]
 fn syntax_errors_fail_the_scan() {
-    let error = scan("export function (", SourceType::ts(), Scope::All).unwrap_err();
+    let error = scan("export function (", SourceType::ts(), &Scope::All.into()).unwrap_err();
     assert!(error.offset > 0, "{error:?}");
 }
 
@@ -285,15 +289,195 @@ fn files_are_read_by_their_extension() {
     let dir = tempfile::tempdir().unwrap();
     let jsx = dir.path().join("a.jsx");
     fs::write(&jsx, "/** A */\nexport const A = () => <div />;\n").unwrap();
-    assert_eq!(scan_file(&jsx, Scope::Exports).unwrap().totals(), Totals { documented: 1, total: 1 });
+    assert_eq!(scan_file(&jsx, &Scope::Exports.into()).unwrap().totals(), Totals { documented: 1, total: 1 });
 
     let broken = dir.path().join("b.ts");
     fs::write(&broken, "\n  export function (").unwrap();
-    let error = scan_file(&broken, Scope::Exports).unwrap_err().to_string();
+    let error = scan_file(&broken, &Scope::Exports.into()).unwrap_err().to_string();
     assert!(error.starts_with(&format!("{}:2:", broken.display())), "{error}");
 
     let text = dir.path().join("c.txt");
-    assert!(matches!(scan_file(&text, Scope::Exports), Err(Error::Language { .. })));
+    assert!(matches!(scan_file(&text, &Scope::Exports.into()), Err(Error::Language { .. })));
     let missing = dir.path().join("missing.ts");
-    assert!(matches!(scan_file(&missing, Scope::Exports), Err(Error::Read { .. })));
+    assert!(matches!(scan_file(&missing, &Scope::Exports.into()), Err(Error::Read { .. })));
+}
+
+#[test]
+fn require_description_leaves_out_blocks_with_tags_alone() {
+    let source = "
+/** @type {string} */
+export const a = '';
+/** @deprecated */
+export function b() {}
+/** Docs. @internal */
+export function c() {}
+/**
+ * @summary Docs.
+ */
+export function d() {}
+/** @description */
+export function e() {}
+/** @classdesc Docs. */
+export class F {
+    /** @classdesc Docs. */
+    g() {}
+    /** @inheritDoc */
+    h() {}
+}
+";
+    let rules = Rules { require_description: true, ..Rules::default() };
+    let documented: Vec<bool> =
+        scan(source, SourceType::ts(), &rules).unwrap().into_iter().map(|i| i.documented).collect();
+    assert_eq!(documented, [false, false, true, true, false, true, false, true]);
+    assert!(items(source, Scope::Exports).iter().all(|(.., documented)| *documented));
+}
+
+#[test]
+fn excluded_tags_take_their_items_out() {
+    let source = "
+/** @internal */
+export const a = 1;
+/** Mentions @internal, which isn't a tag here. */
+export const b = 1;
+/**
+ * C.
+ * @hidden
+ */
+export const c = 1;
+export const d = 1;
+";
+    let rules = Rules { exclude_tags: vec!["internal".into(), "hidden".into()], ..Rules::default() };
+    let names: Vec<String> = scan(source, SourceType::ts(), &rules).unwrap().into_iter().map(|i| i.name).collect();
+    assert_eq!(names, ["b", "d"]);
+}
+
+#[test]
+fn ignore_comments_cover_the_next_line_or_the_file() {
+    let source = "
+// docov-ignore-next-line: legacy
+export function a() {}
+/** b */
+// docov-ignore-next-line
+export function b() {}
+// docov-ignore-next-line
+/** c */
+export function c() {}
+/* docov-ignore-next-line */
+export class D { e() {} }
+// docov-ignore-next-lines
+export function f() {}
+function g() {
+    /* docov-ignore-file: not here */
+}
+";
+    let items = scan(source, SourceType::ts(), &Rules::default()).unwrap();
+    let ignored: Vec<(&str, bool, Option<&str>)> =
+        items.iter().map(|i| (&*i.name, i.ignored(), i.ignore.as_ref().and_then(|i| i.reason.as_deref()))).collect();
+    assert_eq!(
+        ignored,
+        [
+            ("a", true, Some("legacy")),
+            ("b", false, None),
+            ("c", false, None),
+            ("D", true, None),
+            ("D.e", true, None),
+            ("f", false, None),
+        ]
+    );
+    // A documented item keeps its ignore, which it doesn't need.
+    assert_eq!(items[1].ignore, Some(Ignore { reason: None, line: 5, column: 1, file: false }));
+    assert_eq!(items[2].ignore, None, "the comment covers the JSDoc's line");
+
+    let file = "export const a = 1;\n/** b */ export const b = 1;\nlet x; // docov-ignore-file : generated\n";
+    let items = scan(file, SourceType::ts(), &Rules::default()).unwrap();
+    let ignore = Ignore { reason: Some("generated".into()), line: 3, column: 8, file: true };
+    assert_eq!([items[0].ignored(), items[1].ignored()], [true, false]);
+    assert_eq!([&items[0].ignore, &items[1].ignore], [&Some(ignore.clone()), &Some(ignore)]);
+}
+
+#[test]
+fn access_levels_pick_what_counts() {
+    let source = "
+/** @private */
+export function a() {}
+/** @access package */
+export function b() {}
+export class C {
+    protected d = 1;
+    /** @protected */
+    e() {}
+    /** @access public */
+    protected f = 1;
+}
+";
+    let names = |access: &[Access]| -> Vec<String> {
+        let rules = Rules { access: Some(access.to_vec()), ..Rules::default() };
+        scan(source, SourceType::ts(), &rules).unwrap().into_iter().map(|i| i.name).collect()
+    };
+    assert_eq!(items(source, Scope::Exports).len(), 6, "every level counts without access");
+    assert_eq!(names(&[Access::Public]), ["C", "C.f"]);
+    assert_eq!(names(&[Access::Protected, Access::Package]), ["b", "C.d", "C.e"]);
+    assert_eq!(names(&[Access::Private]), ["a"]);
+}
+
+#[test]
+fn override_members_inherit_their_docs_when_asked() {
+    let source = "
+export class A extends B {
+    override m() {}
+    override p = 1;
+    override accessor q = 1;
+    n() {}
+    /** @inheritDoc */
+    o() {}
+}
+";
+    let documented = |inherit| {
+        let rules = Rules { inherit, require_description: true, ..Rules::default() };
+        scan(source, SourceType::ts(), &rules).unwrap().into_iter().map(|i| i.documented).collect::<Vec<_>>()
+    };
+    assert_eq!(documented(Inherit::Tag), [false, false, false, false, false, true]);
+    assert_eq!(documented(Inherit::Override), [false, true, true, true, false, true]);
+}
+
+#[test]
+fn export_mechanisms_can_be_turned_off_and_globals_on() {
+    let source = "
+export const a = 1;
+const b = 1;
+exports.b = b;
+exports.c = 1;
+window.e = 1;
+const f = 1;
+globalThis.f = f;
+window.g.h = 1;
+self.i = 1;
+";
+    let names = |scope, exports| -> Vec<String> {
+        let rules = Rules { scope, exports, ..Rules::default() };
+        scan(source, SourceType::ts(), &rules).unwrap().into_iter().map(|i| i.name).collect()
+    };
+    let on = Exports::default();
+    assert_eq!(names(Scope::Exports, on), ["a", "b", "c"]);
+    assert_eq!(names(Scope::Exports, Exports { esm: false, ..on }), ["b", "c"]);
+    assert_eq!(names(Scope::Exports, Exports { cjs: false, ..on }), ["a"]);
+    assert_eq!(names(Scope::Exports, Exports { globals: true, ..on }), ["a", "b", "c", "e", "f"]);
+    assert_eq!(names(Scope::All, Exports { esm: false, cjs: false, ..on }), ["a", "b", "c", "f"]);
+    assert_eq!(names(Scope::All, Exports { globals: true, ..on }), ["a", "b", "c", "e", "f"]);
+}
+
+#[test]
+fn deprecated_items_and_generated_files_can_be_left_out() {
+    let source = "/** @deprecated */\nexport const a = 1;\n/** B. */\nexport const b = 1;\n";
+    let names = |source: &str, rules: &Rules| -> Vec<String> {
+        scan(source, SourceType::ts(), rules).unwrap().into_iter().map(|i| i.name).collect()
+    };
+    let deprecated = Rules { ignore_deprecated: true, ..Rules::default() };
+    assert_eq!(names(source, &Rules::default()), ["a", "b"]);
+    assert_eq!(names(source, &deprecated), ["b"]);
+
+    let generated = Rules { skip_generated: true, ..Rules::default() };
+    assert_eq!(names(&format!("/* @generated */\n{source}"), &generated), [""; 0]);
+    assert_eq!(names(&format!("/* @generated */\n{source}"), &Rules::default()).len(), 2);
+    assert_eq!(names(&format!("// header\n// @generated\n{source}"), &generated).len(), 2, "only the first comment");
 }

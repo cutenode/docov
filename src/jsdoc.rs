@@ -8,7 +8,7 @@ use std::{
 use regex::Regex;
 use serde::Deserialize;
 
-use crate::walk::Exclude;
+use crate::{glob::Globs, walk::Exclude};
 
 /// The part of a jsdoc.json docov reads.
 #[derive(Default, Deserialize)]
@@ -89,9 +89,10 @@ pub fn read(path: &Path) -> Result<Sources, String> {
         .filter_map(|p| {
             let path = dir.join(p);
             let name = globset::escape(&path.file_name()?.to_string_lossy());
-            let root = path.parent().expect("a path with a file name is in a folder");
-            Some(Exclude { root: root.to_owned(), globs: vec![format!("/{name}")] })
+            let root = path.parent().expect("a path with a file name is in a folder").to_owned();
+            // A name can still end in a `\`, which escapes nothing.
+            Some(Globs::new(vec![format!("/{name}")]).map(|globs| Exclude { root, globs }).map_err(|e| failed(&e)))
         })
-        .collect();
+        .collect::<Result<_, _>>()?;
     Ok(Sources { paths, exclude, patterns })
 }

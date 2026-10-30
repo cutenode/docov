@@ -2,7 +2,7 @@
 
 use std::{fs, path::Path};
 
-use crate::{Scope, Totals, batch, cache::Cache, config::FILE_NAMES, walk};
+use crate::{Rules, Totals, batch, cache::Cache, config::FILE_NAMES, walk};
 
 /// The `$schema` of this version's docov.json, pinned to its release.
 pub const SCHEMA_URL: &str =
@@ -15,8 +15,9 @@ pub fn init(dir: &Path) -> Result<u8, Vec<String>> {
     if let Some(name) = FILE_NAMES.iter().find(|name| dir.join(name).is_file()) {
         return Err(vec![format!("{name} is already there")]);
     }
-    let files = walk::files(&[dir.to_owned()], &[]).map_err(|e| vec![e.to_string()])?;
-    let files: Vec<_> = files.iter().map(|file| (file.as_path(), Scope::default())).collect();
+    let files = walk::files(&[dir.to_owned()], |_, _| false).map_err(|e| vec![e.to_string()])?;
+    let rules = Rules::default();
+    let files: Vec<_> = files.iter().map(|file| (file.as_path(), &rules)).collect();
     let reports = batch::scan(&files, &Cache::default())?;
     // A percentage, from 0 to 100.
     let threshold = Totals::of(&reports).percent().floor() as u8;

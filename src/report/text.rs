@@ -1,18 +1,43 @@
-use std::io::{self, Write};
+//! `text`, the default: each file's percentage and its undocumented items, then the total.
 
+use crate::report::{Context, Format, Text};
 use crate::{FileReport, Totals};
 
+/// The format.
+pub const FORMAT: Format =
+    Format { name: "text", help: "Each file's percentage, its undocumented items, and the total (the default)", render };
+
 /// One line per file with something to document, then its undocumented items as
-/// `path:line:column`, which terminals and editors open at the spot.
-pub fn write(files: &[FileReport], out: &mut impl Write) -> io::Result<()> {
-    for file in files.iter().filter(|f| !f.items.is_empty()) {
+/// `path:line:column`, which terminals and editors open at the spot. `--omit-covered` leaves out
+/// fully documented files, `--quiet` all of them, `--by-package` adds each package's total, and
+/// `--by-kind` the totals by kind.
+fn render(context: &Context) -> String {
+    let Text { omit_covered, quiet, by_kind } = context.text;
+    let shown = |file: &&FileReport| {
+        let covered = file.counted().all(|i| i.documented);
+        file.counted().next().is_some() && !quiet && !(omit_covered && covered)
+    };
+    let mut out = String::new();
+    for file in context.files.iter().filter(shown) {
         let totals = file.totals();
-        writeln!(out, "{:>6.1}%  {}/{}  {}", totals.percent(), totals.documented, totals.total, file.path.display())?;
-        for item in file.items.iter().filter(|i| !i.documented) {
+        out += &format!("{:>6.1}%  {}/{}  {}\n", totals.percent(), totals.documented, totals.total, file.path.display());
+        for item in file.counted().filter(|i| !i.documented) {
             let (path, kind) = (file.path.display(), item.kind.as_str());
-            writeln!(out, "         {path}:{}:{}  {kind} {}", item.line, item.column, item.name)?;
+            out += &format!("         {path}:{}:{}  {kind} {}\n", item.line, item.column, item.name);
         }
     }
-    let totals = Totals::of(files);
-    writeln!(out, "{:>6.1}%  {}/{}  total", totals.percent(), totals.documented, totals.total)
+    let totals = Totals::of(context.files);
+    out += &format!("{:>6.1}%  {}/{}  total\n", totals.percent(), totals.documented, totals.total);
+    for package in context.packages.into_iter().flatten() {
+        let Totals { documented, total } = package.totals;
+        out += &format!("{:>6.1}%  {documented}/{total}  {} total\n", package.percent, package.path);
+    }
+    if !by_kind {
+        return out;
+    }
+    let kinds: Vec<String> = Totals::by_kind(context.files)
+        .into_iter()
+        .map(|(kind, totals)| format!("{} {}/{}", kind.as_str(), totals.documented, totals.total))
+        .collect();
+    out + &format!("by kind: {}\n", kinds.join(", "))
 }
