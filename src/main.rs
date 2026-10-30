@@ -18,8 +18,8 @@ struct Cli {
     #[arg(long, value_name = "FILE")]
     config: Option<PathBuf>,
     /// How to write the report
-    #[arg(long, value_enum, default_value_t)]
-    format: Format,
+    #[arg(long, value_parser = report::format, default_value = "text", long_help = report::help())]
+    format: &'static Format,
     /// Print the config file's JSON Schema and exit
     #[arg(long, exclusive = true)]
     print_schema: bool,
@@ -62,7 +62,8 @@ fn run(cli: Cli, matches: &clap::ArgMatches) -> Result<bool, Vec<String>> {
     if !errors.is_empty() {
         return Err(errors);
     }
-    report::write(cli.format, &reports, &mut io::stdout().lock()).map_err(|e| vec![e.to_string()])?;
+    report::write(cli.format, &report::Context { files: &reports }, &mut io::stdout().lock())
+        .map_err(|e| vec![e.to_string()])?;
 
     let failures = settings.gates(&reports);
     for failure in &failures {

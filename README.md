@@ -76,7 +76,7 @@ Some things never count: constructors (their class's doc covers them), private m
 
 The toolchain is pinned in `rust-toolchain.toml`, and Node in `.node-version`. The checks need [cargo-nextest](https://nexte.st) and [cargo-llvm-cov](https://github.com/taiki-e/cargo-llvm-cov).
 
-Each flag and docov.json key belongs to a feature, one file in `src/feature/` that implements `Feature`. `build.rs` registers every file there, so a new feature is a new file and nothing else.
+Each flag and docov.json key belongs to a feature, one file in `src/feature/` that implements `Feature`. Each output format is one file in `src/report/` with a `FORMAT` naming it, describing it for `--help`, and rendering it. `build.rs` registers every file in both folders, so a new feature or format is a new file and nothing else.
 
 ```bash
 cargo run -- [PATHS]...   # docov on a project

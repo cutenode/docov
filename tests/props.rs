@@ -2,7 +2,7 @@
 
 use std::{fs, path::Path, path::PathBuf, process::Command};
 
-use docov::{FileReport, Format, Item, Kind, Scope, Totals, collect, config, report, scan, scan_file};
+use docov::{Context, FileReport, Item, Kind, Scope, Totals, collect, config, report, scan, scan_file};
 use hegel::{TestCase, generators as gs};
 use oxc_span::SourceType;
 
@@ -438,6 +438,23 @@ fn thresholds_are_percentages(tc: TestCase) {
     }
 }
 
+/// `--format` takes each format's name, and nothing else, listing the names when it fails. No two
+/// formats share one.
+#[hegel::test(test_cases = 50)]
+fn formats_are_found_by_name(tc: TestCase) {
+    let names: Vec<&str> = report::FORMATS.iter().map(|f| f.name).collect();
+    assert!(names.iter().enumerate().all(|(i, name)| !names[..i].contains(name)), "{names:?}");
+    let name =
+        if tc.draw(gs::booleans()) { tc.draw(gs::sampled_from(names.clone())).to_owned() } else { tc.draw(gs::text()) };
+    match report::format(&name) {
+        Ok(format) => assert_eq!(format.name, name),
+        Err(e) => {
+            assert!(!names.contains(&name.as_str()), "{name}");
+            assert_eq!(e, format!("unknown format `{name}`, expected one of: {}", names.join(", ")));
+        }
+    }
+}
+
 /// Every format reports the same items and totals, and documenting one more item never lowers
 /// coverage.
 #[hegel::test(test_cases = 100)]
@@ -447,25 +464,21 @@ fn formats_agree_on_totals(tc: TestCase) {
     assert!((0.0..=100.0).contains(&totals.percent()));
     assert_eq!(totals.total, files.iter().map(|f| f.items.len()).sum::<usize>());
 
-    let render = |format, files: &[FileReport]| {
-        let mut out = Vec::new();
-        report::write(format, files, &mut out).unwrap();
-        String::from_utf8(out).unwrap()
-    };
+    let render = |name, files: &[FileReport]| report::format(name).unwrap().render(&Context { files });
     // Every format fails when its output doesn't fit where it's going, and only then.
-    for format in [Format::Text, Format::Json, Format::Lcov] {
-        let length = render(format, &files).len();
+    for format in report::FORMATS {
+        let length = format.render(&Context { files: &files }).len();
         let room = tc.draw(gs::integers::<usize>().max_value(length + 1));
-        let result = report::write(format, &files, &mut Room(room));
-        assert_eq!(result.is_err(), room < length, "{format:?} in {room} of {length} bytes");
+        let result = report::write(format, &Context { files: &files }, &mut Room(room));
+        assert_eq!(result.is_err(), room < length, "{} in {room} of {length} bytes", format.name);
     }
-    let json: serde_json::Value = serde_json::from_str(&render(Format::Json, &files)).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&render("json", &files)).unwrap();
     let json_totals = (json["documented"].as_u64(), json["total"].as_u64());
     assert_eq!(json_totals, (Some(totals.documented as u64), Some(totals.total as u64)));
     let kinds = json["files"].as_array().unwrap().iter().flat_map(|f| f["items"].as_array().unwrap());
     assert!(kinds.map(|i| i["kind"].as_str()).eq(files.iter().flat_map(|f| &f.items).map(|i| Some(i.kind.as_str()))));
 
-    let text = render(Format::Text, &files);
+    let text = render("text", &files);
     let last = format!("{:>6.1}%  {}/{}  total\n", totals.percent(), totals.documented, totals.total);
     assert!(text.ends_with(&last), "{text}");
     // Each undocumented item gets a line, with its location, kind and name.
@@ -477,7 +490,7 @@ fn formats_agree_on_totals(tc: TestCase) {
     assert_eq!(listed, wanted);
 
     // lcov counts lines: a line is hit when everything on it is documented.
-    let lcov = render(Format::Lcov, &files);
+    let lcov = render("lcov", &files);
     let sum =
         |prefix: &str| lcov.lines().filter_map(|l| l.strip_prefix(prefix)).map(|n| n.parse::<usize>().unwrap()).sum();
     let mut lines = 0;

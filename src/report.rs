@@ -1,8 +1,5 @@
-//! Writes scan results in each output format, one module per format.
-
-mod json;
-mod lcov;
-mod text;
+//! Output formats. Each lives in its own file in src/report/, which build.rs registers, so adding
+//! one adds a file and no line in a shared list.
 
 use std::io::{self, Write};
 
@@ -10,16 +7,45 @@ use serde::Serialize;
 
 use crate::FileReport;
 
-/// An output format.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
-pub enum Format {
-    /// Each file's percentage, its undocumented items, and the total.
-    #[default]
-    Text,
-    /// Every item, documented or not, with totals.
-    Json,
-    /// A line record for each line with items, for coverage services and editor gutters.
-    Lcov,
+include!(concat!(env!("OUT_DIR"), "/formats.rs"));
+
+/// An output format. Register one by giving its file a `pub const FORMAT: Format`.
+#[derive(Debug)]
+pub struct Format {
+    /// Its `--format` name.
+    pub name: &'static str,
+    /// What it writes, in a line, for `--help`.
+    pub help: &'static str,
+    render: fn(&Context) -> String,
+}
+
+impl Format {
+    /// The report in this format.
+    pub fn render(&self, context: &Context) -> String {
+        (self.render)(context)
+    }
+}
+
+/// The format named `name`. It parses `--format`.
+pub fn format(name: &str) -> Result<&'static Format, String> {
+    FORMATS.iter().find(|format| format.name == name).ok_or_else(|| {
+        let names: Vec<_> = FORMATS.iter().map(|format| format.name).collect();
+        format!("unknown format `{name}`, expected one of: {}", names.join(", "))
+    })
+}
+
+/// `--format`'s help: each format and what it writes.
+pub fn help() -> String {
+    FORMATS.iter().fold("How to write the report\n".into(), |help, format| {
+        help + &format!("\n- {}: {}", format.name, format.help)
+    })
+}
+
+/// What every format reports from.
+#[derive(Clone, Copy, Debug)]
+pub struct Context<'a> {
+    /// Each file's items.
+    pub files: &'a [FileReport],
 }
 
 /// How many items are documented, out of how many.
@@ -46,11 +72,7 @@ impl Totals {
     }
 }
 
-/// Writes `files` to `out` in `format`.
-pub fn write(format: Format, files: &[FileReport], out: &mut impl Write) -> io::Result<()> {
-    match format {
-        Format::Text => text::write(files, out),
-        Format::Json => json::write(files, out),
-        Format::Lcov => lcov::write(files, out),
-    }
+/// Writes the report in `format` to `out`.
+pub fn write(format: &Format, context: &Context, out: &mut impl Write) -> io::Result<()> {
+    out.write_all(format.render(context).as_bytes())
 }

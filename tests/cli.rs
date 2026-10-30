@@ -155,6 +155,10 @@ fn help_describes_docov_and_lists_every_features_flags() {
     for flag in ["--threshold <PERCENT>", "--scope <SCOPE>"] {
         assert!(out.contains(flag), "{flag}: {out}");
     }
+    // Every format, with what it writes.
+    for format in docov::report::FORMATS {
+        assert!(out.contains(&format!("- {}: {}", format.name, format.help)), "{}: {out}", format.name);
+    }
 }
 
 #[test]
