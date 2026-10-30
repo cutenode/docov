@@ -78,7 +78,7 @@ pub struct Subject<'a, 's> {
     /// For a function or method, each parameter's name, or `None` for a destructured one.
     pub params: Option<&'a [Option<&'s str>]>,
     /// What its code says.
-    pub shape: &'a Shape,
+    pub shape: &'a Shape<'s>,
 }
 
 impl Subject<'_, '_> {

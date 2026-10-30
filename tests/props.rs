@@ -2727,3 +2727,53 @@ fn thrown_errors_are_documented(tc: TestCase) {
     let on = [("require-throws", throws_level)];
     assert_eq!(diagnose(&source, &on, Rules::from(Scope::All)), at_level(wanted, throws_on), "{source}");
 }
+
+/// `require-template` finds each type parameter of a function, method, class, interface, interface
+/// method or type alias with no `@template` naming it, where one tag can name several
+/// (`@template T, U`) after a constraint (`@template {string} K`), or with a default
+/// (`@template [T=string]`), unless its block has `@inheritdoc`.
+#[hegel::test(test_cases = 100)]
+fn type_parameters_are_documented(tc: TestCase) {
+    let (template_level, template_on) = level(&tc);
+    let names = ["T", "U", "K"];
+    // Each tag line, and the names it gives.
+    let tags = vec![
+        (" * @template T\n", vec!["T"]),
+        (" * @template T, U Two of them.\n", vec!["T", "U"]),
+        (" * @template T,U\n", vec!["T", "U"]),
+        (" * @template {string} K The key.\n", vec!["K"]),
+        (" * @template [T=string]\n", vec!["T"]),
+        (" * @template\n", vec![]),
+        (" * @inheritDoc\n", names.to_vec()),
+    ];
+    let mut source = String::new();
+    let mut wanted = Vec::new();
+    for owner in ["function", "class", "method", "interface", "signature", "type"] {
+        let mut unique: Vec<&str> = Vec::new();
+        for param in tc.draw(gs::vecs(gs::sampled_from(names.to_vec())).max_size(3)) {
+            if !unique.contains(&param) {
+                unique.push(param);
+            }
+        }
+        let given = tc.draw(gs::vecs(gs::sampled_from(tags.clone())).max_size(2));
+        let generics = if unique.is_empty() { String::new() } else { format!("<{}>", unique.join(", ")) };
+        let block = format!("/**\n * Docs.\n{} */\n", given.iter().map(|(text, _)| *text).collect::<String>());
+        let member = matches!(owner, "method" | "signature");
+        let indented: String = block.lines().map(|l| format!("  {l}\n")).collect();
+        let line = source.matches('\n').count() + 1 + usize::from(member);
+        source += &match owner {
+            "function" => format!("{block}export function f{generics}() {{}}\n"),
+            "class" => format!("{block}export class C{generics} {{}}\n"),
+            "method" => format!("export class D {{\n{indented}  m{generics}() {{}}\n}}\n"),
+            "interface" => format!("{block}export interface I{generics} {{}}\n"),
+            "signature" => format!("export interface J {{\n{indented}  m{generics}(): void;\n}}\n"),
+            _ => format!("{block}export type A{generics} = 1;\n"),
+        };
+        let column = if member { 3 } else { 1 };
+        for param in unique.iter().filter(|p| !given.iter().any(|(_, names)| names.contains(p))) {
+            wanted.push((line, column, "require-template", format!("missing @template for `{param}`")));
+        }
+    }
+    let on = [("require-template", template_level)];
+    assert_eq!(diagnose(&source, &on, Rules::default()), at_level(wanted, template_on), "{source}");
+}

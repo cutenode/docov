@@ -98,6 +98,7 @@ Each finding prints to stderr as `docov: path:line:column: rule-id: message`, an
 - `require-returns`: a function or method whose own body returns a value has `@returns`, unless its return type is `void`, `undefined` or `Promise<void>`.
 - `require-yields`: a generator that yields a value has `@yields`.
 - `require-throws`: an exported function or method with a `throw` of its own (outside a `try` that catches it) has `@throws`.
+- `require-template`: each type parameter of a declaration has a `@template`.
 
 `const f = () => …` is a variable to docov, so the checks on parameters, returns and throws don't look at it.
 

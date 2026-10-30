@@ -320,7 +320,7 @@ struct Found<'s> {
     /// For a function or method, each parameter's name, or `None` for a destructured one.
     params: Option<Vec<Option<&'s str>>>,
     /// What its code says, for the doc checks.
-    shape: Shape,
+    shape: Shape<'s>,
     /// Whether it's documented, for an item whose own rule says: a file's, or a comment's type.
     documented: Option<bool>,
     /// Whether it counts under any scope, as a file's own item and a comment's type do.
@@ -536,7 +536,9 @@ impl<'s> Collector<'s> {
             }
             Declaration::TSInterfaceDeclaration(i) => self.interface(i, site(&i.id)),
             Declaration::TSTypeAliasDeclaration(t) => {
-                let doc = self.push(site(&t.id), t.span.start, t.id.name.to_string(), Kind::Type).doc.clone();
+                let found = self.push(site(&t.id), t.span.start, t.id.name.to_string(), Kind::Type);
+                found.shape = Shape::generic(t.type_parameters.as_deref());
+                let doc = found.doc.clone();
                 if let TSType::TSTypeLiteral(literal) = &t.type_annotation
                     && self.rules.members == Members::All
                 {
@@ -655,7 +657,8 @@ impl<'s> Collector<'s> {
         let class_name = class.id.as_ref().map_or("default", |id| id.name.as_str());
         // Decorators can come before `export`, and a doc before them attaches to the first one.
         let start = class.decorators.first().map_or(class.span.start, |d| d.span.start);
-        self.push(site, start, class_name.to_owned(), Kind::Class);
+        self.push(site, start, class_name.to_owned(), Kind::Class).shape =
+            Shape::generic(class.type_parameters.as_deref());
 
         // A getter and its setter are one property: the getter carries the doc.
         let getters: FxHashSet<String> = class
@@ -728,7 +731,8 @@ impl<'s> Collector<'s> {
 
     fn interface(&mut self, interface: &TSInterfaceDeclaration<'s>, site: Site<'s>) {
         let name = interface.id.name.as_str();
-        self.push(site, interface.span.start, name.to_owned(), Kind::Interface);
+        self.push(site, interface.span.start, name.to_owned(), Kind::Interface).shape =
+            Shape::generic(interface.type_parameters.as_deref());
         self.signatures(&interface.body.body, name, site, None);
     }
 
@@ -736,16 +740,20 @@ impl<'s> Collector<'s> {
     /// which a matching `@property` in `parent` documents too.
     fn signatures(&mut self, signatures: &[TSSignature<'s>], owner: &str, site: Site<'s>, parent: Option<&JSDoc>) {
         for signature in signatures {
-            let (start, key, kind, method_params) = match signature {
+            let (start, key, kind, method) = match signature {
                 TSSignature::TSPropertySignature(p) => {
                     (p.span.start, key_name(self.source, &p.key), Kind::Property, None)
                 }
                 TSSignature::TSMethodSignature(m) => {
-                    (m.span.start, key_name(self.source, &m.key), Kind::Method, Some(params(&m.params)))
+                    (m.span.start, key_name(self.source, &m.key), Kind::Method, Some(m))
                 }
                 _ => continue,
             };
-            self.member(site, start, (owner, &key), kind, parent).params = method_params;
+            let found = self.member(site, start, (owner, &key), kind, parent);
+            found.params = method.map(|m| params(&m.params));
+            found.shape = method.map_or_else(Shape::default, |m| {
+                Shape::function(m.type_parameters.as_deref(), m.return_type.as_deref(), None)
+            });
         }
     }
 

@@ -1,16 +1,18 @@
-//! What a declaration's code says that its JSDoc should say too, for the doc checks: for a
-//! function, whether its own body returns, yields or throws.
+//! What a declaration's code says that its JSDoc should say too, for the doc checks: its type
+//! parameters, and for a function, whether its own body returns, yields or throws.
 
 use oxc_ast::ast::{
     ArrowFunctionExpression, Class, Expression, Function, FunctionBody, ReturnStatement, TSType, TSTypeAnnotation,
-    TSTypeName, ThrowStatement, TryStatement, YieldExpression,
+    TSTypeName, TSTypeParameterDeclaration, ThrowStatement, TryStatement, YieldExpression,
 };
 use oxc_ast_visit::{Visit, walk};
 use oxc_syntax::scope::ScopeFlags;
 
 /// What a declaration's code says that its JSDoc should say too.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Shape {
+pub struct Shape<'s> {
+    /// Its type parameters' names.
+    pub type_params: Vec<&'s str>,
     /// Whether its own body returns a value: `return x;` (not a bare `return;`, `undefined` or
     /// `void x`), or an arrow function's expression body.
     pub returns: bool,
@@ -22,20 +24,31 @@ pub struct Shape {
     pub void: bool,
 }
 
-impl Shape {
-    /// A function's or method's, from its return type and body.
-    fn function(return_type: Option<&TSTypeAnnotation>, body: Option<&FunctionBody>) -> Self {
+impl<'s> Shape<'s> {
+    /// A declaration's, from its type parameters alone.
+    pub(super) fn generic(type_params: Option<&TSTypeParameterDeclaration<'s>>) -> Self {
+        let type_params =
+            type_params.map_or_else(Vec::new, |d| d.params.iter().map(|p| p.name.name.as_str()).collect());
+        Self { type_params, ..Self::default() }
+    }
+
+    /// A function's or method's, or a signature's (with no body).
+    pub(super) fn function(
+        type_params: Option<&TSTypeParameterDeclaration<'s>>,
+        return_type: Option<&TSTypeAnnotation<'s>>,
+        body: Option<&FunctionBody<'s>>,
+    ) -> Self {
         let mut found = Body::default();
         if let Some(body) = body {
             found.visit_function_body(body);
         }
         let void = return_type.is_some_and(|t| nothing(&t.type_annotation));
         let Body { returns, yields, throws, .. } = found;
-        Self { returns, yields, throws, void }
+        Self { returns, yields, throws, void, ..Self::generic(type_params) }
     }
 
     /// A function value's, or nothing for a value that isn't a function.
-    pub(super) fn value(value: &Expression) -> Self {
+    pub(super) fn value(value: &Expression<'s>) -> Self {
         match value {
             Expression::FunctionExpression(f) => Self::of(f),
             Expression::ArrowFunctionExpression(f) => Self::arrow(f),
@@ -44,14 +57,14 @@ impl Shape {
     }
 
     /// A function's.
-    pub(super) fn of(f: &Function) -> Self {
-        Self::function(f.return_type.as_deref(), f.body.as_deref())
+    pub(super) fn of(f: &Function<'s>) -> Self {
+        Self::function(f.type_parameters.as_deref(), f.return_type.as_deref(), f.body.as_deref())
     }
 
-    fn arrow(f: &ArrowFunctionExpression) -> Self {
+    fn arrow(f: &ArrowFunctionExpression<'s>) -> Self {
         let mut found = Body::default();
         found.visit_arrow_function_body(&f.body);
-        let shape = Self::function(f.return_type.as_deref(), None);
+        let shape = Self::function(f.type_parameters.as_deref(), f.return_type.as_deref(), None);
         let returns = found.returns || f.body.as_expression().is_some_and(is_value);
         Self { returns, throws: found.throws, ..shape }
     }

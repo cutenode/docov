@@ -262,6 +262,27 @@
           ],
           "description": "A function or method that returns a value has @returns, unless its return type is void."
         },
+        "require-template": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Level"
+            },
+            {
+              "items": false,
+              "minItems": 1,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Level"
+                },
+                {
+                  "$ref": "#/$defs/NoOptions"
+                }
+              ],
+              "type": "array"
+            }
+          ],
+          "description": "Each type parameter of a declaration has a @template."
+        },
         "require-throws": {
           "anyOf": [
             {
