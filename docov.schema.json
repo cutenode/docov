@@ -1,5 +1,65 @@
 {
   "$defs": {
+    "Kind": {
+      "description": "What kind of declaration an item is.",
+      "oneOf": [
+        {
+          "const": "function",
+          "description": "`function f() {}`, or a function assigned to an export.",
+          "type": "string"
+        },
+        {
+          "const": "class",
+          "description": "`class C {}`, or a class assigned to an export.",
+          "type": "string"
+        },
+        {
+          "const": "method",
+          "description": "A class method or an interface method signature.",
+          "type": "string"
+        },
+        {
+          "const": "accessor",
+          "description": "A getter (with its setter, if any), a lone setter, or an `accessor` property.",
+          "type": "string"
+        },
+        {
+          "const": "property",
+          "description": "A class field or an interface property signature.",
+          "type": "string"
+        },
+        {
+          "const": "variable",
+          "description": "`const`, `let` or `var`, or another value CommonJS exports by name.",
+          "type": "string"
+        },
+        {
+          "const": "interface",
+          "description": "`interface I {}`.",
+          "type": "string"
+        },
+        {
+          "const": "type",
+          "description": "`type T = …`.",
+          "type": "string"
+        },
+        {
+          "const": "enum",
+          "description": "`enum E {}`.",
+          "type": "string"
+        },
+        {
+          "const": "namespace",
+          "description": "`namespace N {}`.",
+          "type": "string"
+        },
+        {
+          "const": "default",
+          "description": "`export default` or `module.exports =` of an expression.",
+          "type": "string"
+        }
+      ]
+    },
     "Scope": {
       "description": "Which declarations count toward coverage.",
       "oneOf": [
@@ -45,6 +105,17 @@
         "type": "string"
       },
       "type": "array"
+    },
+    "kinds": {
+      "default": null,
+      "description": "Count only these kinds of item. Every kind counts without it.",
+      "items": {
+        "$ref": "#/$defs/Kind"
+      },
+      "type": [
+        "array",
+        "null"
+      ]
     },
     "paths": {
       "default": [],

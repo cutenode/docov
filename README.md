@@ -55,6 +55,8 @@ Some things never count: constructors (their class's doc covers them), private m
 
 `--scope all` counts every module-level declaration, exported or not.
 
+`--kind function,class` (or `"kinds": ["function", "class"]`) counts only those kinds of item, named as the reports name them: `function`, `class`, `method`, `accessor`, `property`, `variable`, `interface`, `type`, `enum`, `namespace` and `default`. `--by-kind` adds a line of totals by kind after the text report's total, and the JSON report always has them, under `kinds`.
+
 ### docov.json
 
 `docov.json` (or `docov.jsonc`, or `.docovrc`) holds the same settings. Flags win over it. docov reads the one in the folder it runs from, or else the nearest folder above that has one, so it finds the project's config from a subfolder too. In one folder, `docov.json` comes first and `.docovrc` last. `--config FILE` names one instead.
@@ -77,7 +79,7 @@ Some things never count: constructors (their class's doc covers them), private m
 ### Formats
 
 - `text` (the default): each file's percentage and its undocumented items, then the total.
-- `json`: every item, documented or not, with its kind, line and column, and totals per file and overall.
+- `json`: every item, documented or not, with its kind, line and column, and totals per file, per kind and overall.
 - `lcov`: a line record for each line with items on it, hit when all of them are documented. Coverage services and editor gutters read it.
 
 ## Working on it

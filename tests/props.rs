@@ -2,7 +2,7 @@
 
 use std::{fs, path::Path, path::PathBuf, process::Command};
 
-use docov::feature::{Feature, add_ignore::AddIgnore, report_unused_ignores::ReportUnusedIgnores};
+use docov::feature::{Feature, add_ignore::AddIgnore, kinds::Kinds, report_unused_ignores::ReportUnusedIgnores};
 use docov::{
     FileReport, Format, Item, Kind, Rules, Scope, Totals, collect, collect::Ignore, config, feature, report, rewrite,
     scan, scan_file,
@@ -61,6 +61,9 @@ impl Expected {
         }
         let tags = self.doc.map_or(&[][..], |b| b.tags);
         if tags.iter().any(|tag| rules.exclude_tags.iter().any(|t| t == tag)) {
+            return None;
+        }
+        if rules.kinds.as_ref().is_some_and(|kinds| !kinds.contains(&self.item.kind)) {
             return None;
         }
         let described = |b: Block| if self.item.kind == Kind::Class { b.class_described } else { b.described };
@@ -476,6 +479,7 @@ fn rules_decide_what_counts_and_what_is_documented(tc: TestCase) {
             .into_iter()
             .map(String::from)
             .collect(),
+        kinds: tc.draw(gs::optional(gs::vecs(gs::sampled_from(ALL_KINDS.to_vec())).max_size(4))),
     };
     let items = scan(&source, SourceType::ts(), &rules).unwrap();
     assert_eq!(items, expected.iter().filter_map(|e| e.by(&rules)).collect::<Vec<_>>(), "{source}");
@@ -702,6 +706,43 @@ fn unused_ignores_fail_the_scan(tc: TestCase) {
     assert_eq!(ReportUnusedIgnores(false).gate(&files), None);
     let gate = ReportUnusedIgnores(true).gate(&files);
     assert_eq!(gate, (!wanted.is_empty()).then(|| wanted.join("\n")));
+}
+
+/// The totals by kind add up to the total, one per kind there is, in order. The JSON report has
+/// them, and with `--by-kind` the text report gets a line of them.
+#[hegel::test(test_cases = 100)]
+fn totals_by_kind_add_up(tc: TestCase) {
+    let files = reports(&tc, true);
+    let kinds = Totals::by_kind(&files);
+    let sum = kinds.iter().fold(Totals::default(), |a, (_, b)| Totals {
+        documented: a.documented + b.documented,
+        total: a.total + b.total,
+    });
+    assert_eq!(sum, Totals::of(&files));
+    assert!(kinds.windows(2).all(|pair| pair[0].0 < pair[1].0));
+    assert!(kinds.iter().all(|(_, totals)| totals.total > 0));
+
+    let json: serde_json::Value = serde_json::from_str(&render(Format::Json, &files)).unwrap();
+    let by_kind = json["kinds"].as_object().unwrap();
+    assert_eq!(by_kind.len(), kinds.len());
+    for (kind, totals) in &kinds {
+        let shown = &by_kind[kind.as_str()];
+        assert_eq!(
+            (shown["documented"].as_u64(), shown["total"].as_u64()),
+            (Some(totals.documented as u64), Some(totals.total as u64))
+        );
+        assert_eq!(shown["percent"].as_f64(), Some(totals.percent()));
+    }
+
+    let append = |by_kind: bool, format| {
+        let mut out = Vec::new();
+        Kinds { only: None, by_kind }.append(format, &files, &mut out).unwrap();
+        String::from_utf8(out).unwrap()
+    };
+    let line: Vec<String> = kinds.iter().map(|(k, t)| format!("{} {}/{}", k.as_str(), t.documented, t.total)).collect();
+    assert_eq!(append(true, Format::Text), format!("by kind: {}\n", line.join(", ")));
+    assert_eq!(append(false, Format::Text), "");
+    assert_eq!(append(true, Format::Json), "");
 }
 
 fn write(dir: &Path, path: &str, text: &str) {
@@ -1101,8 +1142,19 @@ fn rules_come_from_flags_over_the_config(tc: TestCase) {
         tags.iter().flat_map(|tag| ["--exclude-tag".to_owned(), tag.clone()]).collect()
     });
 
+    let kind_lists = vec![vec![Kind::Function], vec![Kind::Class, Kind::Method]];
+    let kinds = run.set(&tc, "kinds", kind_lists, |kinds| {
+        vec!["--kind".into(), kinds.iter().map(|k| k.as_str()).collect::<Vec<_>>().join(",")]
+    });
+    let by_kind = tc.draw(gs::booleans());
+    if by_kind {
+        run.args.push("--by-kind".into());
+    }
+
     let settings = run.settings(dir.path());
     let rules = settings.rules();
+    assert_eq!(settings.get::<Kinds>().by_kind, by_kind);
+    assert_eq!(rules.kinds, kinds);
     assert_eq!(*settings.get::<Scope>(), scope.unwrap_or_default());
     assert_eq!(rules.scope, scope.unwrap_or_default());
     assert_eq!(rules.require_description, require_description, "{:?}", run.args);
