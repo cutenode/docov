@@ -66,6 +66,14 @@ Some things never count: constructors (their class's doc covers them), private m
 
 `threshold` can also be an object of thresholds by path, such as `{ "global": 80, "perFile": 50, "src/api/**": 100 }`. `global` is for every file together (`--threshold` sets it), `perFile` for each file on its own, and any other key is a gitignore-style glob, relative to the config's folder, for the files it matches together. A negative number is the most undocumented items that pass instead of a percentage, as in [Jest](https://jestjs.io/docs/configuration#coveragethreshold-object): `-10` allows 10. Each threshold that fails prints its own line.
 
+`overrides` changes settings for some paths: each has `files` (gitignore-style globs) and any of `exclude` and `threshold`, which replace the top-level ones for those files. For each file and setting, the last override that matches the file and has the setting wins. The top-level thresholds then cover only the files no override has a threshold for. As in .gitignore, a file in a folder that's left out stays out.
+
+```jsonc
+"overrides": [
+  { "files": ["src/legacy/"], "exclude": [], "threshold": 20 },
+]
+```
+
 [`docov.schema.json`](docov.schema.json) is its JSON Schema, which editors use for completion and checking. The URL above is pinned to a release so it matches the docov you have; `docov --print-schema > docov.schema.json` writes your own copy to point at instead.
 
 ### Formats

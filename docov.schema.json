@@ -1,5 +1,105 @@
 {
   "$defs": {
+    "Override": {
+      "additionalProperties": false,
+      "description": "Settings for the files some globs match, in place of the top-level ones.",
+      "properties": {
+        "exclude": {
+          "description": "In place of the top-level `exclude`, for these files.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "files": {
+          "description": "Gitignore-style globs of the files it's for, relative to this file's folder.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "threshold": {
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "anyOf": [
+                    {
+                      "maximum": 100,
+                      "minimum": 0,
+                      "type": "number"
+                    },
+                    {
+                      "maximum": -1,
+                      "type": "integer"
+                    }
+                  ],
+                  "description": "A documented percentage from 0 to 100, or a negative whole number for at most that many undocumented items."
+                },
+                {
+                  "additionalProperties": {
+                    "anyOf": [
+                      {
+                        "maximum": 100,
+                        "minimum": 0,
+                        "type": "number"
+                      },
+                      {
+                        "maximum": -1,
+                        "type": "integer"
+                      }
+                    ],
+                    "description": "For the files a gitignore-style glob matches, relative to this file's folder, together."
+                  },
+                  "properties": {
+                    "global": {
+                      "anyOf": [
+                        {
+                          "maximum": 100,
+                          "minimum": 0,
+                          "type": "number"
+                        },
+                        {
+                          "maximum": -1,
+                          "type": "integer"
+                        }
+                      ],
+                      "description": "For every file together."
+                    },
+                    "perFile": {
+                      "anyOf": [
+                        {
+                          "maximum": 100,
+                          "minimum": 0,
+                          "type": "number"
+                        },
+                        {
+                          "maximum": -1,
+                          "type": "integer"
+                        }
+                      ],
+                      "description": "For each file on its own."
+                    }
+                  },
+                  "type": "object"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "In place of the top-level `threshold`, for these files."
+        }
+      },
+      "required": [
+        "files"
+      ],
+      "type": "object"
+    },
     "Scope": {
       "description": "Which declarations count toward coverage.",
       "oneOf": [
@@ -35,6 +135,13 @@
       "description": "Gitignore-style globs of files to leave out, relative to this file's folder, on top of .gitignore.",
       "items": {
         "type": "string"
+      },
+      "type": "array"
+    },
+    "overrides": {
+      "description": "Settings for the files globs match, in place of the top-level ones. For each file and setting, the last override that matches it and has the setting wins.",
+      "items": {
+        "$ref": "#/$defs/Override"
       },
       "type": "array"
     },

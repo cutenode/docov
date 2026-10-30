@@ -3,7 +3,14 @@
 use std::{io, path::PathBuf, process::ExitCode};
 
 use clap::{CommandFactory, FromArgMatches, Parser};
-use docov::{Config, Format, Scope, Settings, feature, report, root::Root, scan_file, walk};
+use docov::{
+    Config, Format, Scope, Settings,
+    feature::{self, overrides::Overrides},
+    glob::Globs,
+    report,
+    root::Root,
+    scan_file, walk,
+};
 use rayon::{iter::Either, prelude::*};
 
 /// Checks how much of a JavaScript or TypeScript project's API has JSDoc.
@@ -54,7 +61,10 @@ fn run(cli: Cli, matches: &clap::ArgMatches) -> Result<bool, Vec<String>> {
     let paths = if cli.paths.is_empty() { config_paths.collect() } else { cli.paths };
     let scope = *settings.get::<Scope>();
 
-    let files = walk::files(&paths, &config.dir, &config.exclude).map_err(|e| vec![e.to_string()])?;
+    let root = Root::new(&config.dir);
+    let exclude = Globs::new(std::mem::take(&mut config.exclude)).map_err(|e| vec![e.to_string()])?;
+    let excluded = settings.get::<Overrides>().clone().excluder(exclude, root.clone());
+    let files = walk::files(&paths, excluded).map_err(|e| vec![e.to_string()])?;
     let (reports, errors): (Vec<_>, Vec<_>) = files.par_iter().partition_map(|path| match scan_file(path, scope) {
         Ok(report) => Either::Left(report),
         Err(e) => Either::Right(e.to_string()),
@@ -64,7 +74,7 @@ fn run(cli: Cli, matches: &clap::ArgMatches) -> Result<bool, Vec<String>> {
     }
     report::write(cli.format, &reports, &mut io::stdout().lock()).map_err(|e| vec![e.to_string()])?;
 
-    let failures = settings.gates(&reports, &Root::new(&config.dir));
+    let failures = settings.gates(&reports, &root);
     for failure in &failures {
         eprintln!("docov: {failure}");
     }

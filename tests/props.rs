@@ -773,6 +773,17 @@ fn malformed_configs_fail_to_load_where_they_break(tc: TestCase) {
         (r#"{ "paths": 1 }"#, "invalid type: integer `1`, expected a sequence", 12),
         (r#"{ "scope": "some" }"#, "unknown variant `some`, expected `exports` or `all`", 17),
         (r#"{ "threshold": { "global": "80" } }"#, "invalid type: string \"80\", expected f64", 31),
+        (
+            r#"{ "overrides": [{ "files": ["a"], "scope": "all" }] }"#,
+            "unknown field `scope`, expected one of `files`, `exclude`, `threshold`",
+            41,
+        ),
+        (r#"{ "overrides": [{ "exclude": [] }] }"#, "missing field `files`", 33),
+        (
+            r#"{ "overrides": [{ "files": ["[z"] }] }"#,
+            "error parsing glob '[z': unclosed character class; missing ']'",
+            35,
+        ),
         (r#"{ "threshold": true }"#, "invalid type: boolean `true`, expected a number, or an object of them", 19),
         (r#"{ "threshold": -0.5 }"#, "expected a number from 0 to 100, or a negative whole number", 19),
         (r#"{ "threshold": { "perFile": 101 } }"#, "expected a number from 0 to 100, or a negative whole number", 33),
@@ -880,47 +891,158 @@ type Matches = fn(usize) -> bool;
 const GLOBS: [(&str, Matches); 5] =
     [("f0.ts", |i| i == 0), ("f[01].ts", |i| i < 2), ("*.ts", |_| true), ("/f3*", |i| i == 3), ("nothing/", |_| false)];
 
+/// Drawn thresholds: global, per file, and by glob (an index into [`GLOBS`]).
+struct Drawn {
+    global: Option<i64>,
+    per_file: Option<i64>,
+    globs: Vec<(usize, i64)>,
+}
+
+impl Drawn {
+    fn draw(tc: &TestCase) -> Self {
+        let global = tc.draw(gs::optional(gs::just(()))).map(|()| limit(tc));
+        let per_file = tc.draw(gs::optional(gs::just(()))).map(|()| limit(tc));
+        let globs = tc.draw(gs::vecs(gs::integers::<usize>().max_value(GLOBS.len() - 1)).max_size(3).unique(true));
+        Self { global, per_file, globs: globs.into_iter().map(|g| (g, limit(tc))).collect() }
+    }
+
+    /// As docov.json has it, written by hand: serde_json's maps sort their keys, and the globs'
+    /// order is the file's. Numbers are sometimes floats, which JSON readers see apart from
+    /// integers, and a lone global threshold is sometimes a plain number.
+    fn json(&self, tc: &TestCase) -> String {
+        let number = |n: i64| if tc.draw(gs::booleans()) { format!("{n}.0") } else { n.to_string() };
+        let mut entries: Vec<String> = Vec::new();
+        entries.extend(self.global.map(|g| format!(r#""global": {}"#, number(g))));
+        entries.extend(self.per_file.map(|p| format!(r#""perFile": {}"#, number(p))));
+        entries.extend(self.globs.iter().map(|(g, l)| format!("{}: {}", serde_json::json!(GLOBS[*g].0), number(*l))));
+        match self.global {
+            Some(g) if entries.len() == 1 && tc.draw(gs::booleans()) => number(g),
+            _ => format!("{{ {} }}", entries.join(", ")),
+        }
+    }
+
+    /// Why the `members` of `files` fail them, as the model has it, naming the group `name`.
+    fn fails(&self, files: &[FileReport], members: &[usize], name: Option<&str>) -> Vec<String> {
+        let sum = |matched: &dyn Fn(usize) -> bool| -> Totals {
+            members.iter().filter(|i| matched(**i)).map(|i| files[*i].totals()).sum()
+        };
+        let mut wanted = Vec::new();
+        let global = self.global.and_then(|g| fails(g, sum(&|_| true), "threshold"));
+        wanted.extend(global.map(|m| name.map_or(m.clone(), |name| format!("{name}: {m}"))));
+        for i in self.per_file.iter().flat_map(|_| members) {
+            let failure = fails(self.per_file.unwrap(), files[*i].totals(), "per-file threshold");
+            wanted.extend(failure.map(|m| format!("{}: {m}", files[*i].path.display())));
+        }
+        for (g, l) in &self.globs {
+            wanted.extend(fails(*l, sum(&GLOBS[*g].1), "threshold").map(|m| format!("{}: {m}", GLOBS[*g].0)));
+        }
+        wanted
+    }
+}
+
 /// Thresholds by file and by glob, overall or a most undocumented items: each fails on its own
 /// line exactly when the files it covers don't meet it, the global one first, then each file's,
-/// then each glob's. `--threshold` replaces the global one.
+/// then each glob's. `--threshold` replaces the global one. An override's thresholds are for the
+/// files it's the last override with a threshold for, and the top-level ones for the rest.
 #[hegel::test(test_cases = 100)]
 fn thresholds_fail_by_file_and_glob(tc: TestCase) {
     let dir = tempfile::tempdir().unwrap();
     let files = reports(&tc);
-    let sum = |matched: &dyn Fn(usize) -> bool| -> Totals {
-        files.iter().enumerate().filter(|(i, _)| matched(*i)).map(|(_, f)| f.totals()).sum()
-    };
-    let global = tc.draw(gs::optional(gs::just(()))).map(|()| limit(&tc));
-    let per_file = tc.draw(gs::optional(gs::just(()))).map(|()| limit(&tc));
-    let globs: Vec<_> = tc.draw(gs::vecs(gs::integers::<usize>().max_value(GLOBS.len() - 1)).max_size(3).unique(true));
-    let globs: Vec<_> = globs.into_iter().map(|g| (GLOBS[g], limit(&tc))).collect();
+    let mut top = Drawn::draw(&tc);
+    let overrides: Vec<(usize, Option<Drawn>)> = (0..tc.draw(gs::integers::<usize>().max_value(2)))
+        .map(|_| {
+            (
+                tc.draw(gs::integers::<usize>().max_value(GLOBS.len() - 1)),
+                tc.draw(gs::optional(gs::just(()))).map(|()| Drawn::draw(&tc)),
+            )
+        })
+        .collect();
     let flag = tc.draw(gs::optional(gs::integers::<u8>().max_value(100)));
 
-    // Written by hand: serde_json's maps sort their keys, and the globs' order is the file's.
-    // Sometimes as a float, which JSON readers see apart from an integer.
-    let number = |n: i64| if tc.draw(gs::booleans()) { format!("{n}.0") } else { n.to_string() };
-    let mut entries: Vec<String> = Vec::new();
-    entries.extend(global.map(|g| format!(r#""global": {}"#, number(g))));
-    entries.extend(per_file.map(|p| format!(r#""perFile": {}"#, number(p))));
-    entries.extend(globs.iter().map(|((glob, _), l)| format!("{}: {}", serde_json::json!(glob), number(*l))));
-    // A lone global threshold can be a plain number.
-    let threshold = match global {
-        Some(g) if entries.len() == 1 && tc.draw(gs::booleans()) => number(g),
-        _ => format!("{{ {} }}", entries.join(", ")),
-    };
+    let overrides_json: Vec<String> = overrides
+        .iter()
+        .map(|(files, t)| {
+            let threshold = t.as_ref().map(|t| format!(r#", "threshold": {}"#, t.json(&tc))).unwrap_or_default();
+            format!(r#"{{ "files": [{}]{threshold} }}"#, serde_json::json!(GLOBS[*files].0))
+        })
+        .collect();
+    let config = format!(r#"{{ "threshold": {}, "overrides": [{}] }}"#, top.json(&tc), overrides_json.join(", "));
     let args: Vec<String> = flag.map(|f| vec!["--threshold".into(), f.to_string()]).unwrap_or_default();
-    let settings = settings(dir.path(), &format!(r#"{{ "threshold": {threshold} }}"#), &args);
+    let settings = settings(dir.path(), &config, &args);
 
-    let mut wanted = Vec::new();
-    let global = flag.map(i64::from).or(global);
-    wanted.extend(global.and_then(|g| fails(g, sum(&|_| true), "threshold")));
-    for file in per_file.iter().flat_map(|p| files.iter().map(move |f| (p, f))) {
-        wanted.extend(
-            fails(*file.0, file.1.totals(), "per-file threshold").map(|m| format!("{}: {m}", file.1.path.display())),
-        );
+    top.global = flag.map(i64::from).or(top.global);
+    let owner = |i: usize| overrides.iter().rposition(|(files, t)| t.is_some() && GLOBS[*files].1(i));
+    let members = |o: Option<usize>| (0..files.len()).filter(|i| owner(*i) == o).collect::<Vec<_>>();
+    let mut wanted = top.fails(&files, &members(None), None);
+    for (o, (globs, t)) in overrides.iter().enumerate() {
+        wanted.extend(t.iter().flat_map(|t| t.fails(&files, &members(Some(o)), Some(GLOBS[*globs].0))));
     }
-    for ((glob, matched), l) in &globs {
-        wanted.extend(fails(*l, sum(matched), "threshold").map(|m| format!("{glob}: {m}")));
+    assert_eq!(settings.gates(&files, &docov::root::Root::new(Path::new(""))), wanted, "{config}");
+}
+
+/// Whether a glob matches a path, a folder when the flag says so.
+type MatchesPath = fn(&str, bool) -> bool;
+
+/// Globs the walk's excludes and overrides can have, and which paths each matches (a folder when
+/// the flag says so), as gitignore has it.
+const WALK_GLOBS: [(&str, MatchesPath); 7] = [
+    ("*.js", |p, _| p.ends_with(".js")),
+    ("*.ts", |p, _| p.ends_with(".ts")),
+    ("a", |p, _| p == "a"),
+    ("a/**", |p, _| p.starts_with("a/")),
+    ("a/b/", |p, dir| dir && p == "a/b"),
+    ("a/b/**", |p, _| p.starts_with("a/b/")),
+    ("c/x.ts", |p, _| p == "c/x.ts"),
+];
+
+/// The walk leaves out what the top-level `exclude` does, except where the last override for a
+/// file or folder with an `exclude` of its own says otherwise, and never goes into a folder it
+/// leaves out.
+#[hegel::test(test_cases = 100)]
+fn overrides_exclude_by_the_last_match(tc: TestCase) {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = ["a/x.ts", "a/y.js", "a/b/x.ts", "a/b/y.js", "c/x.ts", "c/y.js", "x.ts", "y.js"];
+    for path in paths {
+        write(dir.path(), path, "");
     }
-    assert_eq!(settings.gates(&files, &docov::root::Root::new(Path::new(""))), wanted);
+    let globs = |tc: &TestCase| tc.draw(gs::vecs(gs::integers::<usize>().max_value(WALK_GLOBS.len() - 1)).max_size(2));
+    let exclude = globs(&tc);
+    let overrides: Vec<(Vec<usize>, Option<Vec<usize>>)> = (0..tc.draw(gs::integers::<usize>().max_value(3)))
+        .map(|_| (globs(&tc), tc.draw(gs::optional(gs::just(()))).map(|()| globs(&tc))))
+        .collect();
+
+    let text = |globs: &[usize]| globs.iter().map(|&g| WALK_GLOBS[g].0.to_owned()).collect::<Vec<_>>();
+    let json = serde_json::json!({
+        "overrides": overrides.iter().map(|(files, exclude)| match exclude {
+            Some(exclude) => serde_json::json!({ "files": text(files), "exclude": text(exclude) }),
+            None => serde_json::json!({ "files": text(files) }),
+        }).collect::<Vec<_>>(),
+    });
+    let settings = settings(dir.path(), &json.to_string(), &[]);
+    let root = docov::root::Root::new(dir.path());
+    let overrides_setting = settings.get::<docov::feature::overrides::Overrides>().clone();
+    let excluder = overrides_setting.excluder(docov::glob::Globs::new(text(&exclude)).unwrap(), root);
+    let found = docov::walk::files(&[dir.path().to_path_buf()], excluder).unwrap();
+    let found: Vec<String> =
+        found.iter().map(|p| p.strip_prefix(dir.path()).unwrap().to_str().unwrap().replace('\\', "/")).collect();
+
+    let matches = |globs: &[usize], path: &str, is_dir: bool| globs.iter().any(|&g| WALK_GLOBS[g].1(path, is_dir));
+    // An override is for a path when its globs match the path or a folder it's in.
+    let contain = |globs: &[usize], path: &str, is_dir: bool| {
+        matches(globs, path, is_dir) || path.match_indices('/').any(|(i, _)| matches(globs, &path[..i], true))
+    };
+    let excluded = |path: &str, is_dir: bool| {
+        let own = overrides.iter().rev().find_map(|(files, e)| e.as_ref().filter(|_| contain(files, path, is_dir)));
+        matches(own.unwrap_or(&exclude), path, is_dir)
+    };
+    let mut wanted: Vec<String> = paths
+        .iter()
+        .filter(|path| {
+            let folders = path.match_indices('/').map(|(i, _)| &path[..i]);
+            !folders.into_iter().any(|f| excluded(f, true)) && !excluded(path, false)
+        })
+        .map(|p| (*p).to_owned())
+        .collect();
+    wanted.sort();
+    assert_eq!(found, wanted, "{json} {exclude:?}");
 }

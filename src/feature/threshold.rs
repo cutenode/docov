@@ -12,7 +12,7 @@ use serde::{
 
 use crate::{
     FileReport, Totals, config,
-    feature::{Entry, Feature, Run},
+    feature::{Entry, Feature, Run, overrides::Overrides},
     glob::Globs,
     root::Root,
 };
@@ -72,11 +72,17 @@ pub struct Thresholds {
 }
 
 impl Thresholds {
-    /// Why `reports` don't meet them, a line for each failure.
-    pub fn check(&self, reports: &[&FileReport], root: &Root) -> Vec<String> {
+    /// Why `reports` don't meet them, a line for each failure. `name` names the group in the
+    /// global threshold's line.
+    pub fn check(&self, name: Option<&Globs>, reports: &[&FileReport], root: &Root) -> Vec<String> {
         let mut failures = Vec::new();
         let all = reports.iter().map(|r| r.totals()).sum();
-        failures.extend(self.global.and_then(|limit| limit.check(all, "threshold")));
+        if let Some(failure) = self.global.and_then(|limit| limit.check(all, "threshold")) {
+            failures.push(match name {
+                Some(name) => format!("{name}: {failure}"),
+                None => failure,
+            });
+        }
         if let Some(limit) = self.per_file {
             for report in reports {
                 if let Some(failure) = limit.check(report.totals(), "per-file threshold") {
@@ -85,7 +91,7 @@ impl Thresholds {
             }
         }
         for (globs, limit) in &self.paths {
-            let matched = reports.iter().filter(|r| globs.contain(&root.relative(&r.path))).map(|r| r.totals()).sum();
+            let matched = reports.iter().filter(|r| globs.contain(&root.relative(&r.path), false)).map(|r| r.totals()).sum();
             if let Some(failure) = limit.check(matched, "threshold") {
                 failures.push(format!("{globs}: {failure}"));
             }
@@ -214,7 +220,19 @@ impl Feature for Threshold {
         Self(thresholds)
     }
 
+    /// The top-level thresholds are for the files no override has a threshold for, and each
+    /// override's for the files it's the last one with a threshold for.
     fn gate(&self, run: &Run) -> Vec<String> {
-        self.0.check(&run.reports.iter().collect::<Vec<_>>(), run.root)
+        let overrides = run.settings.get::<Overrides>();
+        let mut groups: Vec<Vec<&FileReport>> = vec![Vec::new(); overrides.0.len() + 1];
+        for report in run.reports {
+            let owner = overrides.last(&run.root.relative(&report.path), false, |o| o.threshold.as_ref());
+            groups[owner.map_or(0, |(i, _)| i + 1)].push(report);
+        }
+        let mut failures = self.0.check(None, &groups[0], run.root);
+        for (o, group) in overrides.0.iter().zip(&groups[1..]) {
+            failures.extend(o.threshold.iter().flat_map(|t| t.check(Some(&o.files), group, run.root)));
+        }
+        failures
     }
 }

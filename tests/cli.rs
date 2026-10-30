@@ -229,3 +229,36 @@ fn thresholds_by_file_and_glob_each_fail_on_their_own_line() {
         assert!(err.contains(message), "{text}: {err}");
     }
 }
+
+#[test]
+fn overrides_change_exclude_and_threshold_for_their_files() {
+    let dir = project();
+    fs::create_dir_all(dir.path().join("src/legacy")).unwrap();
+    fs::write(dir.path().join("src/legacy/old.ts"), "export const o = 1;\nexport const p = 2;\n").unwrap();
+    fs::write(dir.path().join("src/legacy/old.test.ts"), "export const t = 1;\n").unwrap();
+    let config = r#"{
+        "exclude": ["*.test.ts", "src/c.js"],
+        "threshold": 60,
+        "overrides": [
+            { "files": ["src/legacy/"], "exclude": [], "threshold": 50 },
+            { "files": ["src/legacy/old.ts"], "threshold": { "perFile": 10 } }
+        ]
+    }"#;
+    fs::write(dir.path().join("docov.json"), config).unwrap();
+    let (code, out, err) = docov(dir.path(), &["--format", "json"]);
+    let json: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let paths: Vec<_> =
+        json["files"].as_array().unwrap().iter().map(|f| f["path"].as_str().unwrap().replace('\\', "/")).collect();
+    // The legacy folder keeps its test file, and old.ts has the last override's threshold.
+    assert_eq!(paths, ["src/a.ts", "src/legacy/old.test.ts", "src/legacy/old.ts"]);
+    let old = Path::new("src").join("legacy").join("old.ts").display().to_string();
+    let wanted = format!(
+        "docov: 50.0% documented, under the 60% threshold\ndocov: src/legacy/: 0.0% documented, under the 50% threshold\ndocov: {old}: 0.0% documented, under the 10% per-file threshold\n"
+    );
+    assert_eq!((code, err), (1, wanted));
+
+    fs::write(dir.path().join("docov.json"), r#"{ "overrides": [{ "files": ["src"], "scope": "all" }] }"#).unwrap();
+    let (code, _, err) = docov(dir.path(), &[]);
+    assert_eq!(code, 2);
+    assert!(err.contains("unknown field `scope`, expected one of `files`, `exclude`, `threshold`"), "{err}");
+}
