@@ -195,3 +195,17 @@ fn require_description_comes_from_the_flag_or_the_config() {
     fs::write(dir.path().join("docov.json"), r#"{ "requireDescription": true }"#).unwrap();
     assert_eq!(total(&[]), "  50.0%  1/2  total");
 }
+
+#[test]
+fn excluded_tags_come_from_the_flags_or_the_config() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = "/** @internal */\nexport const a = 1;\n/** @hidden */\nexport const b = 1;\nexport const c = 1;\n";
+    fs::write(dir.path().join("a.ts"), source).unwrap();
+    let total = |args: &[&str]| docov(dir.path(), args).1.lines().last().unwrap().to_owned();
+    assert_eq!(total(&[]), "  66.7%  2/3  total");
+    assert_eq!(total(&["--exclude-tag", "internal", "--exclude-tag", "hidden"]), "   0.0%  0/1  total");
+    fs::write(dir.path().join("docov.json"), r#"{ "excludeTags": ["internal"] }"#).unwrap();
+    assert_eq!(total(&[]), "  50.0%  1/2  total");
+    // The flags win over the key.
+    assert_eq!(total(&["--exclude-tag", "hidden"]), "  50.0%  1/2  total");
+}

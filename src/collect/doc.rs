@@ -16,3 +16,8 @@ pub(super) fn describes(doc: &JSDoc, kind: Kind) -> bool {
             name.eq_ignore_ascii_case("inheritdoc") || (describing && !tag.comment().parsed().is_empty())
         })
 }
+
+/// Whether `doc` has the tag `name` (without its `@`).
+pub(super) fn has_tag(doc: &JSDoc, name: &str) -> bool {
+    doc.tags().iter().any(|tag| tag.kind.parsed() == name)
+}

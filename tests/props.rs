@@ -32,6 +32,10 @@ impl Expected {
         if rules.scope == Scope::Exports && !self.exported {
             return None;
         }
+        let tags = self.doc.map_or(&[][..], |b| b.tags);
+        if tags.iter().any(|tag| rules.exclude_tags.iter().any(|t| t == tag)) {
+            return None;
+        }
         let described = |b: Block| if self.item.kind == Kind::Class { b.class_described } else { b.described };
         let documented = self.doc.is_some_and(|b| !rules.require_description || described(b));
         Some(Item { documented, ..self.item.clone() })
@@ -46,26 +50,32 @@ struct Block {
     described: bool,
     /// Whether it describes a class, which `@classdesc` does too.
     class_described: bool,
+    /// Its tags' names.
+    tags: &'static [&'static str],
 }
 
-const fn block(text: &'static str, described: bool, class_described: bool) -> Block {
-    Block { text, described, class_described }
+const fn block(text: &'static str, described: bool, class_described: bool, tags: &'static [&'static str]) -> Block {
+    Block { text, described, class_described, tags }
 }
 
-const BLOCKS: [Block; 12] = [
-    block("/** Docs. */", true, true),
-    block("/**\n * Docs.\n * @param a The a.\n */", true, true),
-    block("/** Mail me@example.com. */", true, true),
-    block("/** @type {string} */", false, false),
-    block("/** @deprecated */", false, false),
-    block("/** @internal */", false, false),
-    block("/** @description Docs. */", true, true),
-    block("/**\n * @desc\n */", false, false),
-    block("/** @summary Docs. */", true, true),
-    block("/** @classdesc Docs. */", false, true),
-    block("/** @inheritDoc */", true, true),
-    block("/**\n * @INHERITDOC\n */", true, true),
+const BLOCKS: [Block; 13] = [
+    block("/** Docs. */", true, true, &[]),
+    block("/**\n * Docs.\n * @param a The a.\n */", true, true, &["param"]),
+    block("/** Mail me@example.com. */", true, true, &[]),
+    block("/** @type {string} */", false, false, &["type"]),
+    block("/** @deprecated */", false, false, &["deprecated"]),
+    block("/** @internal */", false, false, &["internal"]),
+    block("/** @description Docs. */", true, true, &["description"]),
+    block("/**\n * @desc\n */", false, false, &["desc"]),
+    block("/** @summary Docs. */", true, true, &["summary"]),
+    block("/** @classdesc Docs. */", false, true, &["classdesc"]),
+    block("/** @inheritDoc */", true, true, &["inheritDoc"]),
+    block("/**\n * @INHERITDOC\n */", true, true, &["INHERITDOC"]),
+    block("/**\n * Hidden.\n * @hidden\n * @ignore\n */", true, true, &["hidden", "ignore"]),
 ];
+
+/// Tags `excludeTags` may name.
+const TAGS: [&str; 6] = ["internal", "ignore", "hidden", "deprecated", "param", "inheritdoc"];
 
 /// How a generated declaration is exported.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -403,6 +413,11 @@ fn rules_decide_what_counts_and_what_is_documented(tc: TestCase) {
     let rules = Rules {
         scope: tc.draw(gs::sampled_from(vec![Scope::Exports, Scope::All])),
         require_description: tc.draw(gs::booleans()),
+        exclude_tags: tc
+            .draw(gs::vecs(gs::sampled_from(TAGS.to_vec())).max_size(3))
+            .into_iter()
+            .map(String::from)
+            .collect(),
     };
     let items = scan(&source, SourceType::ts(), &rules).unwrap();
     assert_eq!(items, expected.iter().filter_map(|e| e.by(&rules)).collect::<Vec<_>>(), "{source}");
@@ -911,6 +926,8 @@ impl Run {
         if let Some(value) = &from_key {
             self.keys.insert(key.into(), serde_json::to_value(value).unwrap());
         }
+        // A value that makes no arguments is no flag.
+        let from_flag = from_flag.filter(|value| !flag(value).is_empty());
         if let Some(value) = &from_flag {
             self.args.extend(flag(value));
         }
@@ -951,10 +968,15 @@ fn rules_come_from_flags_over_the_config(tc: TestCase) {
         vec!["--scope".into(), serde_json::to_value(s).unwrap().as_str().unwrap().into()]
     });
     let require_description = run.switch(&tc, "requireDescription", "--require-description");
+    let tag_lists = vec![vec![], vec!["internal".to_owned()], vec!["ignore".into(), "hidden".into()]];
+    let exclude_tags = run.set(&tc, "excludeTags", tag_lists, |tags| {
+        tags.iter().flat_map(|tag| ["--exclude-tag".to_owned(), tag.clone()]).collect()
+    });
 
     let settings = run.settings(dir.path());
     let rules = settings.rules();
     assert_eq!(*settings.get::<Scope>(), scope.unwrap_or_default());
     assert_eq!(rules.scope, scope.unwrap_or_default());
     assert_eq!(rules.require_description, require_description, "{:?}", run.args);
+    assert_eq!(rules.exclude_tags, exclude_tags.unwrap_or_default());
 }

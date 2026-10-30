@@ -1,6 +1,7 @@
 use oxc_span::SourceType;
 
 use super::*;
+use crate::Scope;
 
 /// `(name, kind, documented)` for each item `source` has, as TypeScript.
 fn items(source: &str, scope: Scope) -> Vec<(String, Kind, bool)> {
@@ -326,4 +327,23 @@ export class F {
         scan(source, SourceType::ts(), &rules).unwrap().into_iter().map(|i| i.documented).collect();
     assert_eq!(documented, [false, false, true, true, false, true, false, true]);
     assert!(items(source, Scope::Exports).iter().all(|(.., documented)| *documented));
+}
+
+#[test]
+fn excluded_tags_take_their_items_out() {
+    let source = "
+/** @internal */
+export const a = 1;
+/** Mentions @internal, which isn't a tag here. */
+export const b = 1;
+/**
+ * C.
+ * @hidden
+ */
+export const c = 1;
+export const d = 1;
+";
+    let rules = Rules { exclude_tags: vec!["internal".into(), "hidden".into()], ..Rules::default() };
+    let names: Vec<String> = scan(source, SourceType::ts(), &rules).unwrap().into_iter().map(|i| i.name).collect();
+    assert_eq!(names, ["b", "d"]);
 }

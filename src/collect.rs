@@ -18,7 +18,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use serde::Serialize;
 
 pub use self::rules::Rules;
-use crate::{Scope, Totals};
+use crate::Totals;
 
 /// What kind of declaration an item is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -176,11 +176,10 @@ pub fn scan(source: &str, source_type: SourceType, rules: &Rules) -> Result<Vec<
     let Collector { found, exported, .. } = collector;
     Ok(found
         .into_iter()
-        .filter(|f| rules.scope == Scope::All || f.exported || f.binding.is_some_and(|b| exported.contains(b)))
+        .filter(|f| rules.counts(f, &exported))
         .map(|f| {
             let (line, column) = lines.position(f.at as usize);
-            let documented =
-                f.doc.as_ref().is_some_and(|doc| !rules.require_description || doc::describes(doc, f.kind));
+            let documented = rules.documents(&f);
             Item { name: f.name, kind: f.kind, line, column, documented }
         })
         .collect())
