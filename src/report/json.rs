@@ -1,15 +1,30 @@
 use std::io::{self, Write};
 
-use serde::Serialize;
+use serde::{Serialize, Serializer};
 
-use crate::{FileReport, Item, Totals};
+use crate::{FileReport, Item, Kind, Totals};
 
 #[derive(Serialize)]
 struct Report<'a> {
     #[serde(flatten)]
     totals: Totals,
     percent: f64,
+    #[serde(serialize_with = "by_kind")]
+    kinds: Vec<(Kind, Totals)>,
     files: Vec<File<'a>>,
+}
+
+/// Totals with their percentage.
+#[derive(Serialize)]
+struct Share {
+    #[serde(flatten)]
+    totals: Totals,
+    percent: f64,
+}
+
+/// Each kind's totals, as an object by kind.
+fn by_kind<S: Serializer>(kinds: &[(Kind, Totals)], serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.collect_map(kinds.iter().map(|&(kind, totals)| (kind, Share { totals, percent: totals.percent() })))
 }
 
 #[derive(Serialize)]
@@ -40,7 +55,7 @@ impl<'a> JsonItem<'a> {
 }
 
 pub fn write(files: &[FileReport], out: &mut impl Write) -> io::Result<()> {
-    let totals = Totals::of(files);
+    let (totals, kinds) = (Totals::of(files), Totals::by_kind(files));
     let files = files
         .iter()
         .map(|f| File {
@@ -50,6 +65,6 @@ pub fn write(files: &[FileReport], out: &mut impl Write) -> io::Result<()> {
             items: f.items.iter().map(JsonItem::of).collect(),
         })
         .collect();
-    serde_json::to_writer_pretty(&mut *out, &Report { totals, percent: totals.percent(), files })?;
+    serde_json::to_writer_pretty(&mut *out, &Report { totals, percent: totals.percent(), kinds, files })?;
     writeln!(out)
 }

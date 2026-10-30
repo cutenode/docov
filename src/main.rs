@@ -66,7 +66,10 @@ fn run(cli: Cli, matches: &clap::ArgMatches) -> Result<bool, Vec<String>> {
         eprintln!("docov: {}", edited.map_err(|e| vec![e])?);
         return Ok(true);
     }
-    report::write(cli.format, &reports, &mut io::stdout().lock()).map_err(|e| vec![e.to_string()])?;
+    let mut out = io::stdout().lock();
+    report::write(cli.format, &reports, &mut out)
+        .and_then(|()| settings.append(cli.format, &reports, &mut out))
+        .map_err(|e| vec![e.to_string()])?;
 
     let failures = settings.gates(&reports);
     for failure in failures.iter().flat_map(|f| f.lines()) {

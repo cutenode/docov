@@ -254,3 +254,21 @@ fn add_ignore_writes_a_comment_above_each_undocumented_item() {
     assert_eq!(docov(dir.path(), &[]).1, " 100.0%  1/1  a.ts\n 100.0%  1/1  total\n");
     assert_eq!(docov(dir.path(), &["--add-ignore"]).2, "docov: added 0 docov-ignore-next-line comments\n");
 }
+
+#[test]
+fn kinds_pick_what_counts_and_break_the_total_down() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = "/** f */\nexport function f() {}\nexport class C { m() {} }\nexport const v = 1;\n";
+    fs::write(dir.path().join("a.ts"), source).unwrap();
+    let (_, out, _) = docov(dir.path(), &["--by-kind"]);
+    assert!(
+        out.ends_with("  25.0%  1/4  total\nby kind: function 1/1, class 0/1, method 0/1, variable 0/1\n"),
+        "{out}"
+    );
+    let (_, out, _) = docov(dir.path(), &["--kind", "function,method", "--by-kind"]);
+    assert!(out.ends_with("  50.0%  1/2  total\nby kind: function 1/1, method 0/1\n"), "{out}");
+    fs::write(dir.path().join("docov.json"), r#"{ "kinds": ["class"] }"#).unwrap();
+    let (_, out, _) = docov(dir.path(), &["--format", "json"]);
+    let json: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(json["kinds"], serde_json::json!({ "class": { "documented": 0, "total": 1, "percent": 0.0 } }));
+}

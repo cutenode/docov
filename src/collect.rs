@@ -16,14 +16,16 @@ use oxc_jsdoc::JSDoc;
 use oxc_parser::Parser;
 use oxc_span::{GetSpan, SourceType, Span};
 use rustc_hash::{FxHashMap, FxHashSet};
-use serde::Serialize;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
 use self::ignore::Ignores;
 pub use self::{ignore::Ignore, rules::Rules};
 use crate::Totals;
 
 /// What kind of declaration an item is.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Deserialize, JsonSchema, clap::ValueEnum)]
+#[serde(rename_all = "lowercase")]
 pub enum Kind {
     /// `function f() {}`, or a function assigned to an export.
     Function,

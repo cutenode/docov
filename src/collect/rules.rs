@@ -3,7 +3,7 @@
 use rustc_hash::FxHashSet;
 
 use super::{Found, doc};
-use crate::Scope;
+use crate::{Kind, Scope};
 
 /// Which items count, and when one is documented. The default is docov's out of the box.
 #[derive(Clone, Debug, Default)]
@@ -14,6 +14,8 @@ pub struct Rules {
     pub require_description: bool,
     /// The JSDoc tags, without their `@`, that take an item out of the total.
     pub exclude_tags: Vec<String>,
+    /// The kinds of item that count, or every kind.
+    pub kinds: Option<Vec<Kind>>,
 }
 
 impl From<Scope> for Rules {
@@ -29,7 +31,8 @@ impl Rules {
         let in_scope =
             self.scope == Scope::All || found.exported || found.binding.is_some_and(|b| exported.contains(b));
         let tagged = |tag: &String| found.doc.as_ref().is_some_and(|doc| doc::has_tag(doc, tag));
-        in_scope && !self.exclude_tags.iter().any(tagged)
+        let kind = self.kinds.as_ref().is_none_or(|kinds| kinds.contains(&found.kind));
+        in_scope && kind && !self.exclude_tags.iter().any(tagged)
     }
 
     /// Whether `found` is documented.
