@@ -36,11 +36,13 @@ pub enum Kind {
     Function,
     /// `class C {}`, or a class assigned to an export.
     Class,
-    /// A class method or an interface method signature.
+    /// A class method or an interface method signature, or a function member of a tagged object
+    /// literal, an object type or a CommonJS export (with `members` or `commonjsMembers`).
     Method,
     /// A getter (with its setter, if any), a lone setter, or an `accessor` property.
     Accessor,
-    /// A class field or an interface property signature.
+    /// A class field or an interface property signature, or another member that isn't a function
+    /// (with `members` or `commonjsMembers`).
     Property,
     /// `const`, `let` or `var`, or another value CommonJS exports by name.
     Variable,

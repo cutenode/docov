@@ -106,7 +106,7 @@
         },
         {
           "const": "method",
-          "description": "A class method or an interface method signature.",
+          "description": "A class method or an interface method signature, or a function member of a tagged object\nliteral, an object type or a CommonJS export (with `members` or `commonjsMembers`).",
           "type": "string"
         },
         {
@@ -116,7 +116,7 @@
         },
         {
           "const": "property",
-          "description": "A class field or an interface property signature.",
+          "description": "A class field or an interface property signature, or another member that isn't a function\n(with `members` or `commonjsMembers`).",
           "type": "string"
         },
         {
