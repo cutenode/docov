@@ -38,6 +38,14 @@
       },
       "type": "array"
     },
+    "excludeTags": {
+      "default": [],
+      "description": "Leave out items whose JSDoc has one of these tags, named without the @ (`internal` for @internal).",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
     "paths": {
       "default": [],
       "description": "Files and folders to scan, relative to this file's folder. Defaults to the folder docov runs in.",
