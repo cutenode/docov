@@ -5,7 +5,11 @@ use std::{io, path::PathBuf, process::ExitCode};
 use clap::{CommandFactory, FromArgMatches, Parser};
 use docov::{
     Config, Format, Scope, Settings,
-    feature::{self, overrides::Overrides},
+    feature::{
+        self,
+        baseline::{self, Baseline},
+        overrides::Overrides,
+    },
     glob::Globs,
     report,
     root::Root,
@@ -27,17 +31,29 @@ struct Cli {
     /// How to write the report
     #[arg(long, value_enum, default_value_t)]
     format: Format,
-    /// Print the config file's JSON Schema and exit
-    #[arg(long, exclusive = true)]
-    print_schema: bool,
+    /// Print the config file's JSON Schema, or the baseline file's, and exit
+    #[arg(long, value_enum, value_name = "FILE", exclusive = true, num_args = 0..=1, default_missing_value = "config")]
+    print_schema: Option<Schema>,
+}
+
+/// A file docov reads, by its JSON Schema.
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum Schema {
+    /// docov.json.
+    Config,
+    /// The file `--write-baseline` writes.
+    Baseline,
 }
 
 fn main() -> ExitCode {
     // Each feature adds its own flags.
     let matches = feature::args(Cli::command()).get_matches();
     let cli = Cli::from_arg_matches(&matches).expect("the flags are the command's");
-    if cli.print_schema {
-        print!("{}", Config::json_schema());
+    if let Some(schema) = cli.print_schema {
+        match schema {
+            Schema::Config => print!("{}", Config::json_schema()),
+            Schema::Baseline => print!("{}", baseline::File::json_schema()),
+        }
         return ExitCode::SUCCESS;
     }
     match run(cli, &matches) {
@@ -60,6 +76,8 @@ fn run(cli: Cli, matches: &clap::ArgMatches) -> Result<bool, Vec<String>> {
     let config_paths = config.paths.iter().map(|p| config.dir.join(p).components().collect());
     let paths = if cli.paths.is_empty() { config_paths.collect() } else { cli.paths };
     let scope = *settings.get::<Scope>();
+    let baseline = settings.get::<Baseline>();
+    let excused = baseline.read(&config.dir).map_err(|e| vec![e])?;
 
     let root = Root::new(&config.dir);
     let exclude = Globs::new(std::mem::take(&mut config.exclude)).map_err(|e| vec![e.to_string()])?;
@@ -73,6 +91,16 @@ fn run(cli: Cli, matches: &clap::ArgMatches) -> Result<bool, Vec<String>> {
         return Err(errors);
     }
     report::write(cli.format, &reports, &mut io::stdout().lock()).map_err(|e| vec![e.to_string()])?;
+    if baseline.write {
+        let path = baseline.save(&config.dir, &root, &reports).map_err(|e| vec![e])?;
+        eprintln!("docov: wrote the undocumented items to {}", path.display());
+        return Ok(true);
+    }
+    // The gates let the baseline's items through, which the report still lists.
+    let reports = match excused {
+        Some(excused) => excused.apply(&root, reports),
+        None => reports,
+    };
 
     let failures = settings.gates(&reports, &root);
     for failure in &failures {

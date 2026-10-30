@@ -130,6 +130,14 @@
         "null"
       ]
     },
+    "baseline": {
+      "default": null,
+      "description": "A file of undocumented items the gates let pass, relative to this file's folder, as `docov --write-baseline` writes it.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "exclude": {
       "default": [],
       "description": "Gitignore-style globs of files to leave out, relative to this file's folder, on top of .gitignore.",

@@ -274,3 +274,50 @@ fn max_undocumented_is_a_gate_of_its_own() {
     let (code, _, err) = docov(dir.path(), &["--max-undocumented", "1", "--threshold", "0"]);
     assert_eq!((code, err.as_str()), (0, ""));
 }
+
+#[test]
+fn the_checked_in_baseline_schema_is_current() {
+    let dir = tempfile::tempdir().unwrap();
+    let (code, out, _) = docov(dir.path(), &["--print-schema", "baseline"]);
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("docov-baseline.schema.json");
+    assert_eq!(code, 0);
+    assert_eq!(
+        out,
+        fs::read_to_string(path).unwrap(),
+        "cargo run -- --print-schema baseline > docov-baseline.schema.json"
+    );
+}
+
+#[test]
+fn a_baseline_keys_items_by_path_kind_and_name() {
+    let dir = project();
+    let (code, _, err) = docov(&dir.path().join("src"), &["--write-baseline", "--threshold", "100"]);
+    assert_eq!((code, err.as_str()), (0, "docov: wrote the undocumented items to docov-baseline.json\n"));
+    let written = fs::read_to_string(dir.path().join("src/docov-baseline.json")).unwrap();
+    let schema = format!(
+        "https://raw.githubusercontent.com/cutenode/docov/v{}/docov-baseline.schema.json",
+        env!("CARGO_PKG_VERSION")
+    );
+    let wanted = format!(
+        "{{\n  \"$schema\": \"{schema}\",\n  \"items\": [\n    {{\n      \"path\": \"a.ts\",\n      \"kind\": \"variable\",\n      \"name\": \"b\"\n    }}\n  ]\n}}\n"
+    );
+    assert_eq!(written, wanted);
+
+    // From the config's folder, with `/` on every OS, wherever docov runs.
+    fs::write(dir.path().join("docov.json"), r#"{ "baseline": "known.json", "threshold": 100 }"#).unwrap();
+    let known = r#"{ "items": [{ "path": "src/a.ts", "kind": "variable", "name": "b" }] }"#;
+    fs::write(dir.path().join("known.json"), known).unwrap();
+    let (code, out, err) = docov(&dir.path().join("src"), &[]);
+    assert_eq!((code, err.as_str()), (0, ""));
+    assert!(out.contains("variable b"), "the report still lists it: {out}");
+    // Another kind or name isn't the same item.
+    fs::write(dir.path().join("known.json"), known.replace("variable", "function")).unwrap();
+    assert_eq!(docov(dir.path(), &[]).0, 1);
+    let (code, _, err) = docov(dir.path(), &["--write-baseline", "--baseline", "gone/known.json"]);
+    assert_eq!(code, 2);
+    assert!(err.contains("known.json: "), "{err}");
+    fs::write(dir.path().join("known.json"), r#"{ "items": [], "extra": 1 }"#).unwrap();
+    let (code, _, err) = docov(dir.path(), &[]);
+    assert_eq!(code, 2);
+    assert!(err.starts_with("docov: known.json: unknown field `extra`"), "{err}");
+}

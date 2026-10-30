@@ -1068,3 +1068,146 @@ fn max_undocumented_caps_the_undocumented_items(tc: TestCase) {
         .collect();
     assert_eq!(settings.gates(&files, &docov::root::Root::new(Path::new(""))), wanted);
 }
+
+/// A baseline lets through the undocumented items it lists, each entry once, wherever their lines
+/// moved to; what --write-baseline writes lets through every undocumented item there was. A
+/// baseline that's missing or isn't one fails to load, naming it.
+#[hegel::test(test_cases = 100)]
+fn baselines_let_their_items_through(tc: TestCase) {
+    use docov::feature::baseline::Baseline;
+    let dir = tempfile::tempdir().unwrap();
+    let root = docov::root::Root::new(dir.path());
+    let mut files = reports(&tc);
+    for file in &mut files {
+        file.path = dir.path().join("src").join(&file.path);
+        // Few names, so some items share their path, kind and name (`default` can).
+        for item in &mut file.items {
+            item.name = format!("n{}", tc.draw(gs::integers::<u8>().max_value(1)));
+        }
+    }
+    let undocumented: Vec<(String, &Item)> = files
+        .iter()
+        .flat_map(|f| {
+            f.items
+                .iter()
+                .filter(|i| !i.documented)
+                .map(move |i| (format!("src/{}", f.path.file_name().unwrap().to_str().unwrap()), i))
+        })
+        .collect();
+    // Entries for some of them, some twice, and one for an item that isn't there.
+    let picked = tc.draw(gs::vecs(gs::integers::<usize>().max_value(undocumented.len().max(1) - 1)).max_size(6));
+    let picked: Vec<usize> = picked.into_iter().filter(|&i| i < undocumented.len()).collect();
+    let mut items: Vec<serde_json::Value> = picked
+        .iter()
+        .map(|&i| serde_json::json!({ "path": undocumented[i].0, "kind": undocumented[i].1.kind.as_str(), "name": undocumented[i].1.name }))
+        .collect();
+    items.push(serde_json::json!({ "path": "src/gone.ts", "kind": "function", "name": "gone" }));
+    fs::write(dir.path().join("known.json"), serde_json::json!({ "items": items }).to_string()).unwrap();
+
+    let from_key = tc.draw(gs::booleans());
+    let (config, args) = if from_key {
+        (r#"{ "baseline": "known.json" }"#.to_owned(), vec![])
+    } else {
+        ("{}".to_owned(), vec!["--baseline".to_owned(), dir.path().join("known.json").display().to_string()])
+    };
+    let named = settings(dir.path(), &config, &args);
+    let excused = named.get::<Baseline>().read(dir.path()).unwrap().unwrap().apply(&root, files.clone());
+
+    // Each entry lets one item through: the first undocumented one with its path, kind and name.
+    let mut wanted = files.clone();
+    let mut left: Vec<usize> = picked.clone();
+    for file in &mut wanted {
+        let path = format!("src/{}", file.path.file_name().unwrap().to_str().unwrap());
+        for item in file.items.iter_mut().filter(|i| !i.documented) {
+            let same = |&i: &usize| {
+                undocumented[i].0 == path && undocumented[i].1.kind == item.kind && undocumented[i].1.name == item.name
+            };
+            if let Some(at) = left.iter().position(same) {
+                left.remove(at);
+                item.documented = true;
+            }
+        }
+    }
+    assert_eq!(excused, wanted);
+
+    // Writing one, then reading it back, lets every undocumented item through, lines moved or not.
+    let write = settings(dir.path(), "{}", &["--write-baseline".to_owned()]);
+    let written = write.get::<Baseline>();
+    assert!(written.read(dir.path()).unwrap().is_none());
+    let path = written.save(dir.path(), &root, &files).unwrap();
+    assert_eq!(path, dir.path().join("docov-baseline.json"));
+    let read = settings(dir.path(), r#"{ "baseline": "docov-baseline.json" }"#, &[]);
+    let mut moved = files.clone();
+    for item in moved.iter_mut().flat_map(|f| &mut f.items) {
+        item.line += tc.draw(gs::integers::<usize>().max_value(3));
+    }
+    let excused = read.get::<Baseline>().read(dir.path()).unwrap().unwrap().apply(&root, moved);
+    assert!(excused.iter().flat_map(|f| &f.items).all(|i| i.documented));
+
+    // A missing or malformed baseline names itself.
+    let broken = tc.draw(gs::sampled_from(vec![None, Some("[]"), Some(r#"{ "items": [{ "path": "a" }] }"#)]));
+    match broken {
+        Some(text) => fs::write(dir.path().join("docov-baseline.json"), text).unwrap(),
+        None => fs::remove_file(dir.path().join("docov-baseline.json")).unwrap(),
+    }
+    let error = read.get::<Baseline>().read(dir.path()).unwrap_err();
+    assert!(error.starts_with(&format!("{}: ", dir.path().join("docov-baseline.json").display())), "{error}");
+    // Somewhere it can't be written fails the same way.
+    let unwritable = settings(
+        dir.path(),
+        "{}",
+        &["--write-baseline".to_owned(), "--baseline".to_owned(), dir.path().join("gone/b.json").display().to_string()],
+    );
+    let error = unwritable.get::<Baseline>().save(dir.path(), &root, &files).unwrap_err();
+    assert!(error.contains("b.json: "), "{error}");
+}
+
+/// Through the binary: --write-baseline writes every undocumented item and passes, and with that
+/// baseline the gates pass until a new undocumented item comes along, though the report still
+/// lists the old ones. `--print-schema baseline` prints the baseline file's schema.
+#[hegel::test(test_cases = 5)]
+fn the_cli_writes_a_baseline_and_gates_by_it(tc: TestCase) {
+    let dir = tempfile::tempdir().unwrap();
+    let run = |args: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_docov")).args(args).current_dir(dir.path()).output().unwrap();
+        (out.status.code().unwrap(), String::from_utf8(out.stdout).unwrap(), String::from_utf8(out.stderr).unwrap())
+    };
+    let undocumented = tc.draw(gs::integers::<usize>().min_value(1).max_value(3));
+    let text: String = (0..undocumented).map(|i| format!("export const u{i} = 1;\n")).collect();
+    write(dir.path(), "src/a.ts", &format!("/** Docs. */\nexport const d = 1;\n{text}"));
+    let in_config = tc.draw(gs::booleans());
+    if in_config {
+        write(dir.path(), "docov.json", r#"{ "baseline": "known.json", "maxUndocumented": 0 }"#);
+    }
+    let named: &[&str] = if in_config { &[] } else { &["--baseline", "known.json", "--max-undocumented", "0"] };
+
+    let (code, out, err) = run(&[&["--write-baseline"], named].concat());
+    assert_eq!((code, err.as_str()), (0, "docov: wrote the undocumented items to known.json\n"));
+    let known: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(dir.path().join("known.json")).unwrap()).unwrap();
+    assert_eq!(known["items"].as_array().unwrap().len(), undocumented);
+    let (code, again, err) = run(named);
+    assert_eq!((code, err.as_str(), again), (0, "", out));
+
+    // A line above everything moves the items, and one more undocumented item fails.
+    write(
+        dir.path(),
+        "src/a.ts",
+        &format!("// moved\n/** Docs. */\nexport const d = 1;\n{text}export const fresh = 1;\n"),
+    );
+    let (code, _, err) = run(named);
+    assert_eq!((code, err.as_str()), (1, "docov: 1 undocumented, over the limit of 0\n"));
+
+    let (code, schema, _) = run(&["--print-schema", "baseline"]);
+    let schema: serde_json::Value = serde_json::from_str(&schema).unwrap();
+    assert_eq!((code, schema["title"].as_str()), (0, Some("Baseline")));
+    // Somewhere it can't be written fails after the report.
+    let (code, _, err) = run(&["--write-baseline", "--baseline", "gone/known.json"]);
+    assert_eq!(code, 2);
+    assert!(err.starts_with("docov: gone/known.json: "), "{err}");
+    // One that can't be read fails before the scan.
+    fs::remove_file(dir.path().join("known.json")).unwrap();
+    let (code, out, err) = run(named);
+    assert_eq!((code, out.as_str()), (2, ""));
+    assert!(err.starts_with("docov: known.json: "), "{err}");
+}
