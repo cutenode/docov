@@ -3,8 +3,11 @@
 pub mod collect;
 pub mod config;
 pub mod feature;
+pub mod git;
+pub mod glob;
 pub mod report;
 pub mod rewrite;
+pub mod root;
 pub mod walk;
 
 pub use collect::{FileReport, Item, Kind, Rules, scan, scan_file};

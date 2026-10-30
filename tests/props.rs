@@ -1554,9 +1554,11 @@ fn unused_ignores_fail_the_scan(tc: TestCase) {
         let unused = comments.iter().filter(|(_, all)| *all);
         wanted.extend(unused.map(|(line, _)| format!("{}:{line}:1: unused docov-ignore", file.path.display())));
     }
-    assert_eq!(ReportUnusedIgnores(false).gate(&files), None);
-    let gate = ReportUnusedIgnores(true).gate(&files);
-    assert_eq!(gate, (!wanted.is_empty()).then(|| wanted.join("\n")));
+    let settings = settings(tempfile::tempdir().unwrap().path(), "{}", &[]);
+    let root = docov::root::Root::new(Path::new(""));
+    let run = docov::feature::Run { reports: &files, root: &root, settings: &settings };
+    assert_eq!(ReportUnusedIgnores(false).gate(&run), Vec::<String>::new());
+    assert_eq!(ReportUnusedIgnores(true).gate(&run), wanted);
 }
 
 /// The totals by kind add up to the total, one per kind there is, in order. The JSON report has
@@ -1908,7 +1910,7 @@ fn each_bad_input_fails_naming_itself(tc: TestCase) {
 /// A config file that isn't an object, or has a key that isn't a string, a value that isn't JSON or
 /// a known key of the wrong type, fails to load, and says where. Loaded in-process: the binary's
 /// properties above already run it on bad files, and each run is slow under coverage.
-#[hegel::test(test_cases = 20)]
+#[hegel::test(test_cases = 60)]
 fn malformed_configs_fail_to_load_where_they_break(tc: TestCase) {
     let dir = tempfile::tempdir().unwrap();
     let padding = " ".repeat(tc.draw(gs::integers::<usize>().max_value(3)));
@@ -1918,8 +1920,30 @@ fn malformed_configs_fail_to_load_where_they_break(tc: TestCase) {
         (r#"{ "paths": [1 }"#, "expected `,` or `]`", 15),
         (r#"{ "paths": 1 }"#, "invalid type: integer `1`, expected a sequence", 12),
         (r#"{ "scope": "some" }"#, "unknown variant `some`, expected `exports` or `all`", 17),
+        (r#"{ "threshold": { "global": "80" } }"#, "invalid type: string \"80\", expected f64", 31),
+        (
+            r#"{ "overrides": [{ "files": ["a"], "scope": "all" }] }"#,
+            "unknown field `scope`, expected one of `files`, `exclude`, `threshold`",
+            41,
+        ),
+        (r#"{ "overrides": [{ "exclude": [] }] }"#, "missing field `files`", 33),
+        (
+            r#"{ "overrides": [{ "files": ["[z"] }] }"#,
+            "error parsing glob '[z': unclosed character class; missing ']'",
+            35,
+        ),
+        (r#"{ "threshold": true }"#, "invalid type: boolean `true`, expected a number, or an object of them", 19),
+        (r#"{ "threshold": -0.5 }"#, "expected a number from 0 to 100, or a negative whole number", 19),
+        (r#"{ "threshold": { "perFile": 101 } }"#, "expected a number from 0 to 100, or a negative whole number", 33),
+        (r#"{ "threshold": { "[z": 1 } }"#, "error parsing glob '[z': unclosed character class; missing ']'", 26),
     ]));
     let path = dir.path().join("docov.json");
+    // A threshold's glob that globset reads but can't build, like the walk's.
+    if tc.draw(gs::weighted_booleans(0.1)) {
+        fs::write(&path, serde_json::json!({ "threshold": { unbuildable_glob(): 1 } }).to_string()).unwrap();
+        let error = config::Config::load(Some(&path)).unwrap_err().to_string();
+        assert!(error.contains("parsing pattern"), "{error}");
+    }
     fs::write(&path, format!("{padding}{text}")).unwrap();
     let column = column + padding.len();
     match config::Config::load(Some(&path)) {
@@ -1937,6 +1961,11 @@ fn comments_in_config_files_change_nothing(tc: TestCase) {
     let dir = tempfile::tempdir().unwrap();
     let exclude = tc.draw(gs::vecs(gs::sampled_from(vec!["*.js", "src/*/x.ts", "a//b", "c/**"])).max_size(3));
     let threshold = tc.draw(gs::optional(gs::integers::<u8>().max_value(100)));
+    // A threshold by path, with a glob that compares by its text.
+    let threshold = match threshold {
+        Some(t) if tc.draw(gs::booleans()) => serde_json::json!({ "src/**": t, "perFile": -1 }),
+        t => serde_json::json!(t),
+    };
     let scope = tc.draw(gs::sampled_from(vec!["exports", "all"]));
     let json = serde_json::json!({ "exclude": exclude, "threshold": threshold, "scope": scope });
     let plain = serde_json::to_string_pretty(&json).unwrap();
@@ -2199,4 +2228,710 @@ fn add_ignore_runs_from_the_command_line(tc: TestCase) {
     let stderr = String::from_utf8(out.stderr).unwrap();
     assert_eq!(out.status.code(), Some(2), "{stderr}");
     assert!(stderr.starts_with("docov: locked.ts: "), "{stderr}");
+}
+
+/// Settings from `config` (docov.json's text) and `args`, made in-process.
+fn settings(dir: &Path, config: &str, args: &[String]) -> docov::Settings {
+    let path = dir.join("docov.json");
+    fs::write(&path, config).unwrap();
+    load_settings(&path, args)
+}
+
+/// Settings from the config file at `path` and `args`, made in-process.
+fn load_settings(path: &Path, args: &[String]) -> docov::Settings {
+    let config = config::Config::load(Some(path)).unwrap();
+    let matches = docov::feature::args(clap::Command::new("docov"))
+        .try_get_matches_from(std::iter::once("docov".to_owned()).chain(args.iter().cloned()));
+    docov::Settings::new(&matches.unwrap(), config.keys)
+}
+
+/// [`reports`] with `docov-ignore` comments, which the gates leave out as the report does, as
+/// files `f<i>.ts` for the globs to match.
+fn gated_reports(tc: &TestCase) -> Vec<FileReport> {
+    let mut files = reports(tc, true);
+    for (i, file) in files.iter_mut().enumerate() {
+        file.path = PathBuf::from(format!("f{i}.ts"));
+    }
+    files
+}
+
+/// A threshold from docov.json: a percentage, or a negative number for the most undocumented items.
+fn limit(tc: &TestCase) -> i64 {
+    if tc.draw(gs::booleans()) {
+        tc.draw(gs::integers::<i64>().min_value(0).max_value(100))
+    } else {
+        -tc.draw(gs::integers::<i64>().min_value(0).max_value(4))
+    }
+}
+
+/// Why `totals` fails `limit`, as the model has it.
+fn fails(limit: i64, totals: Totals, what: &str) -> Option<String> {
+    let undocumented = totals.total - totals.documented;
+    if limit >= 0 {
+        let percent = totals.percent();
+        (percent < limit as f64).then(|| format!("{percent:.1}% documented, under the {limit}% {what}"))
+    } else {
+        let most = (-limit) as usize;
+        (undocumented > most).then(|| format!("{undocumented} undocumented, over the {what} of {most}"))
+    }
+}
+
+/// Which of `reports`' files (`f<i>.ts`, by `i`) a glob matches.
+type Matches = fn(usize) -> bool;
+
+/// Globs a threshold can name, and which of `reports`' files each matches.
+const GLOBS: [(&str, Matches); 5] =
+    [("f0.ts", |i| i == 0), ("f[01].ts", |i| i < 2), ("*.ts", |_| true), ("/f3*", |i| i == 3), ("nothing/", |_| false)];
+
+/// Drawn thresholds: global, per file, and by glob (an index into [`GLOBS`]).
+struct DrawnThresholds {
+    global: Option<i64>,
+    per_file: Option<i64>,
+    globs: Vec<(usize, i64)>,
+}
+
+impl DrawnThresholds {
+    fn draw(tc: &TestCase) -> Self {
+        let global = tc.draw(gs::optional(gs::just(()))).map(|()| limit(tc));
+        let per_file = tc.draw(gs::optional(gs::just(()))).map(|()| limit(tc));
+        let globs = tc.draw(gs::vecs(gs::integers::<usize>().max_value(GLOBS.len() - 1)).max_size(3).unique(true));
+        Self { global, per_file, globs: globs.into_iter().map(|g| (g, limit(tc))).collect() }
+    }
+
+    /// As docov.json has it, written by hand: serde_json's maps sort their keys, and the globs'
+    /// order is the file's. Numbers are sometimes floats, which JSON readers see apart from
+    /// integers, and a lone global threshold is sometimes a plain number.
+    fn json(&self, tc: &TestCase) -> String {
+        let number = |n: i64| if tc.draw(gs::booleans()) { format!("{n}.0") } else { n.to_string() };
+        let mut entries: Vec<String> = Vec::new();
+        entries.extend(self.global.map(|g| format!(r#""global": {}"#, number(g))));
+        entries.extend(self.per_file.map(|p| format!(r#""perFile": {}"#, number(p))));
+        entries.extend(self.globs.iter().map(|(g, l)| format!("{}: {}", serde_json::json!(GLOBS[*g].0), number(*l))));
+        match self.global {
+            Some(g) if entries.len() == 1 && tc.draw(gs::booleans()) => number(g),
+            _ => format!("{{ {} }}", entries.join(", ")),
+        }
+    }
+
+    /// Why the `members` of `files` fail them, as the model has it, naming the group `name`.
+    fn fails(&self, files: &[FileReport], members: &[usize], name: Option<&str>) -> Vec<String> {
+        let sum = |matched: &dyn Fn(usize) -> bool| -> Totals {
+            members.iter().filter(|i| matched(**i)).map(|i| files[*i].totals()).sum()
+        };
+        let mut wanted = Vec::new();
+        let global = self.global.and_then(|g| fails(g, sum(&|_| true), "threshold"));
+        wanted.extend(global.map(|m| name.map_or(m.clone(), |name| format!("{name}: {m}"))));
+        for i in self.per_file.iter().flat_map(|_| members) {
+            let failure = fails(self.per_file.unwrap(), files[*i].totals(), "per-file threshold");
+            wanted.extend(failure.map(|m| format!("{}: {m}", files[*i].path.display())));
+        }
+        for (g, l) in &self.globs {
+            wanted.extend(fails(*l, sum(&GLOBS[*g].1), "threshold").map(|m| format!("{}: {m}", GLOBS[*g].0)));
+        }
+        wanted
+    }
+}
+
+/// Thresholds by file and by glob, overall or a most undocumented items: each fails on its own
+/// line exactly when the files it covers don't meet it, the global one first, then each file's,
+/// then each glob's. `--threshold` replaces the global one. An override's thresholds are for the
+/// files it's the last override with a threshold for, and the top-level ones for the rest.
+#[hegel::test(test_cases = 100)]
+fn thresholds_fail_by_file_and_glob(tc: TestCase) {
+    let dir = tempfile::tempdir().unwrap();
+    let files = gated_reports(&tc);
+    let mut top = DrawnThresholds::draw(&tc);
+    let overrides: Vec<(usize, Option<DrawnThresholds>)> = (0..tc.draw(gs::integers::<usize>().max_value(2)))
+        .map(|_| {
+            (
+                tc.draw(gs::integers::<usize>().max_value(GLOBS.len() - 1)),
+                tc.draw(gs::optional(gs::just(()))).map(|()| DrawnThresholds::draw(&tc)),
+            )
+        })
+        .collect();
+    let flag = tc.draw(gs::optional(gs::integers::<u8>().max_value(100)));
+
+    let overrides_json: Vec<String> = overrides
+        .iter()
+        .map(|(files, t)| {
+            let threshold = t.as_ref().map(|t| format!(r#", "threshold": {}"#, t.json(&tc))).unwrap_or_default();
+            format!(r#"{{ "files": [{}]{threshold} }}"#, serde_json::json!(GLOBS[*files].0))
+        })
+        .collect();
+    let config = format!(r#"{{ "threshold": {}, "overrides": [{}] }}"#, top.json(&tc), overrides_json.join(", "));
+    let args: Vec<String> = flag.map(|f| vec!["--threshold".into(), f.to_string()]).unwrap_or_default();
+    let settings = settings(dir.path(), &config, &args);
+
+    top.global = flag.map(i64::from).or(top.global);
+    let owner = |i: usize| overrides.iter().rposition(|(files, t)| t.is_some() && GLOBS[*files].1(i));
+    let members = |o: Option<usize>| (0..files.len()).filter(|i| owner(*i) == o).collect::<Vec<_>>();
+    let mut wanted = top.fails(&files, &members(None), None);
+    for (o, (globs, t)) in overrides.iter().enumerate() {
+        wanted.extend(t.iter().flat_map(|t| t.fails(&files, &members(Some(o)), Some(GLOBS[*globs].0))));
+    }
+    assert_eq!(settings.gates(&files, &docov::root::Root::new(Path::new(""))), wanted, "{config}");
+}
+
+/// Whether a glob matches a path, a folder when the flag says so.
+type MatchesPath = fn(&str, bool) -> bool;
+
+/// Globs the walk's excludes and overrides can have, and which paths each matches (a folder when
+/// the flag says so), as gitignore has it.
+const WALK_GLOBS: [(&str, MatchesPath); 7] = [
+    ("*.js", |p, _| p.ends_with(".js")),
+    ("*.ts", |p, _| p.ends_with(".ts")),
+    ("a", |p, _| p == "a"),
+    ("a/**", |p, _| p.starts_with("a/")),
+    ("a/b/", |p, dir| dir && p == "a/b"),
+    ("a/b/**", |p, _| p.starts_with("a/b/")),
+    ("c/x.ts", |p, _| p == "c/x.ts"),
+];
+
+/// The walk leaves out what the top-level `exclude` does, except where the last override for a
+/// file or folder with an `exclude` of its own says otherwise, and never goes into a folder it
+/// leaves out.
+#[hegel::test(test_cases = 100)]
+fn overrides_exclude_by_the_last_match(tc: TestCase) {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = ["a/x.ts", "a/y.js", "a/b/x.ts", "a/b/y.js", "c/x.ts", "c/y.js", "x.ts", "y.js"];
+    for path in paths {
+        write(dir.path(), path, "");
+    }
+    let globs = |tc: &TestCase| tc.draw(gs::vecs(gs::integers::<usize>().max_value(WALK_GLOBS.len() - 1)).max_size(2));
+    let exclude = globs(&tc);
+    let overrides: Vec<(Vec<usize>, Option<Vec<usize>>)> = (0..tc.draw(gs::integers::<usize>().max_value(3)))
+        .map(|_| (globs(&tc), tc.draw(gs::optional(gs::just(()))).map(|()| globs(&tc))))
+        .collect();
+
+    let text = |globs: &[usize]| globs.iter().map(|&g| WALK_GLOBS[g].0.to_owned()).collect::<Vec<_>>();
+    let json = serde_json::json!({
+        "overrides": overrides.iter().map(|(files, exclude)| match exclude {
+            Some(exclude) => serde_json::json!({ "files": text(files), "exclude": text(exclude) }),
+            None => serde_json::json!({ "files": text(files) }),
+        }).collect::<Vec<_>>(),
+    });
+    let settings = settings(dir.path(), &json.to_string(), &[]);
+    let root = docov::root::Root::new(dir.path());
+    let overrides_setting = settings.get::<docov::feature::overrides::Overrides>().clone();
+    let excluder = overrides_setting.excluder(docov::glob::Globs::new(text(&exclude)).unwrap(), root);
+    let found = docov::walk::files(&[dir.path().to_path_buf()], excluder).unwrap();
+    let found: Vec<String> =
+        found.iter().map(|p| p.strip_prefix(dir.path()).unwrap().to_str().unwrap().replace('\\', "/")).collect();
+
+    let matches = |globs: &[usize], path: &str, is_dir: bool| globs.iter().any(|&g| WALK_GLOBS[g].1(path, is_dir));
+    // An override is for a path when its globs match the path or a folder it's in.
+    let contain = |globs: &[usize], path: &str, is_dir: bool| {
+        matches(globs, path, is_dir) || path.match_indices('/').any(|(i, _)| matches(globs, &path[..i], true))
+    };
+    let excluded = |path: &str, is_dir: bool| {
+        let own = overrides.iter().rev().find_map(|(files, e)| e.as_ref().filter(|_| contain(files, path, is_dir)));
+        matches(own.unwrap_or(&exclude), path, is_dir)
+    };
+    let mut wanted: Vec<String> = paths
+        .iter()
+        .filter(|path| {
+            let folders = path.match_indices('/').map(|(i, _)| &path[..i]);
+            !folders.into_iter().any(|f| excluded(f, true)) && !excluded(path, false)
+        })
+        .map(|p| (*p).to_owned())
+        .collect();
+    wanted.sort();
+    assert_eq!(found, wanted, "{json} {exclude:?}");
+}
+
+/// `--max-undocumented` and `maxUndocumented` fail a scan with more undocumented items than they
+/// allow, the flag winning, on a line of their own.
+#[hegel::test(test_cases = 50)]
+fn max_undocumented_caps_the_undocumented_items(tc: TestCase) {
+    let dir = tempfile::tempdir().unwrap();
+    let files = gated_reports(&tc);
+    let key = tc.draw(gs::optional(gs::integers::<usize>().max_value(6)));
+    let flag = tc.draw(gs::optional(gs::integers::<usize>().max_value(6)));
+    let config = serde_json::json!({ "maxUndocumented": key }).to_string();
+    let args: Vec<String> = flag.map(|f| vec!["--max-undocumented".into(), f.to_string()]).unwrap_or_default();
+    let settings = settings(dir.path(), &config, &args);
+    let totals = Totals::of(&files);
+    let undocumented = totals.total - totals.documented;
+    let wanted: Vec<String> = flag
+        .or(key)
+        .filter(|most| undocumented > *most)
+        .map(|most| format!("{undocumented} undocumented, over the limit of {most}"))
+        .into_iter()
+        .collect();
+    assert_eq!(settings.gates(&files, &docov::root::Root::new(Path::new(""))), wanted);
+}
+
+/// A baseline lets through the undocumented items it lists, each entry once, wherever their lines
+/// moved to; what --write-baseline writes lets through every undocumented item there was. A
+/// baseline that's missing or isn't one fails to load, naming it.
+#[hegel::test(test_cases = 100)]
+fn baselines_let_their_items_through(tc: TestCase) {
+    use docov::feature::baseline::Baseline;
+    let dir = tempfile::tempdir().unwrap();
+    let root = docov::root::Root::new(dir.path());
+    let mut files = gated_reports(&tc);
+    for file in &mut files {
+        file.path = dir.path().join("src").join(&file.path);
+        // Few names, so some items share their path, kind and name (`default` can).
+        for item in &mut file.items {
+            item.name = format!("n{}", tc.draw(gs::integers::<u8>().max_value(1)));
+        }
+    }
+    let undocumented: Vec<(String, &Item)> = files
+        .iter()
+        .flat_map(|f| {
+            f.counted()
+                .filter(|i| !i.documented)
+                .map(move |i| (format!("src/{}", f.path.file_name().unwrap().to_str().unwrap()), i))
+        })
+        .collect();
+    // Entries for some of them, some twice, and one for an item that isn't there.
+    let picked = tc.draw(gs::vecs(gs::integers::<usize>().max_value(undocumented.len().max(1) - 1)).max_size(6));
+    let picked: Vec<usize> = picked.into_iter().filter(|&i| i < undocumented.len()).collect();
+    let mut items: Vec<serde_json::Value> = picked
+        .iter()
+        .map(|&i| serde_json::json!({ "path": undocumented[i].0, "kind": undocumented[i].1.kind.as_str(), "name": undocumented[i].1.name }))
+        .collect();
+    items.push(serde_json::json!({ "path": "src/gone.ts", "kind": "function", "name": "gone" }));
+    fs::write(dir.path().join("known.json"), serde_json::json!({ "items": items }).to_string()).unwrap();
+
+    let from_key = tc.draw(gs::booleans());
+    let (config, args) = if from_key {
+        (r#"{ "baseline": "known.json" }"#.to_owned(), vec![])
+    } else {
+        ("{}".to_owned(), vec!["--baseline".to_owned(), dir.path().join("known.json").display().to_string()])
+    };
+    let named = settings(dir.path(), &config, &args);
+    let excused = named.get::<Baseline>().read(dir.path()).unwrap().unwrap().apply(&root, files.clone());
+
+    // Each entry lets one item through: the first undocumented one with its path, kind and name.
+    let mut wanted = files.clone();
+    let mut left: Vec<usize> = picked.clone();
+    for file in &mut wanted {
+        let path = format!("src/{}", file.path.file_name().unwrap().to_str().unwrap());
+        for item in file.items.iter_mut().filter(|i| !i.documented && !i.ignored()) {
+            let same = |&i: &usize| {
+                undocumented[i].0 == path && undocumented[i].1.kind == item.kind && undocumented[i].1.name == item.name
+            };
+            if let Some(at) = left.iter().position(same) {
+                left.remove(at);
+                item.documented = true;
+            }
+        }
+    }
+    assert_eq!(excused, wanted);
+
+    // Writing one, then reading it back, lets every undocumented item through, lines moved or not.
+    let write = settings(dir.path(), "{}", &["--write-baseline".to_owned()]);
+    let written = write.get::<Baseline>();
+    assert!(written.read(dir.path()).unwrap().is_none());
+    let path = written.save(dir.path(), &root, &files).unwrap();
+    assert_eq!(path, dir.path().join("docov-baseline.json"));
+    let read = settings(dir.path(), r#"{ "baseline": "docov-baseline.json" }"#, &[]);
+    let mut moved = files.clone();
+    for item in moved.iter_mut().flat_map(|f| &mut f.items) {
+        item.line += tc.draw(gs::integers::<usize>().max_value(3));
+    }
+    let excused = read.get::<Baseline>().read(dir.path()).unwrap().unwrap().apply(&root, moved);
+    assert!(excused.iter().flat_map(|f| &f.items).all(|i| i.documented || i.ignored()));
+
+    // A missing or malformed baseline names itself.
+    let broken = tc.draw(gs::sampled_from(vec![None, Some("[]"), Some(r#"{ "items": [{ "path": "a" }] }"#)]));
+    match broken {
+        Some(text) => fs::write(dir.path().join("docov-baseline.json"), text).unwrap(),
+        None => fs::remove_file(dir.path().join("docov-baseline.json")).unwrap(),
+    }
+    let error = read.get::<Baseline>().read(dir.path()).unwrap_err();
+    assert!(error.starts_with(&format!("{}: ", dir.path().join("docov-baseline.json").display())), "{error}");
+    // Somewhere it can't be written fails the same way.
+    let unwritable = settings(
+        dir.path(),
+        "{}",
+        &["--write-baseline".to_owned(), "--baseline".to_owned(), dir.path().join("gone/b.json").display().to_string()],
+    );
+    let error = unwritable.get::<Baseline>().save(dir.path(), &root, &files).unwrap_err();
+    assert!(error.contains("b.json: "), "{error}");
+}
+
+/// The gates judge the items the report shows. Leaving the ignored items out changes no
+/// threshold's verdict (overall, per file or per glob) and no `maxUndocumented` one, and a
+/// baseline that names ignored items lets the same items through either way: ignored ones stay
+/// ignored instead of counting as documented.
+#[hegel::test(test_cases = 100)]
+fn gates_leave_ignored_items_out(tc: TestCase) {
+    use docov::feature::baseline::Baseline;
+    let dir = tempfile::tempdir().unwrap();
+    let root = docov::root::Root::new(dir.path());
+    let mut files = gated_reports(&tc);
+    for file in &mut files {
+        file.path = dir.path().join(&file.path);
+        // Few names, so an ignored item and a counted one can share their path, kind and name.
+        for item in &mut file.items {
+            item.name = format!("n{}", tc.draw(gs::integers::<u8>().max_value(1)));
+        }
+    }
+    let shown = |files: &[FileReport]| -> Vec<FileReport> {
+        files.iter().map(|f| FileReport { path: f.path.clone(), items: f.counted().cloned().collect() }).collect()
+    };
+    // Baseline entries for any of the items, ignored or documented ones too.
+    let all: Vec<(&FileReport, &Item)> = files.iter().flat_map(|f| f.items.iter().map(move |i| (f, i))).collect();
+    let picked = tc.draw(gs::vecs(gs::integers::<usize>().max_value(all.len().max(1) - 1)).max_size(6));
+    let entries: Vec<serde_json::Value> = picked
+        .into_iter()
+        .filter(|&p| p < all.len())
+        .map(|p| {
+            let (file, item) = all[p];
+            let path = file.path.file_name().unwrap().to_str().unwrap();
+            serde_json::json!({ "path": path, "kind": item.kind.as_str(), "name": item.name })
+        })
+        .collect();
+    fs::write(dir.path().join("known.json"), serde_json::json!({ "items": entries }).to_string()).unwrap();
+    let most = tc.draw(gs::integers::<usize>().max_value(6));
+    let threshold = DrawnThresholds::draw(&tc).json(&tc);
+    let config = format!(r#"{{ "threshold": {threshold}, "maxUndocumented": {most}, "baseline": "known.json" }}"#);
+    let settings = settings(dir.path(), &config, &[]);
+
+    let excuse =
+        |files: Vec<FileReport>| settings.get::<Baseline>().read(dir.path()).unwrap().unwrap().apply(&root, files);
+    let (excused, excused_shown) = (excuse(files.clone()), excuse(shown(&files)));
+    assert_eq!(shown(&excused), excused_shown);
+    assert_eq!(settings.gates(&excused, &root), settings.gates(&excused_shown, &root), "{config}");
+}
+
+/// Through the binary: --write-baseline writes every undocumented item and passes, and with that
+/// baseline the gates pass until a new undocumented item comes along, though the report still
+/// lists the old ones. `--print-schema baseline` prints the baseline file's schema.
+#[hegel::test(test_cases = 5)]
+fn the_cli_writes_a_baseline_and_gates_by_it(tc: TestCase) {
+    let dir = tempfile::tempdir().unwrap();
+    let run = |args: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_docov")).args(args).current_dir(dir.path()).output().unwrap();
+        (out.status.code().unwrap(), String::from_utf8(out.stdout).unwrap(), String::from_utf8(out.stderr).unwrap())
+    };
+    let undocumented = tc.draw(gs::integers::<usize>().min_value(1).max_value(3));
+    let text: String = (0..undocumented).map(|i| format!("export const u{i} = 1;\n")).collect();
+    write(dir.path(), "src/a.ts", &format!("/** Docs. */\nexport const d = 1;\n{text}"));
+    let in_config = tc.draw(gs::booleans());
+    if in_config {
+        write(dir.path(), "docov.json", r#"{ "baseline": "known.json", "maxUndocumented": 0 }"#);
+    }
+    let named: &[&str] = if in_config { &[] } else { &["--baseline", "known.json", "--max-undocumented", "0"] };
+
+    let (code, out, err) = run(&[&["--write-baseline"], named].concat());
+    assert_eq!((code, err.as_str()), (0, "docov: wrote the undocumented items to known.json\n"));
+    let known: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(dir.path().join("known.json")).unwrap()).unwrap();
+    assert_eq!(known["items"].as_array().unwrap().len(), undocumented);
+    let (code, again, err) = run(named);
+    assert_eq!((code, err.as_str(), again), (0, "", out));
+
+    // A line above everything moves the items, and one more undocumented item fails.
+    write(
+        dir.path(),
+        "src/a.ts",
+        &format!("// moved\n/** Docs. */\nexport const d = 1;\n{text}export const fresh = 1;\n"),
+    );
+    let (code, _, err) = run(named);
+    assert_eq!((code, err.as_str()), (1, "docov: 1 undocumented, over the limit of 0\n"));
+
+    // --update-threshold writes the documented percentage into docov.json, or a new one.
+    let (code, _, err) = run(&[&["--update-threshold"], named].concat());
+    let tenths = 1000 / (undocumented + 2);
+    let percent = (tenths as f64 / 10.0).to_string();
+    let raised = format!("docov: raised the threshold to {percent}% in docov.json\n");
+    assert_eq!((code, err), (1, format!("{raised}docov: 1 undocumented, over the limit of 0\n")));
+    let config = fs::read_to_string(dir.path().join("docov.json")).unwrap();
+    assert!(config.contains(&format!(r#""threshold": {percent}"#)), "{config}");
+
+    let (code, schema, _) = run(&["--print-schema", "baseline"]);
+    let schema: serde_json::Value = serde_json::from_str(&schema).unwrap();
+    assert_eq!((code, schema["title"].as_str()), (0, Some("Baseline")));
+    // Somewhere it can't be written fails after the report.
+    let (code, _, err) = run(&["--write-baseline", "--baseline", "gone/known.json"]);
+    assert_eq!(code, 2);
+    assert!(err.starts_with("docov: gone/known.json: "), "{err}");
+    // One that can't be read fails before the scan.
+    fs::remove_file(dir.path().join("known.json")).unwrap();
+    let (code, out, err) = run(named);
+    assert_eq!((code, out.as_str()), (2, ""));
+    assert!(err.starts_with("docov: known.json: "), "{err}");
+
+    // A config it can't write fails naming it.
+    let config = dir.path().join("docov.json");
+    fs::write(&config, "{}").unwrap();
+    let mut permissions = fs::metadata(&config).unwrap().permissions();
+    permissions.set_readonly(true);
+    fs::set_permissions(&config, permissions).unwrap();
+    let (code, _, err) = run(&["--update-threshold"]);
+    unlock(&config);
+    assert_eq!(code, 2);
+    assert!(err.starts_with("docov: docov.json: "), "{err}");
+}
+
+/// Makes a read-only file writable again.
+fn unlock(path: &Path) {
+    let mut permissions = fs::metadata(path).unwrap().permissions();
+    #[expect(clippy::permissions_set_readonly_false, reason = "only to delete it")]
+    permissions.set_readonly(false);
+    fs::set_permissions(path, permissions).unwrap();
+}
+
+/// A threshold already in docov.json, before --update-threshold.
+#[derive(Clone, Copy, Debug)]
+enum Current {
+    Missing,
+    Null,
+    Percent(u16),
+    Undocumented(u8),
+    /// An object of thresholds, with or without `global`.
+    Object(Option<u16>),
+}
+
+/// --update-threshold raises the global threshold, a number or an object's `global`, to the
+/// documented percentage rounded down to a tenth, only when that's higher, leaving the rest of the
+/// file as written. A count of undocumented items stays. Without a config it writes docov.json
+/// where docov runs, and a config it can't write fails naming it.
+#[hegel::test(test_cases = 100)]
+fn update_threshold_only_raises(tc: TestCase) {
+    use docov::feature::{
+        threshold::{Limit, Threshold},
+        update_threshold::UpdateThreshold,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let total = tc.draw(gs::integers::<usize>().max_value(20));
+    let totals = Totals { documented: tc.draw(gs::integers::<usize>().max_value(total)), total };
+    let tenths = (totals.documented * 1000).checked_div(total).unwrap_or(1000);
+    let percent = tenths as f64 / 10.0;
+    // In tenths of a percent, near the scan's half the time.
+    let tenth = |tc: &TestCase| {
+        if tc.draw(gs::booleans()) {
+            tc.draw(gs::integers::<u16>().max_value(1000))
+        } else {
+            tenths.saturating_sub(1).max(1) as u16 + tc.draw(gs::integers::<u16>().max_value(1))
+        }
+    };
+    let current = match tc.draw(gs::integers::<u8>().max_value(4)) {
+        0 => Current::Missing,
+        1 => Current::Null,
+        2 => Current::Percent(tenth(&tc).min(1000)),
+        3 => Current::Undocumented(tc.draw(gs::integers::<u8>().min_value(1).max_value(5))),
+        _ => Current::Object(tc.draw(gs::optional(gs::just(()))).map(|()| tenth(&tc).min(1000))),
+    };
+    let number = |t: u16| format!("{}", f64::from(t) / 10.0);
+    let threshold = match current {
+        Current::Missing => String::new(),
+        Current::Null => r#""threshold": null, "#.into(),
+        Current::Percent(t) => format!(r#""threshold": {}, "#, number(t)),
+        Current::Undocumented(n) => format!(r#""threshold": -{n}, "#),
+        Current::Object(global) => {
+            let global = global.map(|t| format!(r#""global": {}, "#, number(t))).unwrap_or_default();
+            format!(r#""threshold": {{ {global}"src/**": 50 }}, "#)
+        }
+    };
+    let text = format!("// keep\n{{\n  {threshold}/* note */ \"scope\": \"all\",\n}}\n");
+    let path = dir.path().join("docov.jsonc");
+    fs::write(&path, &text).unwrap();
+    let update = load_settings(&path, &["--update-threshold".to_owned()]);
+    let update = *update.get::<UpdateThreshold>();
+    let raised = update.update(Some(&path), totals).unwrap();
+
+    let before = match current {
+        Current::Percent(t) | Current::Object(Some(t)) => Some(f64::from(t) / 10.0),
+        Current::Undocumented(_) => Some(f64::INFINITY),
+        _ => None,
+    };
+    let raises = before.is_none_or(|before| before < percent);
+    assert_eq!(raised.is_some(), raises, "{text}");
+    let after = fs::read_to_string(&path).unwrap();
+    assert!(
+        after.contains("// keep") && after.contains("/* note */") && after.contains("\"scope\": \"all\""),
+        "{after}"
+    );
+    let global = load_settings(&path, &[]).get::<Threshold>().0.global;
+    let wanted = match current {
+        _ if raises => Some(Limit::Percent(percent)),
+        Current::Undocumented(n) => Some(Limit::Undocumented(n.into())),
+        _ => before.map(Limit::Percent),
+    };
+    assert_eq!(global, wanted, "{after}");
+    // Asking again changes nothing.
+    assert_eq!(update.update(Some(&path), totals).unwrap(), None);
+    assert_eq!(*load_settings(&path, &[]).get::<UpdateThreshold>(), UpdateThreshold(false));
+    assert_eq!(UpdateThreshold(false).update(Some(&path), Totals::default()).unwrap(), None);
+
+    // A read-only config fails naming it.
+    let locked = dir.path().join("locked.json");
+    fs::write(&locked, "{}").unwrap();
+    let mut permissions = fs::metadata(&locked).unwrap().permissions();
+    permissions.set_readonly(true);
+    fs::set_permissions(&locked, permissions).unwrap();
+    let error = update.update(Some(&locked), totals).unwrap_err();
+    assert!(error.starts_with(&format!("{}: ", locked.display())), "{error}");
+    // So Windows can delete it.
+    unlock(&locked);
+
+    // Without a config, a new docov.json where docov runs.
+    std::env::set_current_dir(dir.path()).unwrap();
+    let message = update.update(None, totals).unwrap().unwrap();
+    assert_eq!(message, format!("raised the threshold to {percent}% in docov.json"));
+    assert_eq!(
+        fs::read_to_string(dir.path().join("docov.json")).unwrap(),
+        format!("{{\n  \"threshold\": {percent}\n}}\n")
+    );
+}
+
+/// Runs git in `dir`, a throwaway test repository, with an identity and no signing.
+fn git(dir: &Path, args: &[&str]) {
+    let config =
+        ["-c", "commit.gpgsign=false", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "init.defaultBranch=main"];
+    let out = Command::new("git").args(config).args(args).current_dir(dir).output().unwrap();
+    assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+}
+
+/// What happens to a file in a generated change.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Change {
+    Untouched,
+    Committed,
+    Staged,
+    Uncommitted,
+    Untracked,
+}
+
+/// In a real repository with a branch off main: --changed scans the files the branch changed,
+/// committed or not, and untracked ones, from main or from origin/HEAD in a clone, and --staged
+/// the staged ones. --diff-threshold counts the items on the lines they added. Outside a repository git's error says so, and without git, that it's missing.
+#[hegel::test(test_cases = 15)]
+fn git_narrows_to_changed_files_and_lines(tc: TestCase) {
+    use docov::feature::{changed::Changed, diff::Diff};
+    let dir = tempfile::tempdir().unwrap();
+    let origin = dir.path().join("origin");
+    fs::create_dir(&origin).unwrap();
+    git(&origin, &["init", "-q"]);
+    let changes: Vec<Change> = (0..tc.draw(gs::integers::<usize>().min_value(1).max_value(4)))
+        .map(|_| {
+            tc.draw(gs::sampled_from(vec![
+                Change::Untouched,
+                Change::Committed,
+                Change::Staged,
+                Change::Uncommitted,
+                Change::Untracked,
+            ]))
+        })
+        .collect();
+    // Each file has a comment, a documented function and another comment. The change takes out the
+    // first comment (a hunk that adds no lines), adds a line before the second that the diff shows
+    // as `+++ x;`, and adds a function, documented or not, after it.
+    let kept = |f: usize| format!("/** Docs. */\nexport function a{f}() {{}}\n");
+    let base = |f: usize| format!("// old\n{}// mid\n", kept(f));
+    for (f, change) in changes.iter().enumerate() {
+        if *change != Change::Untracked {
+            write(&origin, &format!("src/f{f}.ts"), &base(f));
+        }
+    }
+    write(&origin, "README.md", "readme");
+    git(&origin, &["add", "."]);
+    git(&origin, &["commit", "-q", "-m", "base"]);
+    let cloned = tc.draw(gs::booleans());
+    let repo = if cloned {
+        git(dir.path(), &["clone", "-q", "origin", "clone"]);
+        dir.path().join("clone")
+    } else {
+        origin.clone()
+    };
+    git(&repo, &["checkout", "-q", "-b", "change"]);
+    let documented: Vec<bool> = changes.iter().map(|_| tc.draw(gs::booleans())).collect();
+    let edit = |f: usize| {
+        let doc = if documented[f] { "/** Docs. */\n" } else { "" };
+        write(
+            &repo,
+            &format!("src/f{f}.ts"),
+            &format!(
+                "{}++ x;\n// mid\n// changed\n{doc}export function b{f}() {{}}\n// docov-ignore-next-line\nexport function c{f}() {{}}\n",
+                kept(f)
+            ),
+        );
+    };
+    for (f, change) in changes.iter().enumerate() {
+        if *change == Change::Committed {
+            edit(f);
+        }
+    }
+    git(&repo, &["commit", "-q", "--allow-empty", "-am", "change"]);
+    for (f, change) in changes.iter().enumerate() {
+        match change {
+            Change::Staged => {
+                edit(f);
+                git(&repo, &["add", &format!("src/f{f}.ts")]);
+            }
+            Change::Uncommitted | Change::Untracked => edit(f),
+            _ => {}
+        }
+    }
+
+    // From the repository's src/, so git's paths from the top don't match the scan's by accident.
+    std::env::set_current_dir(repo.join("src")).unwrap();
+    let root = docov::root::Root::new(Path::new(".."));
+    let files: Vec<PathBuf> = (0..changes.len()).map(|f| PathBuf::from(format!("f{f}.ts"))).collect();
+    // Without --since, the default branch is origin/HEAD's in the clone, and main otherwise.
+    let since = if tc.draw(gs::booleans()) { vec![] } else { vec!["--since".to_owned(), "main".to_owned()] };
+    let changed = settings(&repo, "{}", &[vec!["--changed".to_owned()], since.clone()].concat());
+    let staged = settings(&repo, "{}", &["--staged".to_owned()]);
+    let all = settings(&repo, "{}", &[]);
+    let pick = |wanted: &[Change]| -> Vec<PathBuf> {
+        files.iter().zip(&changes).filter(|(_, c)| wanted.contains(c)).map(|(f, _)| f.clone()).collect()
+    };
+    assert_eq!(all.get::<Changed>().filter(files.clone(), &root).unwrap(), files);
+    let since_main = pick(&[Change::Committed, Change::Staged, Change::Uncommitted, Change::Untracked]);
+    assert_eq!(changed.get::<Changed>().filter(files.clone(), &root).unwrap(), since_main);
+    assert_eq!(staged.get::<Changed>().filter(files.clone(), &root).unwrap(), pick(&[Change::Staged]));
+
+    // The changed lines' items are the functions the change added.
+    let reports: Vec<FileReport> = files.iter().map(|f| scan_file(f, &Scope::Exports.into()).unwrap()).collect();
+    let threshold = tc.draw(gs::integers::<u8>().max_value(100));
+    let diff = settings(
+        &repo,
+        "{}",
+        &[
+            vec!["--diff-threshold".to_owned(), threshold.to_string()],
+            since.iter().map(|a| a.replace("since", "diff-base")).collect(),
+        ]
+        .concat(),
+    );
+    let diff = diff.get::<Diff>();
+    let added = diff.added(&root).unwrap();
+    let changed_items = Totals {
+        documented: changes.iter().zip(&documented).filter(|(c, d)| **c != Change::Untouched && **d).count(),
+        total: changes.iter().filter(|c| **c != Change::Untouched).count(),
+    };
+    // An untracked file's every line is new, its first function too.
+    let untracked = changes.iter().filter(|c| **c == Change::Untracked).count();
+    let changed_items =
+        Totals { documented: changed_items.documented + untracked, total: changed_items.total + untracked };
+    let wanted = (changed_items.percent() < f64::from(threshold)).then(|| {
+        format!("changed lines: {:.1}% documented, under the {threshold}% diff threshold", changed_items.percent())
+    });
+    assert_eq!(diff.gate(added.as_ref(), &reports, &root), wanted);
+    assert!(all.get::<Diff>().added(&root).unwrap().is_none());
+
+    // Outside a repository, git's error says so.
+    std::env::set_current_dir(dir.path()).unwrap();
+    for settings in [&changed, &staged] {
+        let error = settings.get::<Changed>().filter(files.clone(), &root).unwrap_err();
+        assert!(error.starts_with("git rev-parse --show-cdup: ") && error.contains("not a git repository"), "{error}");
+    }
+    assert!(diff.added(&root).unwrap_err().contains("not a git repository"));
+    let out = Command::new(env!("CARGO_BIN_EXE_docov"))
+        .args(["--diff-threshold", "100"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert_eq!(out.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("not a git repository"), "{stderr}");
+    let out =
+        Command::new(env!("CARGO_BIN_EXE_docov")).arg("--staged").env("PATH", "").current_dir(&repo).output().unwrap();
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert_eq!(out.status.code(), Some(2), "{stderr}");
+    assert!(stderr.starts_with("docov: git rev-parse --show-cdup: "), "{stderr}");
 }

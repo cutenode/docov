@@ -37,6 +37,9 @@ pub struct Config {
     /// or with no file). `paths` and `exclude` are relative to it.
     #[serde(skip)]
     pub dir: PathBuf,
+    /// The file, as a path from the current folder, if there is one.
+    #[serde(skip)]
+    pub path: Option<PathBuf>,
 }
 
 /// Parses `--threshold`: a number from 0 to 100. It lives here rather than in the binary so tests
@@ -47,14 +50,9 @@ pub fn percent(value: &str) -> Result<f64, String> {
     in_range(value.parse().unwrap_or(f64::NAN))
 }
 
-/// `value`, if it's from 0 to 100. [`percent`] and [`percentage`] both check with this.
-fn in_range(value: f64) -> Result<f64, String> {
+/// `value`, if it's from 0 to 100. [`percent`] and docov.json's thresholds both check with this.
+pub(crate) fn in_range(value: f64) -> Result<f64, String> {
     if (0.0..=100.0).contains(&value) { Ok(value) } else { Err("expected a number from 0 to 100".into()) }
-}
-
-/// Reads an optional percentage key, such as `threshold`: a number from 0 to 100.
-pub fn percentage<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<f64>, D::Error> {
-    Option::<f64>::deserialize(deserializer)?.map(in_range).transpose().map_err(de::Error::custom)
 }
 
 /// The JSON Schema of the whole file: [`Config`]'s own keys, then each feature's.
@@ -154,6 +152,7 @@ impl Config {
         let mut config: Self = serde_json::from_str(&text).map_err(parse)?;
         config.keys = feature::Keys::parse(&text).map_err(parse)?;
         config.dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
+        config.path = Some(path);
         Ok(config)
     }
 

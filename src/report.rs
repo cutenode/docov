@@ -60,7 +60,7 @@ pub struct Context<'a> {
     pub failures: &'a [String],
     /// When the scan ran, for formats that say.
     pub now: SystemTime,
-    /// The threshold, which badges are colored by.
+    /// The global threshold, when it is a percentage, which badges are colored by.
     pub threshold: Option<f64>,
     /// How much `text` shows.
     pub text: Text,

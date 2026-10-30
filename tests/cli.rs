@@ -160,7 +160,13 @@ fn help_describes_docov_and_lists_every_features_flags() {
     let (code, out, _) = docov(dir.path(), &["--help"]);
     assert_eq!(code, 0);
     assert!(out.starts_with("Checks how much of a JavaScript or TypeScript project's API has JSDoc."), "{out}");
-    for flag in ["--threshold <PERCENT>", "--scope <SCOPE>"] {
+    for flag in [
+        "--threshold <PERCENT>",
+        "--scope <SCOPE>",
+        "--max-undocumented <N>",
+        "--baseline <FILE>",
+        "--update-threshold",
+    ] {
         assert!(out.contains(flag), "{flag}: {out}");
     }
     // Every format, with what it writes.
@@ -478,4 +484,249 @@ fn the_pre_commit_hook_installs_this_version() {
     let hooks = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(".pre-commit-hooks.yaml")).unwrap();
     let package = format!("\"@docov/cli@{}\"", env!("CARGO_PKG_VERSION"));
     assert!(hooks.contains(&package), "point .pre-commit-hooks.yaml's additional_dependencies at {package}");
+}
+
+#[test]
+fn thresholds_by_file_and_glob_each_fail_on_their_own_line() {
+    let dir = project();
+    let a = Path::new("src").join("a.ts").display().to_string();
+    // `src/*.js` and `src/a.*` pass: one item, documented, and one undocumented item of at most 1.
+    let config = r#"{ "threshold": { "global": 60, "perFile": 60, "src/*.js": 100, "src/a.*": -1, "src/": 70 } }"#;
+    fs::write(dir.path().join("docov.json"), config).unwrap();
+    let (code, _, err) = docov(dir.path(), &[]);
+    let wanted = format!(
+        "docov: {a}: 50.0% documented, under the 60% per-file threshold\ndocov: src/: 66.7% documented, under the 70% threshold\n"
+    );
+    assert_eq!((code, err), (1, wanted));
+    // --threshold is the global one.
+    let (code, _, err) = docov(dir.path(), &["--threshold", "70", "src/c.js"]);
+    assert_eq!((code, err.as_str()), (0, ""));
+
+    // A negative threshold is the most undocumented items, and -0 is 0%.
+    fs::write(dir.path().join("docov.json"), r#"{ "threshold": { "global": -0, "src/**/*.ts": -1, "src/a.ts": -2 } }"#)
+        .unwrap();
+    let (code, _, err) = docov(dir.path(), &[]);
+    assert_eq!((code, err.as_str()), (0, ""));
+    fs::write(dir.path().join("src/b.ts"), "export const z = 1;\n").unwrap();
+    let (code, _, err) = docov(dir.path(), &[]);
+    assert_eq!((code, err.as_str()), (1, "docov: src/**/*.ts: 2 undocumented, over the threshold of 1\n"));
+    fs::write(dir.path().join("docov.json"), r#"{ "threshold": -1 }"#).unwrap();
+    let (code, _, err) = docov(dir.path(), &[]);
+    assert_eq!((code, err.as_str()), (1, "docov: 2 undocumented, over the threshold of 1\n"));
+
+    let bad = [
+        (r#"{ "threshold": -0.5 }"#, "expected a number from 0 to 100, or a negative whole number at line 1"),
+        (
+            r#"{ "threshold": { "perFile": 101 } }"#,
+            "expected a number from 0 to 100, or a negative whole number at line 1",
+        ),
+        (r#"{ "threshold": { "src/[z": 1 } }"#, "error parsing glob 'src/[z'"),
+        (r#"{ "threshold": { "global": "80" } }"#, "invalid type: string \"80\", expected f64"),
+        (r#"{ "threshold": true }"#, "invalid type: boolean `true`, expected a number, or an object of them"),
+    ];
+    for (text, message) in bad {
+        fs::write(dir.path().join("docov.json"), text).unwrap();
+        let (code, _, err) = docov(dir.path(), &[]);
+        assert_eq!(code, 2, "{text}");
+        assert!(err.contains(message), "{text}: {err}");
+    }
+}
+
+#[test]
+fn overrides_change_exclude_and_threshold_for_their_files() {
+    let dir = project();
+    fs::create_dir_all(dir.path().join("src/legacy")).unwrap();
+    fs::write(dir.path().join("src/legacy/old.ts"), "export const o = 1;\nexport const p = 2;\n").unwrap();
+    fs::write(dir.path().join("src/legacy/old.test.ts"), "export const t = 1;\n").unwrap();
+    let config = r#"{
+        "exclude": ["*.test.ts", "src/c.js"],
+        "threshold": 60,
+        "overrides": [
+            { "files": ["src/legacy/"], "exclude": [], "threshold": 50 },
+            { "files": ["src/legacy/old.ts"], "threshold": { "perFile": 10 } }
+        ]
+    }"#;
+    fs::write(dir.path().join("docov.json"), config).unwrap();
+    let (code, out, err) = docov(dir.path(), &["--format", "json"]);
+    let json: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let paths: Vec<_> =
+        json["files"].as_array().unwrap().iter().map(|f| f["path"].as_str().unwrap().replace('\\', "/")).collect();
+    // The legacy folder keeps its test file, and old.ts has the last override's threshold.
+    assert_eq!(paths, ["src/a.ts", "src/legacy/old.test.ts", "src/legacy/old.ts"]);
+    let old = Path::new("src").join("legacy").join("old.ts").display().to_string();
+    let wanted = format!(
+        "docov: 50.0% documented, under the 60% threshold\ndocov: src/legacy/: 0.0% documented, under the 50% threshold\ndocov: {old}: 0.0% documented, under the 10% per-file threshold\n"
+    );
+    assert_eq!((code, err), (1, wanted));
+
+    fs::write(dir.path().join("docov.json"), r#"{ "overrides": [{ "files": ["src"], "scope": "all" }] }"#).unwrap();
+    let (code, _, err) = docov(dir.path(), &[]);
+    assert_eq!(code, 2);
+    assert!(err.contains("unknown field `scope`, expected one of `files`, `exclude`, `threshold`"), "{err}");
+}
+
+#[test]
+fn max_undocumented_is_a_gate_of_its_own() {
+    let dir = project();
+    fs::write(dir.path().join("docov.json"), r#"{ "maxUndocumented": 0, "threshold": 70 }"#).unwrap();
+    let (code, _, err) = docov(dir.path(), &[]);
+    // Gates run in their files' name order.
+    let wanted = "docov: 1 undocumented, over the limit of 0\ndocov: 66.7% documented, under the 70% threshold\n";
+    assert_eq!((code, err.as_str()), (1, wanted));
+    let (code, _, err) = docov(dir.path(), &["--max-undocumented", "1", "--threshold", "0"]);
+    assert_eq!((code, err.as_str()), (0, ""));
+}
+
+#[test]
+fn the_checked_in_baseline_schema_is_current() {
+    let dir = tempfile::tempdir().unwrap();
+    let (code, out, _) = docov(dir.path(), &["--print-schema", "baseline"]);
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("docov-baseline.schema.json");
+    assert_eq!(code, 0);
+    assert_eq!(
+        out,
+        fs::read_to_string(path).unwrap(),
+        "cargo run -- --print-schema baseline > docov-baseline.schema.json"
+    );
+}
+
+#[test]
+fn a_baseline_keys_items_by_path_kind_and_name() {
+    let dir = project();
+    let (code, _, err) = docov(&dir.path().join("src"), &["--write-baseline", "--threshold", "100"]);
+    assert_eq!((code, err.as_str()), (0, "docov: wrote the undocumented items to docov-baseline.json\n"));
+    let written = fs::read_to_string(dir.path().join("src/docov-baseline.json")).unwrap();
+    let schema = format!(
+        "https://raw.githubusercontent.com/cutenode/docov/v{}/docov-baseline.schema.json",
+        env!("CARGO_PKG_VERSION")
+    );
+    let wanted = format!(
+        "{{\n  \"$schema\": \"{schema}\",\n  \"items\": [\n    {{\n      \"path\": \"a.ts\",\n      \"kind\": \"variable\",\n      \"name\": \"b\"\n    }}\n  ]\n}}\n"
+    );
+    assert_eq!(written, wanted);
+
+    // From the config's folder, with `/` on every OS, wherever docov runs.
+    fs::write(dir.path().join("docov.json"), r#"{ "baseline": "known.json", "threshold": 100 }"#).unwrap();
+    let known = r#"{ "items": [{ "path": "src/a.ts", "kind": "variable", "name": "b" }] }"#;
+    fs::write(dir.path().join("known.json"), known).unwrap();
+    let (code, out, err) = docov(&dir.path().join("src"), &[]);
+    assert_eq!((code, err.as_str()), (0, ""));
+    assert!(out.contains("variable b"), "the report still lists it: {out}");
+    // Another kind or name isn't the same item.
+    fs::write(dir.path().join("known.json"), known.replace("variable", "function")).unwrap();
+    assert_eq!(docov(dir.path(), &[]).0, 1);
+    let (code, _, err) = docov(dir.path(), &["--write-baseline", "--baseline", "gone/known.json"]);
+    assert_eq!(code, 2);
+    assert!(err.contains("known.json: "), "{err}");
+    fs::write(dir.path().join("known.json"), r#"{ "items": [], "extra": 1 }"#).unwrap();
+    let (code, _, err) = docov(dir.path(), &[]);
+    assert_eq!(code, 2);
+    assert!(err.starts_with("docov: known.json: unknown field `extra`"), "{err}");
+}
+
+#[test]
+fn update_threshold_ratchets_the_config_in_place() {
+    let dir = project();
+    let (code, _, err) = docov(dir.path(), &["--update-threshold"]);
+    assert_eq!((code, err.as_str()), (0, "docov: raised the threshold to 66.6% in docov.json\n"));
+    assert_eq!(fs::read_to_string(dir.path().join("docov.json")).unwrap(), "{\n  \"threshold\": 66.6\n}\n");
+
+    let config =
+        "// ours\n{\n  \"threshold\": { \"src/**\": 10, \"global\": 50 }, // floor\n  \"scope\": \"exports\",\n}\n";
+    fs::write(dir.path().join("docov.json"), config).unwrap();
+    assert_eq!(docov(dir.path(), &["--update-threshold"]).0, 0);
+    let raised = fs::read_to_string(dir.path().join("docov.json")).unwrap();
+    assert_eq!(raised, config.replace("\"global\": 50", "\"global\": 66.6"));
+    // Never down.
+    fs::write(dir.path().join("src/b.ts"), "export const z = 1;\n").unwrap();
+    let (code, _, err) = docov(dir.path(), &["--update-threshold"]);
+    assert_eq!((code, err.as_str()), (1, "docov: 50.0% documented, under the 66.6% threshold\n"));
+    assert_eq!(fs::read_to_string(dir.path().join("docov.json")).unwrap(), raised);
+}
+
+/// Runs git in `dir`, a throwaway test repository, with an identity and no signing.
+fn git(dir: &Path, args: &[&str]) {
+    let config =
+        ["-c", "commit.gpgsign=false", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "init.defaultBranch=main"];
+    let out = Command::new("git").args(config).args(args).current_dir(dir).output().unwrap();
+    assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+}
+
+#[test]
+fn changed_and_staged_scan_what_git_says_changed() {
+    let dir = project();
+    git(dir.path(), &["init", "-q"]);
+    git(dir.path(), &["add", "."]);
+    git(dir.path(), &["commit", "-q", "-m", "base"]);
+    git(dir.path(), &["checkout", "-q", "-b", "change"]);
+    fs::write(dir.path().join("src/c.js"), "/** c */\nexport class C {}\nexport const d = 1;\n").unwrap();
+    fs::write(dir.path().join("src/new.ts"), "export const n = 1;\n").unwrap();
+    let json = |args: &[&str]| {
+        let (code, out, err) = docov(dir.path(), &[&["--format", "json"], args].concat());
+        assert_eq!((code, err.as_str()), (0, ""));
+        let json: serde_json::Value = serde_json::from_str(&out).unwrap();
+        json["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| f["path"].as_str().unwrap().replace('\\', "/"))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(json(&["--changed"]), ["src/c.js", "src/new.ts"]);
+    assert_eq!(json(&["--changed", "--since", "HEAD", "src/new.ts"]), ["src/new.ts"]);
+    assert!(json(&["--staged"]).is_empty());
+    git(dir.path(), &["add", "src/c.js"]);
+    assert_eq!(json(&["--staged"]), ["src/c.js"]);
+
+    let (code, _, err) = docov(dir.path(), &["--changed", "--since", "nope"]);
+    assert_eq!(code, 2);
+    assert!(err.starts_with("docov: git diff --name-only -z --merge-base nope: "), "{err}");
+    // --since is for --changed, and --changed and --staged don't go together.
+    assert_eq!(docov(dir.path(), &["--since", "main"]).0, 2);
+    assert_eq!(docov(dir.path(), &["--changed", "--staged"]).0, 2);
+}
+
+#[test]
+fn the_diff_threshold_counts_the_items_on_added_lines() {
+    let dir = project();
+    git(dir.path(), &["init", "-q"]);
+    git(dir.path(), &["add", "."]);
+    git(dir.path(), &["commit", "-q", "-m", "base"]);
+    git(dir.path(), &["checkout", "-q", "-b", "change"]);
+    // b, already undocumented, isn't on an added line; e and f are, one documented.
+    fs::write(
+        dir.path().join("src/a.ts"),
+        "/** a */\nexport function a() {}\nexport const b = 1;\n/** e */\nexport const e = 1;\nexport const f = 1;\n",
+    )
+    .unwrap();
+    git(dir.path(), &["commit", "-q", "-am", "e and f"]);
+    fs::write(dir.path().join("src/g.ts"), "/** g */\nexport const g = 1;\n").unwrap();
+    let (code, _, err) = docov(dir.path(), &["--diff-threshold", "70", "--threshold", "0"]);
+    assert_eq!((code, err.as_str()), (1, "docov: changed lines: 66.7% documented, under the 70% diff threshold\n"));
+    assert_eq!(docov(dir.path(), &["--diff-threshold", "66", "--diff-base", "main"]).0, 0);
+    // From HEAD, only the untracked file is new.
+    assert_eq!(docov(dir.path(), &["--diff-threshold", "100", "--diff-base", "HEAD"]).0, 0);
+    // --diff-base is for --diff-threshold.
+    assert_eq!(docov(dir.path(), &["--diff-base", "main"]).0, 2);
+}
+
+#[test]
+fn each_path_threshold_failure_is_an_annotation_and_ignored_items_stay_out() {
+    let dir = project();
+    let a = Path::new("src").join("a.ts").display().to_string();
+    fs::write(dir.path().join("docov.json"), r#"{ "threshold": { "perFile": 60, "src/": 70 } }"#).unwrap();
+    let (code, out, _) = docov(dir.path(), &["--format", "github"]);
+    let annotations = format!(
+        "::warning file=src/a.ts,line=3,col=1,title=docov::variable b is undocumented\n\
+        ::error title=docov::{a}: 50.0%25 documented, under the 60%25 per-file threshold\n\
+        ::error title=docov::src/: 66.7%25 documented, under the 70%25 threshold\n"
+    );
+    assert_eq!((code, out), (1, annotations));
+    // Ignoring b takes it out of both thresholds, as it is out of the report.
+    fs::write(
+        dir.path().join("src/a.ts"),
+        "/** a */\nexport function a() {}\n// docov-ignore-next-line\nexport const b = 1;\n",
+    )
+    .unwrap();
+    assert_eq!(docov(dir.path(), &["--format", "github"]), (0, String::new(), String::new()));
 }

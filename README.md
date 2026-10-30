@@ -30,7 +30,11 @@ docov [PATHS]... [--config FILE] [--threshold PERCENT] [--scope exports|all] [--
 
 With no paths it scans the current folder: every `.js`, `.mjs`, `.cjs`, `.jsx`, `.ts`, `.mts`, `.cts` and `.tsx` file, leaving out hidden files and what `.gitignore` leaves out (in a git repository or not). A file named on the command line is always scanned.
 
-It exits 0 when coverage meets the threshold (or there isn't one), 1 when it's under, and 2 when a file doesn't parse or the config or a path can't be read. Every file has to parse, since a partial one would undercount.
+It exits 0 when every gate passes (or there isn't one), 1 when one fails, such as coverage under a threshold, and 2 when a file doesn't parse or the config or a path can't be read. Every file has to parse, since a partial one would undercount.
+
+`--changed` scans only the files that differ from where HEAD branched off the default branch (`origin/HEAD`, or `main` without one), committed or not, and untracked ones. `--since REF` compares with another branch or commit instead. `--staged` scans only the staged files, for a pre-commit hook. Paths given on the command line still narrow the scan.
+
+`--diff-threshold PERCENT` fails the scan when the items on lines a change added (committed or not, and every line of an untracked file) are under that documented percentage, wherever the rest of the project is. The change is from where HEAD branched off the default branch, or off `--diff-base REF`. These run `git` (2.30 or later).
 
 ### What counts
 
@@ -79,6 +83,22 @@ Some things never count: constructors (their class's doc covers them), private m
 ```
 
 `paths` and `exclude` (gitignore-style globs) are relative to the config's folder. Comments and trailing commas are fine in any of the three. Editors don't know `.docovrc` is JSON, so tell yours (in VS Code, `"files.associations": { ".docovrc": "jsonc" }`).
+
+`threshold` can also be an object of thresholds by path, such as `{ "global": 80, "perFile": 50, "src/api/**": 100 }`. `global` is for every file together (`--threshold` sets it), `perFile` for each file on its own, and any other key is a gitignore-style glob, relative to the config's folder, for the files it matches together. A negative number is the most undocumented items that pass instead of a percentage, as in [Jest](https://jestjs.io/docs/configuration#coveragethreshold-object): `-10` allows 10. Each threshold that fails prints its own line.
+
+`maxUndocumented` (or `--max-undocumented N`) fails the scan when more than that many items are undocumented, next to any threshold.
+
+`baseline` (or `--baseline FILE`) names a file of known undocumented items, so new code can be held to a gate while older code catches up. `docov --write-baseline` writes every undocumented item that isn't ignored to it (to `docov-baseline.json` in the config's folder when nothing names one) and exits 0. The gates count the items in it as documented, while the report still lists them. Items are kept by path, kind and name, so moving lines doesn't make them stale, and each path is relative to the config's folder with `/` on every OS. [`docov-baseline.schema.json`](docov-baseline.schema.json) (`docov --print-schema baseline`) is its JSON Schema.
+
+`docov --update-threshold` ratchets the threshold: when the documented percentage, rounded down to a tenth, is over the config's global threshold, it writes it there (into `global` for an object of thresholds), changing only that number so comments and formatting stay. A negative threshold stays as it is. Without a config it writes a new `docov.json` where docov runs.
+
+`overrides` changes settings for some paths: each has `files` (gitignore-style globs) and any of `exclude` and `threshold`, which replace the top-level ones for those files. For each file and setting, the last override that matches the file and has the setting wins. The top-level thresholds then cover only the files no override has a threshold for. As in .gitignore, a file in a folder that's left out stays out.
+
+```jsonc
+"overrides": [
+  { "files": ["src/legacy/"], "exclude": [], "threshold": 20 },
+]
+```
 
 [`docov.schema.json`](docov.schema.json) is its JSON Schema, which editors use for completion and checking. The URL above is pinned to a release so it matches the docov you have; `docov --print-schema > docov.schema.json` writes your own copy to point at instead.
 
