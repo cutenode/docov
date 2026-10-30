@@ -39,10 +39,13 @@ impl Totals {
 
     /// The sum over every file.
     pub fn of(files: &[FileReport]) -> Self {
-        files
-            .iter()
-            .map(FileReport::totals)
-            .fold(Self::default(), |a, b| Self { documented: a.documented + b.documented, total: a.total + b.total })
+        files.iter().map(FileReport::totals).sum()
+    }
+}
+
+impl std::iter::Sum for Totals {
+    fn sum<I: Iterator<Item = Self>>(totals: I) -> Self {
+        totals.fold(Self::default(), |a, b| Self { documented: a.documented + b.documented, total: a.total + b.total })
     }
 }
 

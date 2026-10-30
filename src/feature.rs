@@ -7,7 +7,7 @@ use clap::{ArgMatches, Args, Command, FromArgMatches};
 use schemars::{JsonSchema, Schema};
 use serde::de::DeserializeOwned;
 
-use crate::FileReport;
+use crate::{FileReport, root::Root};
 
 include!(concat!(env!("OUT_DIR"), "/features.rs"));
 
@@ -26,10 +26,20 @@ pub trait Feature: Sized + Send + Sync + 'static {
     /// The setting, from its flags and keys. A flag wins over its key.
     fn new(flags: Self::Flags, keys: Self::Keys) -> Self;
 
-    /// Why the scan fails, when this setting fails it (exit 1).
-    fn gate(&self, _reports: &[FileReport]) -> Option<String> {
-        None
+    /// Why the scan fails, a line for each way this setting fails it (exit 1).
+    fn gate(&self, _run: &Run) -> Vec<String> {
+        Vec::new()
     }
+}
+
+/// What a scan found, for the gates.
+pub struct Run<'a> {
+    /// Each file's items.
+    pub reports: &'a [FileReport],
+    /// The config's folder, which docov.json's globs are relative to.
+    pub root: &'a Root,
+    /// Every feature's setting, for a gate that depends on another feature's.
+    pub settings: &'a Settings,
 }
 
 /// A feature, registered.
@@ -122,15 +132,15 @@ impl PartialEq for Keys {
 /// A feature, made.
 trait Loaded: Send + Sync {
     fn as_any(&self) -> &dyn Any;
-    fn gate(&self, reports: &[FileReport]) -> Option<String>;
+    fn gate(&self, run: &Run) -> Vec<String>;
 }
 
 impl<F: Feature> Loaded for F {
     fn as_any(&self) -> &dyn Any {
         self
     }
-    fn gate(&self, reports: &[FileReport]) -> Option<String> {
-        Feature::gate(self, reports)
+    fn gate(&self, run: &Run) -> Vec<String> {
+        Feature::gate(self, run)
     }
 }
 
@@ -148,8 +158,10 @@ impl Settings {
         self.0.iter().find_map(|f| f.as_any().downcast_ref()).expect("every feature is registered")
     }
 
-    /// Why the scan fails, from each feature that fails it.
-    pub fn gates(&self, reports: &[FileReport]) -> Vec<String> {
-        self.0.iter().filter_map(|f| f.gate(reports)).collect()
+    /// Why the scan of `reports` fails, from each feature that fails it. `root` is the config's
+    /// folder.
+    pub fn gates(&self, reports: &[FileReport], root: &Root) -> Vec<String> {
+        let run = Run { reports, root, settings: self };
+        self.0.iter().flat_map(|f| f.gate(&run)).collect()
     }
 }

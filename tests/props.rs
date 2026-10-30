@@ -762,7 +762,7 @@ fn each_bad_input_fails_naming_itself(tc: TestCase) {
 /// A config file that isn't an object, or has a key that isn't a string, a value that isn't JSON or
 /// a known key of the wrong type, fails to load, and says where. Loaded in-process: the binary's
 /// properties above already run it on bad files, and each run is slow under coverage.
-#[hegel::test(test_cases = 20)]
+#[hegel::test(test_cases = 60)]
 fn malformed_configs_fail_to_load_where_they_break(tc: TestCase) {
     let dir = tempfile::tempdir().unwrap();
     let padding = " ".repeat(tc.draw(gs::integers::<usize>().max_value(3)));
@@ -772,8 +772,21 @@ fn malformed_configs_fail_to_load_where_they_break(tc: TestCase) {
         (r#"{ "paths": [1 }"#, "expected `,` or `]`", 15),
         (r#"{ "paths": 1 }"#, "invalid type: integer `1`, expected a sequence", 12),
         (r#"{ "scope": "some" }"#, "unknown variant `some`, expected `exports` or `all`", 17),
+        (r#"{ "threshold": { "global": "80" } }"#, "invalid type: string \"80\", expected f64", 31),
+        (r#"{ "threshold": true }"#, "invalid type: boolean `true`, expected a number, or an object of them", 19),
+        (r#"{ "threshold": -0.5 }"#, "expected a number from 0 to 100, or a negative whole number", 19),
+        (r#"{ "threshold": { "perFile": 101 } }"#, "expected a number from 0 to 100, or a negative whole number", 33),
+        (r#"{ "threshold": { "[z": 1 } }"#, "error parsing glob '[z': unclosed character class; missing ']'", 26),
     ]));
     let path = dir.path().join("docov.json");
+    // A threshold's glob too big to build, like the walk's (globset fails from about 30,000
+    // alternatives).
+    if tc.draw(gs::weighted_booleans(0.1)) {
+        let huge = format!("{{{}}}", (0..40_000).map(|i| format!("x{i}[a-z][0-9]?")).collect::<Vec<_>>().join(","));
+        fs::write(&path, serde_json::json!({ "threshold": { huge: 1 } }).to_string()).unwrap();
+        let error = config::Config::load(Some(&path)).unwrap_err().to_string();
+        assert!(error.contains("NFA"), "{error}");
+    }
     fs::write(&path, format!("{padding}{text}")).unwrap();
     let column = column + padding.len();
     match config::Config::load(Some(&path)) {
@@ -791,6 +804,11 @@ fn comments_in_config_files_change_nothing(tc: TestCase) {
     let dir = tempfile::tempdir().unwrap();
     let exclude = tc.draw(gs::vecs(gs::sampled_from(vec!["*.js", "src/*/x.ts", "a//b", "c/**"])).max_size(3));
     let threshold = tc.draw(gs::optional(gs::integers::<u8>().max_value(100)));
+    // A threshold by path, with a glob that compares by its text.
+    let threshold = match threshold {
+        Some(t) if tc.draw(gs::booleans()) => serde_json::json!({ "src/**": t, "perFile": -1 }),
+        t => serde_json::json!(t),
+    };
     let scope = tc.draw(gs::sampled_from(vec!["exports", "all"]));
     let json = serde_json::json!({ "exclude": exclude, "threshold": threshold, "scope": scope });
     let plain = serde_json::to_string_pretty(&json).unwrap();
@@ -822,4 +840,87 @@ fn comments_in_config_files_change_nothing(tc: TestCase) {
     let stray: Vec<_> =
         lines.iter().enumerate().map(|(i, l)| if i == at { format!("/ {l}") } else { (*l).into() }).collect();
     assert!(matches!(load(&stray.join("\n")), Err(config::Error::Slash { .. })));
+}
+
+/// Settings from `config` (docov.json's text) and `args`, made in-process.
+fn settings(dir: &Path, config: &str, args: &[String]) -> docov::Settings {
+    let path = dir.join("docov.json");
+    fs::write(&path, config).unwrap();
+    let config = config::Config::load(Some(&path)).unwrap();
+    let matches = docov::feature::args(clap::Command::new("docov"))
+        .try_get_matches_from(std::iter::once("docov".to_owned()).chain(args.iter().cloned()));
+    docov::Settings::new(&matches.unwrap(), config.keys)
+}
+
+/// A threshold from docov.json: a percentage, or a negative number for the most undocumented items.
+fn limit(tc: &TestCase) -> i64 {
+    if tc.draw(gs::booleans()) {
+        tc.draw(gs::integers::<i64>().min_value(0).max_value(100))
+    } else {
+        -tc.draw(gs::integers::<i64>().min_value(0).max_value(4))
+    }
+}
+
+/// Why `totals` fails `limit`, as the model has it.
+fn fails(limit: i64, totals: Totals, what: &str) -> Option<String> {
+    let undocumented = totals.total - totals.documented;
+    if limit >= 0 {
+        let percent = totals.percent();
+        (percent < limit as f64).then(|| format!("{percent:.1}% documented, under the {limit}% {what}"))
+    } else {
+        let most = (-limit) as usize;
+        (undocumented > most).then(|| format!("{undocumented} undocumented, over the {what} of {most}"))
+    }
+}
+
+/// Which of `reports`' files (`f<i>.ts`, by `i`) a glob matches.
+type Matches = fn(usize) -> bool;
+
+/// Globs a threshold can name, and which of `reports`' files each matches.
+const GLOBS: [(&str, Matches); 5] =
+    [("f0.ts", |i| i == 0), ("f[01].ts", |i| i < 2), ("*.ts", |_| true), ("/f3*", |i| i == 3), ("nothing/", |_| false)];
+
+/// Thresholds by file and by glob, overall or a most undocumented items: each fails on its own
+/// line exactly when the files it covers don't meet it, the global one first, then each file's,
+/// then each glob's. `--threshold` replaces the global one.
+#[hegel::test(test_cases = 100)]
+fn thresholds_fail_by_file_and_glob(tc: TestCase) {
+    let dir = tempfile::tempdir().unwrap();
+    let files = reports(&tc);
+    let sum = |matched: &dyn Fn(usize) -> bool| -> Totals {
+        files.iter().enumerate().filter(|(i, _)| matched(*i)).map(|(_, f)| f.totals()).sum()
+    };
+    let global = tc.draw(gs::optional(gs::just(()))).map(|()| limit(&tc));
+    let per_file = tc.draw(gs::optional(gs::just(()))).map(|()| limit(&tc));
+    let globs: Vec<_> = tc.draw(gs::vecs(gs::integers::<usize>().max_value(GLOBS.len() - 1)).max_size(3).unique(true));
+    let globs: Vec<_> = globs.into_iter().map(|g| (GLOBS[g], limit(&tc))).collect();
+    let flag = tc.draw(gs::optional(gs::integers::<u8>().max_value(100)));
+
+    // Written by hand: serde_json's maps sort their keys, and the globs' order is the file's.
+    // Sometimes as a float, which JSON readers see apart from an integer.
+    let number = |n: i64| if tc.draw(gs::booleans()) { format!("{n}.0") } else { n.to_string() };
+    let mut entries: Vec<String> = Vec::new();
+    entries.extend(global.map(|g| format!(r#""global": {}"#, number(g))));
+    entries.extend(per_file.map(|p| format!(r#""perFile": {}"#, number(p))));
+    entries.extend(globs.iter().map(|((glob, _), l)| format!("{}: {}", serde_json::json!(glob), number(*l))));
+    // A lone global threshold can be a plain number.
+    let threshold = match global {
+        Some(g) if entries.len() == 1 && tc.draw(gs::booleans()) => number(g),
+        _ => format!("{{ {} }}", entries.join(", ")),
+    };
+    let args: Vec<String> = flag.map(|f| vec!["--threshold".into(), f.to_string()]).unwrap_or_default();
+    let settings = settings(dir.path(), &format!(r#"{{ "threshold": {threshold} }}"#), &args);
+
+    let mut wanted = Vec::new();
+    let global = flag.map(i64::from).or(global);
+    wanted.extend(global.and_then(|g| fails(g, sum(&|_| true), "threshold")));
+    for file in per_file.iter().flat_map(|p| files.iter().map(move |f| (p, f))) {
+        wanted.extend(
+            fails(*file.0, file.1.totals(), "per-file threshold").map(|m| format!("{}: {m}", file.1.path.display())),
+        );
+    }
+    for ((glob, matched), l) in &globs {
+        wanted.extend(fails(*l, sum(matched), "threshold").map(|m| format!("{glob}: {m}")));
+    }
+    assert_eq!(settings.gates(&files, &docov::root::Root::new(Path::new(""))), wanted);
 }

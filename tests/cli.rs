@@ -183,3 +183,49 @@ fn the_readme_points_at_this_versions_schema() {
         format!("https://raw.githubusercontent.com/cutenode/docov/v{}/docov.schema.json", env!("CARGO_PKG_VERSION"));
     assert!(readme.contains(&url), "point the README's $schema at {url}");
 }
+
+#[test]
+fn thresholds_by_file_and_glob_each_fail_on_their_own_line() {
+    let dir = project();
+    let a = Path::new("src").join("a.ts").display().to_string();
+    // `src/*.js` and `src/a.*` pass: one item, documented, and one undocumented item of at most 1.
+    let config = r#"{ "threshold": { "global": 60, "perFile": 60, "src/*.js": 100, "src/a.*": -1, "src/": 70 } }"#;
+    fs::write(dir.path().join("docov.json"), config).unwrap();
+    let (code, _, err) = docov(dir.path(), &[]);
+    let wanted = format!(
+        "docov: {a}: 50.0% documented, under the 60% per-file threshold\ndocov: src/: 66.7% documented, under the 70% threshold\n"
+    );
+    assert_eq!((code, err), (1, wanted));
+    // --threshold is the global one.
+    let (code, _, err) = docov(dir.path(), &["--threshold", "70", "src/c.js"]);
+    assert_eq!((code, err.as_str()), (0, ""));
+
+    // A negative threshold is the most undocumented items, and -0 is 0%.
+    fs::write(dir.path().join("docov.json"), r#"{ "threshold": { "global": -0, "src/**/*.ts": -1, "src/a.ts": -2 } }"#)
+        .unwrap();
+    let (code, _, err) = docov(dir.path(), &[]);
+    assert_eq!((code, err.as_str()), (0, ""));
+    fs::write(dir.path().join("src/b.ts"), "export const z = 1;\n").unwrap();
+    let (code, _, err) = docov(dir.path(), &[]);
+    assert_eq!((code, err.as_str()), (1, "docov: src/**/*.ts: 2 undocumented, over the threshold of 1\n"));
+    fs::write(dir.path().join("docov.json"), r#"{ "threshold": -1 }"#).unwrap();
+    let (code, _, err) = docov(dir.path(), &[]);
+    assert_eq!((code, err.as_str()), (1, "docov: 2 undocumented, over the threshold of 1\n"));
+
+    let bad = [
+        (r#"{ "threshold": -0.5 }"#, "expected a number from 0 to 100, or a negative whole number at line 1"),
+        (
+            r#"{ "threshold": { "perFile": 101 } }"#,
+            "expected a number from 0 to 100, or a negative whole number at line 1",
+        ),
+        (r#"{ "threshold": { "src/[z": 1 } }"#, "error parsing glob 'src/[z'"),
+        (r#"{ "threshold": { "global": "80" } }"#, "invalid type: string \"80\", expected f64"),
+        (r#"{ "threshold": true }"#, "invalid type: boolean `true`, expected a number, or an object of them"),
+    ];
+    for (text, message) in bad {
+        fs::write(dir.path().join("docov.json"), text).unwrap();
+        let (code, _, err) = docov(dir.path(), &[]);
+        assert_eq!(code, 2, "{text}");
+        assert!(err.contains(message), "{text}: {err}");
+    }
+}

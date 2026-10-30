@@ -30,7 +30,7 @@ docov [PATHS]... [--config FILE] [--threshold PERCENT] [--scope exports|all] [--
 
 With no paths it scans the current folder: every `.js`, `.mjs`, `.cjs`, `.jsx`, `.ts`, `.mts`, `.cts` and `.tsx` file, leaving out hidden files and what `.gitignore` leaves out (in a git repository or not). A file named on the command line is always scanned.
 
-It exits 0 when coverage meets the threshold (or there isn't one), 1 when it's under, and 2 when a file doesn't parse or the config or a path can't be read. Every file has to parse, since a partial one would undercount.
+It exits 0 when coverage meets every threshold (or there isn't one), 1 when it's under one, and 2 when a file doesn't parse or the config or a path can't be read. Every file has to parse, since a partial one would undercount.
 
 ### What counts
 
@@ -63,6 +63,8 @@ Some things never count: constructors (their class's doc covers them), private m
 ```
 
 `paths` and `exclude` (gitignore-style globs) are relative to the config's folder. Comments and trailing commas are fine in any of the three. Editors don't know `.docovrc` is JSON, so tell yours (in VS Code, `"files.associations": { ".docovrc": "jsonc" }`).
+
+`threshold` can also be an object of thresholds by path, such as `{ "global": 80, "perFile": 50, "src/api/**": 100 }`. `global` is for every file together (`--threshold` sets it), `perFile` for each file on its own, and any other key is a gitignore-style glob, relative to the config's folder, for the files it matches together. A negative number is the most undocumented items that pass instead of a percentage, as in [Jest](https://jestjs.io/docs/configuration#coveragethreshold-object): `-10` allows 10. Each threshold that fails prints its own line.
 
 [`docov.schema.json`](docov.schema.json) is its JSON Schema, which editors use for completion and checking. The URL above is pinned to a release so it matches the docov you have; `docov --print-schema > docov.schema.json` writes your own copy to point at instead.
 

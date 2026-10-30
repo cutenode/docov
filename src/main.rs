@@ -3,7 +3,7 @@
 use std::{io, path::PathBuf, process::ExitCode};
 
 use clap::{CommandFactory, FromArgMatches, Parser};
-use docov::{Config, Format, Scope, Settings, feature, report, scan_file, walk};
+use docov::{Config, Format, Scope, Settings, feature, report, root::Root, scan_file, walk};
 use rayon::{iter::Either, prelude::*};
 
 /// Checks how much of a JavaScript or TypeScript project's API has JSDoc.
@@ -64,7 +64,7 @@ fn run(cli: Cli, matches: &clap::ArgMatches) -> Result<bool, Vec<String>> {
     }
     report::write(cli.format, &reports, &mut io::stdout().lock()).map_err(|e| vec![e.to_string()])?;
 
-    let failures = settings.gates(&reports);
+    let failures = settings.gates(&reports, &Root::new(&config.dir));
     for failure in &failures {
         eprintln!("docov: {failure}");
     }

@@ -3,7 +3,9 @@
 pub mod collect;
 pub mod config;
 pub mod feature;
+pub mod glob;
 pub mod report;
+pub mod root;
 pub mod walk;
 
 pub use collect::{FileReport, Item, Kind, scan, scan_file};

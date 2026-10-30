@@ -52,15 +52,77 @@
       "description": "Which declarations count."
     },
     "threshold": {
-      "default": null,
-      "description": "The lowest documented percentage that passes.",
-      "format": "double",
-      "maximum": 100,
-      "minimum": 0,
-      "type": [
-        "number",
-        "null"
-      ]
+      "anyOf": [
+        {
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "maximum": 100,
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "maximum": -1,
+                  "type": "integer"
+                }
+              ],
+              "description": "A documented percentage from 0 to 100, or a negative whole number for at most that many undocumented items."
+            },
+            {
+              "additionalProperties": {
+                "anyOf": [
+                  {
+                    "maximum": 100,
+                    "minimum": 0,
+                    "type": "number"
+                  },
+                  {
+                    "maximum": -1,
+                    "type": "integer"
+                  }
+                ],
+                "description": "For the files a gitignore-style glob matches, relative to this file's folder, together."
+              },
+              "properties": {
+                "global": {
+                  "anyOf": [
+                    {
+                      "maximum": 100,
+                      "minimum": 0,
+                      "type": "number"
+                    },
+                    {
+                      "maximum": -1,
+                      "type": "integer"
+                    }
+                  ],
+                  "description": "For every file together."
+                },
+                "perFile": {
+                  "anyOf": [
+                    {
+                      "maximum": 100,
+                      "minimum": 0,
+                      "type": "number"
+                    },
+                    {
+                      "maximum": -1,
+                      "type": "integer"
+                    }
+                  ],
+                  "description": "For each file on its own."
+                }
+              },
+              "type": "object"
+            }
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The lowest documented percentage that passes, or thresholds by path: `global` for every file together, `perFile` for each file, and gitignore-style globs for the files each matches together."
     }
   },
   "title": "Config",
