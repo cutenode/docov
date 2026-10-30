@@ -504,7 +504,9 @@ fn nested_configs_set_their_own_files(tc: TestCase) {
         .filter(|g| g.2.percent() < f64::from(g.1))
         .map(|(file, threshold, totals)| {
             let failure = format!("{:.1}% documented, under the {threshold}% threshold", totals.percent());
-            file.as_ref().map_or(failure.clone(), |file| format!("{}: {failure}", dir.path().join(file).display()))
+            // docov finds a nested config from the walk's paths, which have the OS's separators.
+            let config = |file: &String| dir.path().join(file).components().collect::<PathBuf>();
+            file.as_ref().map_or(failure.clone(), |file| format!("{}: {failure}", config(file).display()))
         })
         .collect();
     let (_, mut gates) = plan.gates(&reports);
@@ -879,15 +881,16 @@ fn the_cli_reads_stdin_in_place_of_files(tc: TestCase) {
     write(dir.path(), "other.ts", "export const other = 1;\n");
     let documented = tc.draw(gs::booleans());
     let source = format!("{}export const a = 1;\n", if documented { "/** Docs. */\n" } else { "" });
+    // docov names it as it was given, the way it does a file named on the command line.
+    let path = "src/new.ts";
     let (code, out, err) =
-        docov_with_stdin(dir.path(), &["--stdin-filename", "src/new.ts", "--threshold", "100"], source.as_bytes());
-    let path = Path::new("src").join("new.ts").display().to_string();
+        docov_with_stdin(dir.path(), &["--stdin-filename", path, "--threshold", "100"], source.as_bytes());
     let percent = if documented { "100.0%  1/1" } else { "  0.0%  0/1" };
     let line = |label: &str| format!(" {percent}  {label}\n");
     let item = if documented { String::new() } else { format!("         {path}:1:1  variable a\n") };
-    assert_eq!(out, format!("{}{item}{}", line(&path), line("total")));
+    assert_eq!(out, format!("{}{item}{}", line(path), line("total")));
     assert_eq!(code, i32::from(!documented), "{err}");
-    let (code, out, err) = docov_with_stdin(dir.path(), &["--stdin-filename", "src/new.ts"], b"export function (");
+    let (code, out, err) = docov_with_stdin(dir.path(), &["--stdin-filename", path], b"export function (");
     assert_eq!((code, out.as_str()), (2, ""));
     assert!(err.starts_with(&format!("docov: {path}:1:")), "{err}");
 }
