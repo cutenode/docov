@@ -759,6 +759,31 @@ fn each_bad_input_fails_naming_itself(tc: TestCase) {
     }
 }
 
+/// A config file that isn't an object, or has a key that isn't a string, a value that isn't JSON or
+/// a known key of the wrong type, fails to load, and says where. Loaded in-process: the binary's
+/// properties above already run it on bad files, and each run is slow under coverage.
+#[hegel::test(test_cases = 20)]
+fn malformed_configs_fail_to_load_where_they_break(tc: TestCase) {
+    let dir = tempfile::tempdir().unwrap();
+    let padding = " ".repeat(tc.draw(gs::integers::<usize>().max_value(3)));
+    let (text, message, column) = tc.draw(gs::sampled_from(vec![
+        ("[]", "invalid type: sequence, expected an object", 0),
+        ("{ 1: 2 }", "key must be a string", 3),
+        (r#"{ "paths": [1 }"#, "expected `,` or `]`", 15),
+        (r#"{ "paths": 1 }"#, "invalid type: integer `1`, expected a sequence", 12),
+        (r#"{ "scope": "some" }"#, "unknown variant `some`, expected `exports` or `all`", 17),
+    ]));
+    let path = dir.path().join("docov.json");
+    fs::write(&path, format!("{padding}{text}")).unwrap();
+    let column = column + padding.len();
+    match config::Config::load(Some(&path)) {
+        Err(config::Error::Parse { source, .. }) => {
+            assert_eq!(source.to_string(), format!("{message} at line 1 column {column}"));
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
 /// A config file loads the same with comments and trailing commas added as without them, strings
 /// that look like comments included, and fails to load with a `/` that starts no comment.
 #[hegel::test(test_cases = 50)]

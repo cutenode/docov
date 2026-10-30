@@ -1,28 +1,23 @@
 //! docov.json (or docov.jsonc, or .docovrc), the settings file.
 
-use std::{env, fs, io, iter, path::Path, path::PathBuf};
+use std::{borrow::Cow, env, fmt, fs, io, iter, path::Path, path::PathBuf, sync::OnceLock};
 
 use schemars::JsonSchema;
-use serde::{Deserialize, Deserializer, Serialize, de};
+use serde::{
+    Deserialize, Deserializer,
+    de::{self, DeserializeSeed, IgnoredAny, MapAccess, Visitor},
+};
+use serde_json::Value;
+
+use crate::feature;
 
 /// The files `docov` reads its settings from when no `--config` is given: the first of these in
 /// the current folder, or else in the nearest folder above it that has one.
 pub const FILE_NAMES: [&str; 3] = ["docov.json", "docov.jsonc", ".docovrc"];
 
-/// Which declarations count toward coverage.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema, clap::ValueEnum)]
-#[serde(rename_all = "lowercase")]
-pub enum Scope {
-    /// What a module exports, with the public members of exported classes and interfaces.
-    #[default]
-    Exports,
-    /// Every module-level declaration, exported or not.
-    All,
-}
-
 /// docov's settings. Flags on the command line win over them.
 #[derive(Debug, Default, PartialEq, Deserialize, JsonSchema)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 // Tells editors (VS Code's JSON service reads these) that the file may have comments and trailing
 // commas, which `load` strips.
 #[schemars(extend("allowComments" = true, "allowTrailingCommas" = true))]
@@ -34,12 +29,10 @@ pub struct Config {
     pub paths: Vec<PathBuf>,
     /// Gitignore-style globs of files to leave out, relative to this file's folder, on top of .gitignore.
     pub exclude: Vec<String>,
-    /// The lowest documented percentage that passes.
-    #[schemars(range(min = 0, max = 100))]
-    #[serde(deserialize_with = "threshold")]
-    pub threshold: Option<f64>,
-    /// Which declarations count.
-    pub scope: Scope,
+    /// Each feature's keys, which the features' own files define.
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub keys: feature::Keys,
     /// The folder the file is in, as a path from the current folder (empty for the current folder,
     /// or with no file). `paths` and `exclude` are relative to it.
     #[serde(skip)]
@@ -54,13 +47,69 @@ pub fn percent(value: &str) -> Result<f64, String> {
     in_range(value.parse().unwrap_or(f64::NAN))
 }
 
-/// `value`, if it's from 0 to 100. `--threshold` and the config's `threshold` both check with this.
+/// `value`, if it's from 0 to 100. [`percent`] and [`percentage`] both check with this.
 fn in_range(value: f64) -> Result<f64, String> {
     if (0.0..=100.0).contains(&value) { Ok(value) } else { Err("expected a number from 0 to 100".into()) }
 }
 
-fn threshold<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<f64>, D::Error> {
+/// Reads an optional percentage key, such as `threshold`: a number from 0 to 100.
+pub fn percentage<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<f64>, D::Error> {
     Option::<f64>::deserialize(deserializer)?.map(in_range).transpose().map_err(de::Error::custom)
+}
+
+/// The JSON Schema of the whole file: [`Config`]'s own keys, then each feature's.
+fn schema() -> Value {
+    let mut root = schemars::schema_for!(Config).to_value();
+    for schema in feature::schemas() {
+        let mut schema = schema.to_value();
+        for part in ["properties", "$defs"] {
+            if let Some(Value::Object(add)) = schema.get_mut(part).map(Value::take) {
+                let into = root.as_object_mut().expect("a schema is an object").entry(part);
+                into.or_insert_with(|| Value::Object(Default::default()))
+                    .as_object_mut()
+                    .expect("properties and $defs are objects")
+                    .extend(add);
+            }
+        }
+    }
+    root["additionalProperties"] = false.into();
+    root
+}
+
+/// Every key the file may have, in the schema's order.
+fn known_keys() -> &'static [&'static str] {
+    static KEYS: OnceLock<Vec<&'static str>> = OnceLock::new();
+    KEYS.get_or_init(|| {
+        let schema = schema();
+        let properties = schema["properties"].as_object().expect("the schema has properties");
+        properties.keys().map(|key| &*key.clone().leak()).collect()
+    })
+}
+
+/// Fails on a key no feature reads, at that key, the way `deny_unknown_fields` would.
+struct KnownKeys;
+
+impl<'de> DeserializeSeed<'de> for KnownKeys {
+    type Value = ();
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<(), D::Error> {
+        deserializer.deserialize_map(self)
+    }
+}
+
+impl<'de> Visitor<'de> for KnownKeys {
+    type Value = ();
+    fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("an object")
+    }
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
+        while let Some(key) = map.next_key::<Cow<str>>()? {
+            if !known_keys().contains(&&*key) {
+                return Err(de::Error::unknown_field(&key, known_keys()));
+            }
+            map.next_value::<IgnoredAny>()?;
+        }
+        Ok(())
+    }
 }
 
 /// The nearest of [`FILE_NAMES`], as a path from the current folder (`../docov.json` one folder
@@ -100,15 +149,16 @@ impl Config {
         if json_strip_comments::strip(&mut text).is_err() {
             return Err(Error::Slash { path });
         }
-        let mut config: Self =
-            serde_json::from_str(&text).map_err(|source| Error::Parse { path: path.clone(), source })?;
+        let parse = |source| Error::Parse { path: path.clone(), source };
+        KnownKeys.deserialize(&mut serde_json::Deserializer::from_str(&text)).map_err(parse)?;
+        let mut config: Self = serde_json::from_str(&text).map_err(parse)?;
+        config.keys = feature::Keys::parse(&text).map_err(parse)?;
         config.dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
         Ok(config)
     }
 
     /// The JSON Schema for this file, as `docov --print-schema` prints it.
     pub fn json_schema() -> String {
-        let schema = schemars::schema_for!(Config);
-        serde_json::to_string_pretty(&schema).expect("a schema serializes") + "\n"
+        serde_json::to_string_pretty(&schema()).expect("a schema serializes") + "\n"
     }
 }
