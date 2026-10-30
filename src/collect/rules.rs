@@ -81,8 +81,7 @@ impl Rules {
     /// Whether its kind, name, access level or tags leave `found` out.
     fn leaves_out(&self, found: &Found) -> bool {
         let kind = self.kinds.as_ref().is_some_and(|kinds| !kinds.contains(&found.kind));
-        let member = matches!(found.kind, Kind::Method | Kind::Accessor | Kind::Property);
-        let own_name = found.name.split_once('.').filter(|_| member).map(|(_, name)| name);
+        let own_name = found.name.split_once('.').filter(|_| found.kind.is_member()).map(|(_, name)| name);
         let named = |re: &Regex| re.is_match(&found.name) || own_name.is_some_and(|name| re.is_match(name));
         let level = found.doc.as_ref().and_then(doc::access);
         let level = level.unwrap_or(if found.protected { Access::Protected } else { Access::Public });

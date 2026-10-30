@@ -25,6 +25,9 @@ pub struct Facts {
     /// Whether it's exported, by the ways of exporting that count, whatever the scope.
     #[serde(skip)]
     pub exported: bool,
+    /// Whether its JSDoc has exactly one release tag: `@public`, `@beta`, `@alpha` or `@internal`.
+    #[serde(skip)]
+    pub release_tagged: bool,
 }
 
 impl Facts {
@@ -40,6 +43,7 @@ impl Facts {
             since: doc.and_then(|doc| doc::text(doc, "since")),
             params: found.params.as_ref().map_or(0, Vec::len),
             exported,
+            release_tagged: doc.is_some_and(|doc| doc::release_tags(doc) == 1),
         }
     }
 }

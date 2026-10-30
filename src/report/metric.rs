@@ -1,6 +1,8 @@
 //! Metrics past coverage: of the items a metric is over, how many have what it measures.
 
-use crate::{FileReport, Item, Totals};
+use std::io::{self, Write};
+
+use crate::{FileReport, Item, Kind, Totals};
 
 /// What share of some items have something, such as an `@example`.
 #[derive(Clone, Copy, Debug)]
@@ -23,6 +25,14 @@ pub const EXAMPLES: Metric = Metric {
     has: |i| i.facts.has_example,
 };
 
+/// The share of top-level exports with exactly one release tag, as API Extractor wants.
+pub const RELEASE_TAGS: Metric = Metric {
+    name: "release tags",
+    keys: ["releaseTagged", "releaseTagsPercent"],
+    over: |i| i.facts.exported && !i.kind.is_member() && i.kind != Kind::Module,
+    has: |i| i.facts.release_tagged,
+};
+
 impl Metric {
     /// How many of `file`'s items it's over have it (`documented`), out of how many (`total`).
     pub fn file(self, file: &FileReport) -> Totals {
@@ -33,6 +43,12 @@ impl Metric {
     /// The same, summed over every file.
     pub fn total(self, files: &[FileReport]) -> Totals {
         files.iter().map(|f| self.file(f)).sum()
+    }
+
+    /// Writes its total as a line of the text report, after the total there: `  50.0%  1/2  types`.
+    pub fn line(self, files: &[FileReport], out: &mut dyn Write) -> io::Result<()> {
+        let totals = self.total(files);
+        writeln!(out, "{:>6.1}%  {}/{}  {}", totals.percent(), totals.documented, totals.total, self.name)
     }
 
     /// Why the scan fails, when its percentage is under `threshold`.

@@ -4,7 +4,7 @@ use std::{fs, path::Path, path::PathBuf, process::Command};
 
 use docov::feature::{
     Feature, access::Access, add_ignore::AddIgnore, commonjs_members::CommonjsMembers, examples::Examples,
-    exports::Exports, file_docs::FileDocs, inherit::Inherit, kinds::Kinds, members::Members,
+    exports::Exports, file_docs::FileDocs, inherit::Inherit, kinds::Kinds, members::Members, release_tags::ReleaseTags,
     report_unused_ignores::ReportUnusedIgnores, sort::Sort, virtual_types::VirtualTypes,
 };
 use docov::{
@@ -114,6 +114,7 @@ impl Expected {
             since: doc.and_then(|b| b.since).map(String::from),
             params: self.params.map_or(0, <[_]>::len),
             exported: self.via.is_some_and(counts),
+            release_tagged: ["public", "beta", "alpha", "internal"].iter().filter(|t| tags.contains(t)).count() == 1,
         };
         Some(Item { documented, facts, ..self.item.clone() })
     }
@@ -147,7 +148,8 @@ const fn access(text: &'static str, tags: &'static [&'static str], level: Access
     Block { access: Some(level), ..block(text, true, true, tags) }
 }
 
-const BLOCKS: [Block; 21] = [
+const BLOCKS: [Block; 22] = [
+    block("/** Docs.\n * @beta\n * @alpha\n */", true, true, &["beta", "alpha"]),
     block("/** Docs. */", true, true, &[]),
     Block { params: &["a"], ..block("/**\n * Docs.\n * @param a The a.\n */", true, true, &["param"]) },
     Block {
@@ -708,6 +710,7 @@ fn reports(tc: &TestCase, ignores: bool) -> Vec<FileReport> {
                         has_example: drawn[2] / 2 % 2 == 0,
                         params: i % 3,
                         exported: drawn[1] / 2 % 2 == 0,
+                        release_tagged: (drawn[0] + drawn[1]) % 3 == 0,
                         ..Facts::default()
                     },
                     // The comment on the line before, the same for the items that share a line.
@@ -1171,6 +1174,51 @@ fn commonjs_assignments_add_members_when_asked(tc: TestCase) {
             wanted.iter().filter(|(_, n, e)| counts(*n, *e)).map(|(item, _, _)| item.clone()).collect();
         assert_eq!(found, expected, "{ext} {on} {scope:?}: {source}");
     }
+}
+
+/// Release-tag coverage is the share of counted top-level exports with exactly one of `@public`,
+/// `@beta`, `@alpha` and `@internal`. With `--release-tags` (or a threshold) the JSON report has it
+/// and the text report gets a line of it, and its threshold fails the scan under it.
+#[hegel::test(test_cases = 100)]
+fn release_tags_are_a_metric_when_asked(tc: TestCase) {
+    let files = reports(&tc, true);
+    let over = |i: &&Item| (i.documented || i.ignore.is_none()) && i.facts.exported && !i.kind.is_member();
+    let of = |f: &FileReport| {
+        let over: Vec<_> = f.items.iter().filter(over).collect();
+        Totals { documented: over.iter().filter(|i| i.facts.release_tagged).count(), total: over.len() }
+    };
+    let all = files
+        .iter()
+        .map(of)
+        .fold(Totals::default(), |a, b| Totals { documented: a.documented + b.documented, total: a.total + b.total });
+    let threshold = tc.draw(gs::optional(gs::integers::<u8>().max_value(100))).map(f64::from);
+    let on = threshold.is_some() || tc.draw(gs::booleans());
+    let feature = ReleaseTags { on, threshold };
+
+    let mut options = report::Options::default();
+    feature.report(&mut options);
+    let mut out = Vec::new();
+    report::write_with(Format::Json, &files, &options, &mut out).unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    let shown = |v: &serde_json::Value| (v["releaseTagged"].as_u64(), v["releaseTagsPercent"].as_f64());
+    let wanted = |t: Totals| if on { (Some(t.documented as u64), Some(t.percent())) } else { (None, None) };
+    assert_eq!(shown(&json), wanted(all));
+    assert!(json["files"].as_array().unwrap().iter().map(shown).eq(files.iter().map(|f| wanted(of(f)))));
+
+    let append = |format| {
+        let mut out = Vec::new();
+        feature.append(format, &files, &mut out).unwrap();
+        String::from_utf8(out).unwrap()
+    };
+    let line = format!("{:>6.1}%  {}/{}  release tags\n", all.percent(), all.documented, all.total);
+    assert_eq!(append(Format::Text), if on { line } else { String::new() });
+    assert_eq!(append(Format::Json), "");
+
+    let percent = all.percent();
+    let failure = threshold
+        .filter(|&t| percent < t)
+        .map(|t| format!("{percent:.1}% with release tags, under the {t}% release tags threshold"));
+    assert_eq!(feature.gate(&files), failure);
 }
 
 fn render(format: Format, files: &[FileReport]) -> String {
@@ -1741,6 +1789,12 @@ fn rules_come_from_flags_over_the_config(tc: TestCase) {
     }
     let examples_threshold =
         run.set(&tc, "examplesThreshold", vec![0.0, 50.5], |t| vec!["--examples-threshold".into(), t.to_string()]);
+    let release_tags = tc.draw(gs::booleans());
+    if release_tags {
+        run.args.push("--release-tags".into());
+    }
+    let release_threshold = run
+        .set(&tc, "releaseTagsThreshold", vec![10.0, 90.0], |t| vec!["--release-tags-threshold".into(), t.to_string()]);
     let sort = tc.draw(gs::sampled_from(vec![Sort::Position, Sort::Priority]));
     run.args.extend(["--sort".into(), if sort == Sort::Priority { "priority" } else { "position" }.into()]);
     let ignore_deprecated = run.set(&tc, "ignoreDeprecated", vec![false, true], |_| vec![]);
@@ -1770,6 +1824,9 @@ fn rules_come_from_flags_over_the_config(tc: TestCase) {
     assert_eq!(settings.get::<Kinds>().by_kind, by_kind);
     assert_eq!(settings.report().sort, sort);
     assert_eq!(settings.report().examples, examples);
+    let release_tags = ReleaseTags { on: release_tags || release_threshold.is_some(), threshold: release_threshold };
+    assert_eq!(*settings.get::<ReleaseTags>(), release_tags);
+    assert_eq!(settings.report().metrics.len(), usize::from(release_tags.on));
     assert_eq!(*settings.get::<Examples>(), Examples { text: examples, threshold: examples_threshold });
     assert_eq!(rules.kinds, kinds);
     assert_eq!(*settings.get::<Scope>(), scope.unwrap_or_default());

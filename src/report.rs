@@ -74,6 +74,8 @@ pub struct Options {
     pub sort: Sort,
     /// Whether the text report's lines have an examples figure.
     pub examples: bool,
+    /// The metrics the JSON report has past coverage and examples.
+    pub metrics: Vec<metric::Metric>,
 }
 
 /// Writes `files` to `out` in `format`.
@@ -85,7 +87,7 @@ pub fn write(format: Format, files: &[FileReport], out: &mut impl Write) -> io::
 pub fn write_with(format: Format, files: &[FileReport], options: &Options, out: &mut impl Write) -> io::Result<()> {
     match format {
         Format::Text => text::write(files, options, out),
-        Format::Json => json::write(files, out),
+        Format::Json => json::write(files, options, out),
         Format::Lcov => lcov::write(files, out),
     }
 }

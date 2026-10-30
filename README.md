@@ -71,6 +71,8 @@ Some things never count: constructors (their class's doc covers them), private m
 
 Example coverage is a second figure: the share of counted items whose JSDoc has an `@example`, as rustdoc's `--show-coverage` counts it. The JSON report always has it (`withExamples` and `examplesPercent`, for each file and in all), `--examples` adds it to each line of the text report, and `--examples-threshold PERCENT` (`"examplesThreshold"`) fails the scan under it.
 
+`--release-tags` adds release-tag coverage: the share of counted top-level exports with exactly one of `@public`, `@beta`, `@alpha` and `@internal`, which [API Extractor asks for](https://api-extractor.com/pages/messages/ae-missing-release-tag/) (members take their container's, so they aren't counted). It's a line after the text report's total and `releaseTagged` and `releaseTagsPercent` in the JSON report, and `--release-tags-threshold PERCENT` (`"releaseTagsThreshold"`, which turns it on too) fails the scan under it.
+
 `"ignoreDeprecated": true` leaves out items whose JSDoc has `@deprecated`, and `"skipGenerated": true` leaves out every item in a file whose first comment has `@generated`.
 
 ### docov.json

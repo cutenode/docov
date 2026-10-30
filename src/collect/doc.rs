@@ -43,6 +43,11 @@ pub(super) fn lists(doc: &JSDoc, name: &str) -> bool {
     properties.filter_map(|tag| tag.type_name_comment().1).any(|named| named.parsed() == name)
 }
 
+/// How many of the release tags `@public`, `@beta`, `@alpha` and `@internal` `doc` has.
+pub(super) fn release_tags(doc: &JSDoc) -> usize {
+    ["public", "beta", "alpha", "internal"].iter().filter(|tag| has_tag(doc, tag)).count()
+}
+
 /// Whether `doc` has the tag `name` (without its `@`).
 pub(super) fn has_tag(doc: &JSDoc, name: &str) -> bool {
     doc.tags().iter().any(|tag| tag.kind.parsed() == name)

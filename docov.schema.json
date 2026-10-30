@@ -291,6 +291,17 @@
       },
       "type": "array"
     },
+    "releaseTagsThreshold": {
+      "default": null,
+      "description": "The lowest percentage of top-level exports with exactly one of @public, @beta, @alpha and @internal that passes.",
+      "format": "double",
+      "maximum": 100,
+      "minimum": 0,
+      "type": [
+        "number",
+        "null"
+      ]
+    },
     "reportUnusedIgnores": {
       "default": false,
       "description": "Fail on a docov-ignore-next-line whose items are documented anyway.",

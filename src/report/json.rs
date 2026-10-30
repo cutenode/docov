@@ -2,7 +2,10 @@ use std::io::{self, Write};
 
 use serde::{Serialize, Serializer};
 
-use super::metric::{EXAMPLES, Metric};
+use super::{
+    Options,
+    metric::{EXAMPLES, Metric},
+};
 use crate::{FileReport, Item, Kind, Totals};
 
 #[derive(Serialize)]
@@ -71,10 +74,10 @@ impl<'a> JsonItem<'a> {
     }
 }
 
-/// Every item, with totals and each metric's figures.
-pub fn write(files: &[FileReport], out: &mut impl Write) -> io::Result<()> {
+/// Every item, with totals and each metric's figures: examples, and those `options` add.
+pub fn write(files: &[FileReport], options: &Options, out: &mut impl Write) -> io::Result<()> {
     let (totals, kinds) = (Totals::of(files), Totals::by_kind(files));
-    let metrics = [EXAMPLES];
+    let metrics: Vec<Metric> = std::iter::once(EXAMPLES).chain(options.metrics.iter().copied()).collect();
     let of = |count: &dyn Fn(Metric) -> Totals| Metrics(metrics.iter().map(|&m| (m, count(m))).collect());
     let total = of(&|m| m.total(files));
     let files = files

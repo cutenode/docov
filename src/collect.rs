@@ -75,6 +75,11 @@ impl Kind {
             Self::Module => "module",
         }
     }
+
+    /// Whether it's a member of a class, interface, enum or object.
+    pub fn is_member(self) -> bool {
+        matches!(self, Self::Method | Self::Accessor | Self::Property)
+    }
 }
 
 impl Serialize for Kind {

@@ -451,3 +451,19 @@ fn commonjs_members_count_prototype_and_this_assignments() {
         )
     );
 }
+
+#[test]
+fn release_tags_are_counted_over_top_level_exports() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = "/**\n * A.\n * @public\n */\nexport class A {\n  m() {}\n}\n/** B. */\nexport const b = 1;\n";
+    fs::write(dir.path().join("a.ts"), source).unwrap();
+    let (code, out, _) = docov(dir.path(), &["--release-tags"]);
+    assert_eq!((code, out.lines().last()), (0, Some("  50.0%  1/2  release tags")));
+    let (_, out, _) = docov(dir.path(), &["--format", "json"]);
+    assert!(!out.contains("releaseTagged"));
+    fs::write(dir.path().join("docov.json"), r#"{ "releaseTagsThreshold": 60 }"#).unwrap();
+    let (code, out, err) = docov(dir.path(), &["--format", "json"]);
+    let json: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!((code, &json["releaseTagged"], &json["releaseTagsPercent"]), (1, &1.into(), &50.0.into()));
+    assert_eq!(err, "docov: 50.0% with release tags, under the 60% release tags threshold\n");
+}
