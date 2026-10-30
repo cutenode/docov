@@ -183,3 +183,15 @@ fn the_readme_points_at_this_versions_schema() {
         format!("https://raw.githubusercontent.com/cutenode/docov/v{}/docov.schema.json", env!("CARGO_PKG_VERSION"));
     assert!(readme.contains(&url), "point the README's $schema at {url}");
 }
+
+#[test]
+fn require_description_comes_from_the_flag_or_the_config() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("a.ts"), "/** @internal */\nexport const a = 1;\n/** A. */\nexport const b = 1;\n")
+        .unwrap();
+    let total = |args: &[&str]| docov(dir.path(), args).1.lines().last().unwrap().to_owned();
+    assert_eq!(total(&[]), " 100.0%  2/2  total");
+    assert_eq!(total(&["--require-description"]), "  50.0%  1/2  total");
+    fs::write(dir.path().join("docov.json"), r#"{ "requireDescription": true }"#).unwrap();
+    assert_eq!(total(&[]), "  50.0%  1/2  total");
+}

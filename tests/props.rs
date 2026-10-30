@@ -2,7 +2,7 @@
 
 use std::{fs, path::Path, path::PathBuf, process::Command};
 
-use docov::{FileReport, Format, Item, Kind, Scope, Totals, collect, config, report, scan, scan_file};
+use docov::{FileReport, Format, Item, Kind, Rules, Scope, Totals, collect, config, feature, report, scan, scan_file};
 use hegel::{TestCase, generators as gs};
 use oxc_span::SourceType;
 
@@ -10,11 +10,62 @@ use oxc_span::SourceType;
 #[derive(Default)]
 struct Module {
     source: String,
-    /// Each item, and whether the module exports it.
-    expected: Vec<(bool, Item)>,
+    /// Each item the module declares.
+    expected: Vec<Expected>,
     specifiers: Vec<String>,
     has_default: bool,
 }
+
+/// An item a generated module declares.
+struct Expected {
+    /// Whether the module exports it.
+    exported: bool,
+    /// The item, documented when it has a JSDoc block.
+    item: Item,
+    /// Its JSDoc block.
+    doc: Option<Block>,
+}
+
+impl Expected {
+    /// The item, if it counts by `rules`.
+    fn by(&self, rules: &Rules) -> Option<Item> {
+        if rules.scope == Scope::Exports && !self.exported {
+            return None;
+        }
+        let described = |b: Block| if self.item.kind == Kind::Class { b.class_described } else { b.described };
+        let documented = self.doc.is_some_and(|b| !rules.require_description || described(b));
+        Some(Item { documented, ..self.item.clone() })
+    }
+}
+
+/// A JSDoc block a generated module has, and what it says.
+#[derive(Clone, Copy, Debug)]
+struct Block {
+    text: &'static str,
+    /// Whether it describes its item: text before its first tag, or a tag that stands in for it.
+    described: bool,
+    /// Whether it describes a class, which `@classdesc` does too.
+    class_described: bool,
+}
+
+const fn block(text: &'static str, described: bool, class_described: bool) -> Block {
+    Block { text, described, class_described }
+}
+
+const BLOCKS: [Block; 12] = [
+    block("/** Docs. */", true, true),
+    block("/**\n * Docs.\n * @param a The a.\n */", true, true),
+    block("/** Mail me@example.com. */", true, true),
+    block("/** @type {string} */", false, false),
+    block("/** @deprecated */", false, false),
+    block("/** @internal */", false, false),
+    block("/** @description Docs. */", true, true),
+    block("/**\n * @desc\n */", false, false),
+    block("/** @summary Docs. */", true, true),
+    block("/** @classdesc Docs. */", false, true),
+    block("/** @inheritDoc */", true, true),
+    block("/**\n * @INHERITDOC\n */", true, true),
+];
 
 /// How a generated declaration is exported.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -36,26 +87,27 @@ impl Module {
         self.source.push('\n');
     }
 
-    /// Writes ordinary comments and maybe a JSDoc block, and says whether it wrote the block.
-    fn doc(&mut self, tc: &TestCase) -> bool {
+    /// Writes ordinary comments and maybe a JSDoc block, and says which block it wrote.
+    fn doc(&mut self, tc: &TestCase) -> Option<Block> {
         let noise = ["// note", "/* note */", "/** */", "/**\n *\n */", "/** @license MIT */"];
         if tc.draw(gs::booleans()) {
             self.write(tc.draw(gs::sampled_from(noise.to_vec())));
         }
-        let documented = tc.draw(gs::booleans());
-        if documented {
-            self.write("/** Docs. */");
+        let doc = tc.draw(gs::booleans()).then(|| tc.draw(gs::sampled_from(BLOCKS.to_vec())));
+        if let Some(block) = doc {
+            self.write(block.text);
         }
         if tc.draw(gs::booleans()) {
             self.write("// after");
         }
-        documented
+        doc
     }
 
     /// Expects an item on the line about to be written.
-    fn expect(&mut self, exported: bool, name: String, kind: Kind, documented: bool) {
+    fn expect(&mut self, exported: bool, name: String, kind: Kind, doc: Option<Block>) {
         let line = self.source.matches('\n').count() + 1;
-        self.expected.push((exported, Item { name, kind, line, column: 1, documented }));
+        let item = Item { name, kind, line, column: 1, documented: doc.is_some() };
+        self.expected.push(Expected { exported, item, doc });
     }
 
     /// A statement that exports and declares nothing.
@@ -75,49 +127,49 @@ impl Module {
 
     /// A CommonJS export of a value rather than a declaration.
     fn commonjs(&mut self, tc: &TestCase, i: usize) {
-        let documented = self.doc(tc);
+        let doc = self.doc(tc);
         match tc.draw(gs::integers::<u8>().max_value(6)) {
             6 => self.nothing(tc),
             0 => {
-                self.expect(true, format!("c{i}"), Kind::Function, documented);
+                self.expect(true, format!("c{i}"), Kind::Function, doc);
                 self.write(&format!("exports.c{i} = function () {{}};"));
             }
             1 => {
-                self.expect(true, format!("c{i}"), Kind::Variable, documented);
+                self.expect(true, format!("c{i}"), Kind::Variable, doc);
                 self.write(&format!("module.exports.c{i} = 1;"));
             }
             2 => {
-                self.expect(true, format!("f{i}"), Kind::Function, documented);
+                self.expect(true, format!("f{i}"), Kind::Function, doc);
                 self.write(&format!("module.exports = function f{i}() {{}};"));
             }
             3 if tc.draw(gs::booleans()) => {
-                self.expect(true, format!("G{i}"), Kind::Class, documented);
+                self.expect(true, format!("G{i}"), Kind::Class, doc);
                 self.write(&format!("module.exports = class G{i} {{}};"));
             }
             3 => {
-                self.expect(true, "default".into(), Kind::Class, documented);
+                self.expect(true, "default".into(), Kind::Class, doc);
                 self.write("module.exports = class {};");
             }
             4 => {
-                self.expect(true, "default".into(), Kind::Default, documented);
+                self.expect(true, "default".into(), Kind::Default, doc);
                 self.write("module.exports = 1;");
             }
             _ => {
                 self.write("module.exports = {");
                 for j in 0..tc.draw(gs::integers::<usize>().max_value(3)) {
-                    let documented = self.doc(tc);
+                    let doc = self.doc(tc);
                     match tc.draw(gs::integers::<u8>().max_value(4)) {
                         4 => self.write("...rest,"),
                         0 => {
-                            self.expect(true, format!("p{i}_{j}"), Kind::Variable, documented);
+                            self.expect(true, format!("p{i}_{j}"), Kind::Variable, doc);
                             self.write(&format!("p{i}_{j}: 1,"));
                         }
                         1 => {
-                            self.expect(true, format!("m{i}_{j}"), Kind::Function, documented);
+                            self.expect(true, format!("m{i}_{j}"), Kind::Function, doc);
                             self.write(&format!("m{i}_{j}() {{}},"));
                         }
                         2 => {
-                            self.expect(true, format!("a{i}_{j}"), Kind::Function, documented);
+                            self.expect(true, format!("a{i}_{j}"), Kind::Function, doc);
                             self.write(&format!("a{i}_{j}: () => 1,"));
                         }
                         // Exports a name nothing here declares.
@@ -170,10 +222,10 @@ impl Module {
             self.specifiers.push(name.clone());
         }
 
-        let documented = self.doc(tc);
+        let doc = self.doc(tc);
         match kind {
             Kind::Function => {
-                self.expect(exported, name.clone(), kind, documented);
+                self.expect(exported, name.clone(), kind, doc);
                 if export != Export::DefaultInline && tc.draw(gs::booleans()) {
                     // Only the signature counts; the implementation after it doesn't.
                     self.write(&format!("{prefix}function {name}(a: string): void;"));
@@ -185,11 +237,11 @@ impl Module {
                 self.write(&format!("{prefix}const {{ d{i} }} = {{ d{i}: 1 }};"));
             }
             Kind::Variable => {
-                self.expect(exported, name.clone(), kind, documented);
+                self.expect(exported, name.clone(), kind, doc);
                 self.write(&format!("{prefix}const {name} = 1;"));
             }
             Kind::Type | Kind::Enum | Kind::Namespace => {
-                self.expect(exported, name.clone(), kind, documented);
+                self.expect(exported, name.clone(), kind, doc);
                 let body = match kind {
                     Kind::Type => format!("type {name} = string;"),
                     Kind::Enum => format!("enum {name} {{ A }}"),
@@ -198,11 +250,11 @@ impl Module {
                 self.write(&format!("{prefix}{body}"));
             }
             Kind::Default => {
-                self.expect(true, "default".into(), kind, documented);
+                self.expect(true, "default".into(), kind, doc);
                 self.write("export default { a: 1 };");
             }
             Kind::Class => {
-                self.expect(exported, name.clone(), kind, documented);
+                self.expect(exported, name.clone(), kind, doc);
                 if tc.draw(gs::booleans()) {
                     self.write("@sealed");
                 }
@@ -211,17 +263,17 @@ impl Module {
                 self.write("}");
             }
             Kind::Interface => {
-                self.expect(exported, name.clone(), kind, documented);
+                self.expect(exported, name.clone(), kind, doc);
                 self.write(&format!("{prefix}interface {name} {{"));
                 for j in 0..tc.draw(gs::integers::<usize>().max_value(3)) {
-                    let documented = self.doc(tc);
+                    let doc = self.doc(tc);
                     match tc.draw(gs::integers::<u8>().max_value(2)) {
                         0 => {
-                            self.expect(exported, format!("{name}.p{j}"), Kind::Property, documented);
+                            self.expect(exported, format!("{name}.p{j}"), Kind::Property, doc);
                             self.write(&format!("p{j}: 1;"));
                         }
                         1 => {
-                            self.expect(exported, format!("{name}.m{j}"), Kind::Method, documented);
+                            self.expect(exported, format!("{name}.m{j}"), Kind::Method, doc);
                             self.write(&format!("m{j}(): void;"));
                         }
                         _ => self.write("[key: string]: unknown;"),
@@ -256,9 +308,8 @@ impl Module {
     fn class_members(&mut self, tc: &TestCase, class: &str, exported: bool) {
         let mut constructed = false;
         for j in 0..tc.draw(gs::integers::<usize>().max_value(4)) {
-            let documented = self.doc(tc);
-            let item =
-                |m: &mut Self, name: String, kind| m.expect(exported, format!("{class}.{name}"), kind, documented);
+            let doc = self.doc(tc);
+            let item = |m: &mut Self, name: String, kind| m.expect(exported, format!("{class}.{name}"), kind, doc);
             match tc.draw(gs::integers::<u8>().max_value(9)) {
                 0 => {
                     item(self, format!("m{j}"), Kind::Method);
@@ -333,15 +384,28 @@ fn scans_find_what_modules_declare(tc: TestCase) {
     let Module { source, expected, .. } = Module::generate(&tc);
 
     for scope in [Scope::Exports, Scope::All] {
-        let items = scan(&source, SourceType::ts(), scope).unwrap();
+        let items = scan(&source, SourceType::ts(), &scope.into()).unwrap();
         let wanted: Vec<&Item> =
-            expected.iter().filter(|(exported, _)| scope == Scope::All || *exported).map(|(_, item)| item).collect();
+            expected.iter().filter(|e| scope == Scope::All || e.exported).map(|e| &e.item).collect();
         assert_eq!(items.iter().collect::<Vec<_>>(), wanted, "{source}");
     }
 
     let broken = format!("{source}export function (");
-    let error = scan(&broken, SourceType::ts(), Scope::All).unwrap_err();
+    let error = scan(&broken, SourceType::ts(), &Scope::All.into()).unwrap_err();
     assert!(error.offset >= source.len() && error.offset <= broken.len(), "{error:?}");
+}
+
+/// The rules decide which of a generated module's items count and which are documented, the way
+/// the model says.
+#[hegel::test(test_cases = 300)]
+fn rules_decide_what_counts_and_what_is_documented(tc: TestCase) {
+    let Module { source, expected, .. } = Module::generate(&tc);
+    let rules = Rules {
+        scope: tc.draw(gs::sampled_from(vec![Scope::Exports, Scope::All])),
+        require_description: tc.draw(gs::booleans()),
+    };
+    let items = scan(&source, SourceType::ts(), &rules).unwrap();
+    assert_eq!(items, expected.iter().filter_map(|e| e.by(&rules)).collect::<Vec<_>>(), "{source}");
 }
 
 /// A module read from a file has the items its text does. One that doesn't parse fails with its
@@ -355,10 +419,11 @@ fn files_scan_as_their_text(tc: TestCase) {
     let path = dir.path().join(format!("m.{}", tc.draw(gs::sampled_from(vec!["ts", "mts", "cts"]))));
     fs::write(&path, [source.as_bytes(), tail].concat()).unwrap();
 
-    match scan_file(&path, Scope::All) {
+    let rules = Scope::All.into();
+    match scan_file(&path, &rules) {
         Ok(report) => {
             assert!(tail.is_empty());
-            assert_eq!((report.path, report.items), (path, scan(&source, SourceType::ts(), Scope::All).unwrap()));
+            assert_eq!((report.path, report.items), (path, scan(&source, SourceType::ts(), &rules).unwrap()));
         }
         Err(collect::Error::Syntax { path: at, line, .. }) => {
             assert_eq!(tail, SYNTAX_ERROR);
@@ -822,4 +887,74 @@ fn comments_in_config_files_change_nothing(tc: TestCase) {
     let stray: Vec<_> =
         lines.iter().enumerate().map(|(i, l)| if i == at { format!("/ {l}") } else { (*l).into() }).collect();
     assert!(matches!(load(&stray.join("\n")), Err(config::Error::Slash { .. })));
+}
+
+/// The flags and docov.json keys a generated run sets.
+#[derive(Default)]
+struct Run {
+    args: Vec<String>,
+    keys: serde_json::Map<String, serde_json::Value>,
+}
+
+impl Run {
+    /// Sets a setting by its flag, its key, both or neither, and gives the value the flag or else
+    /// the key set, if either did. `flag` turns a value into the flag's arguments.
+    fn set<T: Clone + std::fmt::Debug + Send + Sync + serde::Serialize + 'static>(
+        &mut self,
+        tc: &TestCase,
+        key: &str,
+        values: Vec<T>,
+        flag: impl Fn(&T) -> Vec<String>,
+    ) -> Option<T> {
+        let from_key = tc.draw(gs::optional(gs::sampled_from(values.clone())));
+        let from_flag = tc.draw(gs::optional(gs::sampled_from(values)));
+        if let Some(value) = &from_key {
+            self.keys.insert(key.into(), serde_json::to_value(value).unwrap());
+        }
+        if let Some(value) = &from_flag {
+            self.args.extend(flag(value));
+        }
+        from_flag.or(from_key)
+    }
+
+    /// Sets an on-or-off setting by its flag, its key, both or neither, and says whether it's on: a
+    /// flag can only turn it on.
+    fn switch(&mut self, tc: &TestCase, key: &str, flag: &str) -> bool {
+        let on = tc.draw(gs::optional(gs::booleans()));
+        if let Some(on) = on {
+            self.keys.insert(key.into(), on.into());
+        }
+        let flagged = tc.draw(gs::booleans());
+        if flagged {
+            self.args.push(flag.into());
+        }
+        on.unwrap_or_default() || flagged
+    }
+
+    /// The settings the run's flags and docov.json (in `dir`) make, loaded in-process.
+    fn settings(&self, dir: &Path) -> docov::Settings {
+        let path = dir.join("docov.json");
+        fs::write(&path, serde_json::Value::Object(self.keys.clone()).to_string()).unwrap();
+        let keys = config::Config::load(Some(&path)).unwrap().keys;
+        let args = std::iter::once("docov".to_owned()).chain(self.args.iter().cloned());
+        let matches = feature::args(clap::Command::new("docov")).try_get_matches_from(args).unwrap();
+        docov::Settings::new(&matches, keys)
+    }
+}
+
+/// Each rule comes from its flag when there is one, else its docov.json key, else its default.
+#[hegel::test(test_cases = 50)]
+fn rules_come_from_flags_over_the_config(tc: TestCase) {
+    let dir = tempfile::tempdir().unwrap();
+    let mut run = Run::default();
+    let scope = run.set(&tc, "scope", vec![Scope::Exports, Scope::All], |s| {
+        vec!["--scope".into(), serde_json::to_value(s).unwrap().as_str().unwrap().into()]
+    });
+    let require_description = run.switch(&tc, "requireDescription", "--require-description");
+
+    let settings = run.settings(dir.path());
+    let rules = settings.rules();
+    assert_eq!(*settings.get::<Scope>(), scope.unwrap_or_default());
+    assert_eq!(rules.scope, scope.unwrap_or_default());
+    assert_eq!(rules.require_description, require_description, "{:?}", run.args);
 }
