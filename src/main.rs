@@ -8,13 +8,13 @@ use std::{
 
 use clap::{CommandFactory, FromArgMatches, Parser};
 use docov::{
-    Config, Format, Scope, Settings, batch,
+    Config, Format, Settings, batch,
     feature::{
         self,
         list_files::{self, ListFiles},
         print_config::{self, PrintConfig},
     },
-    init, report, walk,
+    init, nested, packages, walk,
 };
 
 /// Checks how much of a JavaScript or TypeScript project's API has JSDoc.
@@ -85,16 +85,17 @@ fn run(cli: Cli, matches: &clap::ArgMatches) -> Result<bool, Vec<String>> {
     if settings.get::<PrintConfig>().0 {
         return wrote(writeln!(io::stdout(), "{:#}", print_config::json(&config, &paths, &settings)));
     }
-    let scope = *settings.get::<Scope>();
-
     let files = walk::files(&paths, &config.exclude).map_err(|e| vec![e.to_string()])?;
-    if settings.get::<ListFiles>().0 {
-        return wrote(list_files::write(&files, &mut io::stdout().lock()));
+    let plan = nested::Plan::new(&config, settings, matches, files).map_err(|e| vec![e])?;
+    let files = plan.files();
+    if plan.settings().get::<ListFiles>().0 {
+        return wrote(list_files::write(files.iter().map(|(file, _)| *file), &mut io::stdout().lock()));
     }
-    let reports = batch::scan(&files, scope)?;
-    report::write(cli.format, &reports, &mut io::stdout().lock()).map_err(|e| vec![e.to_string()])?;
+    let reports = batch::scan(&files)?;
+    let out = &mut io::stdout().lock();
+    packages::write(plan.settings(), &config.dir, cli.format, &reports, out).map_err(|e| vec![e])?;
 
-    let failures = settings.gates(&reports);
+    let failures = plan.gates(&reports);
     for failure in &failures {
         eprintln!("docov: {failure}");
     }

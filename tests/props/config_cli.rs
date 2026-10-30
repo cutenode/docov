@@ -6,10 +6,13 @@ use std::{
     process::Command,
 };
 
-use docov::{Totals, config, config::Config, init, walk::Exclude};
+use docov::{
+    FileReport, Format, Item, Kind, Scope, Settings, Totals, batch, config, config::Config, feature, init, nested,
+    packages, walk, walk::Exclude,
+};
 use hegel::{TestCase, generators as gs};
 
-use super::write;
+use super::{Room, write};
 
 /// The folders generated config files go in.
 const FOLDERS: [&str; 4] = ["", "x/", "x/y/", "z/"];
@@ -290,4 +293,283 @@ fn init_writes_a_threshold_the_project_meets(tc: TestCase) {
     assert!(error[0].contains("broken.ts"), "{error:?}");
     let error = init::init(&dir.path().join("gone")).unwrap_err();
     assert!(error[0].contains("gone"), "{error:?}");
+}
+
+/// The flags in `args` (after `docov`), parsed the way the binary parses them.
+fn matches(args: &[&str]) -> clap::ArgMatches {
+    feature::args(clap::Command::new("docov")).get_matches_from(std::iter::once("docov").chain(args.iter().copied()))
+}
+
+/// The folders a generated project with nested configs has, under its root config's.
+const NESTED: [&str; 4] = ["", "a/", "a/b/", "c/"];
+
+/// With `"nested": true`, each file is scanned with the nearest config file above it, up to the
+/// root config's folder, merged over the root config alone, and left out if that config excludes
+/// it. Each config's threshold holds for its own files, and fails naming the nested config. A
+/// nested config that doesn't load fails the plan. Without `nested`, every file has the root's.
+#[hegel::test(test_cases = 40)]
+fn nested_configs_set_their_own_files(tc: TestCase) {
+    let dir = tempfile::tempdir().unwrap();
+    let nested = tc.draw(gs::booleans());
+    let root_scope = tc.draw(gs::sampled_from(vec![Scope::Exports, Scope::All]));
+    let name = |scope| if scope == Scope::All { "all" } else { "exports" };
+    let root = serde_json::json!({ "nested": nested, "scope": name(root_scope), "threshold": 50 });
+    write(dir.path(), "docov.json", &root.to_string());
+    // Each nested config: its file, scope and threshold, if it has them.
+    let mut configs: Vec<(String, Option<Scope>, Option<u8>)> = Vec::new();
+    for folder in &NESTED[1..] {
+        if tc.draw(gs::booleans()) {
+            let scope = tc.draw(gs::optional(gs::sampled_from(vec![Scope::Exports, Scope::All])));
+            let threshold = tc.draw(gs::optional(gs::integers::<u8>().max_value(100)));
+            let file = format!("{folder}{}", tc.draw(gs::sampled_from(config::FILE_NAMES.to_vec())));
+            let mut json = serde_json::json!({ "exclude": ["skip*.ts"] });
+            if let Some(scope) = scope {
+                json["scope"] = name(scope).into();
+            }
+            if let Some(threshold) = threshold {
+                json["threshold"] = threshold.into();
+            }
+            write(dir.path(), &file, &json.to_string());
+            configs.push((file, scope, threshold));
+        }
+    }
+    // The nearest config above a folder, if there's one under the root.
+    let nearest = |folder: &str| {
+        let mut above = Path::new(folder).ancestors();
+        above.find_map(|a| configs.iter().find(|c| Path::new(&c.0).parent() == Some(a)))
+    };
+    // Each file, documented or not, with the scope and the config it's scanned with, unless its
+    // config leaves it out.
+    let mut expected = Vec::new();
+    for f in 0..tc.draw(gs::integers::<usize>().max_value(6)) {
+        let folder = tc.draw(gs::sampled_from(NESTED.to_vec()));
+        let skip = tc.draw(gs::booleans());
+        let path = format!("{folder}{}{f}.ts", if skip { "skip" } else { "f" });
+        let documented = tc.draw(gs::booleans());
+        let doc = if documented { "/** Docs. */\n" } else { "" };
+        write(dir.path(), &path, &format!("{doc}export const a = 1;\nconst b = 2;\n"));
+        let config = nearest(folder).filter(|_| nested);
+        if !(skip && config.is_some()) {
+            let scope = config.and_then(|c| c.1).unwrap_or(root_scope);
+            expected.push((dir.path().join(&path), scope, documented, config.map(|c| (c.0.clone(), c.2))));
+        }
+    }
+    expected.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let plan_of = |files: Vec<PathBuf>| {
+        let mut root = Config::load(Some(&dir.path().join("docov.json"))).unwrap();
+        let settings = Settings::new(&matches(&[]), std::mem::take(&mut root.keys));
+        nested::Plan::new(&root, settings, &matches(&[]), files)
+    };
+    let plan = plan_of(walk::files(&[dir.path().to_owned()], &[]).unwrap()).unwrap();
+    let files: Vec<_> = plan.files().into_iter().map(|(path, scope)| (path.to_owned(), scope)).collect();
+    assert_eq!(files, expected.iter().map(|e| (e.0.clone(), e.1)).collect::<Vec<_>>());
+
+    // Each group's threshold, the root's 50 unless a nested config has its own, over its files.
+    let reports = batch::scan(&plan.files()).unwrap();
+    let mut groups: Vec<(Option<String>, u8, Totals)> = Vec::new();
+    for (_, scope, documented, config) in &expected {
+        let (file, threshold) = config.clone().map_or((None, Some(50)), |(file, t)| (Some(file), t.or(Some(50))));
+        let at = groups.iter().position(|g| g.0 == file).unwrap_or_else(|| {
+            groups.push((file, threshold.unwrap(), Totals::default()));
+            groups.len() - 1
+        });
+        let totals = &mut groups[at].2;
+        *totals = Totals {
+            documented: totals.documented + usize::from(*documented),
+            total: totals.total + 1 + usize::from(*scope == Scope::All),
+        };
+    }
+    let mut failures: Vec<_> = groups
+        .iter()
+        .filter(|g| g.2.percent() < f64::from(g.1))
+        .map(|(file, threshold, totals)| {
+            let failure = format!("{:.1}% documented, under the {threshold}% threshold", totals.percent());
+            file.as_ref().map_or(failure.clone(), |file| format!("{}: {failure}", dir.path().join(file).display()))
+        })
+        .collect();
+    let mut gates = plan.gates(&reports);
+    failures.sort();
+    gates.sort();
+    assert_eq!(gates, failures);
+
+    // A file whose folder is gone, as stdin's can be, has the root config.
+    let gone = dir.path().join("a/gone/x.ts");
+    assert_eq!(plan_of(vec![gone.clone()]).unwrap().groups[0].files, [gone]);
+    // A nested config that doesn't load, or whose exclude doesn't parse, fails naming it.
+    if nested {
+        let (text, culprit) = tc.draw(gs::sampled_from(vec![
+            (r#"{ "threshold": 150 }"#, "docov.json"),
+            (r#"{ "exclude": ["[z"] }"#, "[z"),
+        ]));
+        write(dir.path(), "c/docov.json", text);
+        write(dir.path(), "c/z.ts", "");
+        let error = plan_of(walk::files(&[dir.path().to_owned()], &[]).unwrap()).err().unwrap();
+        assert!(error.contains(culprit), "{error}");
+    }
+}
+
+/// How a generated workspace lists its packages.
+#[derive(Clone, Copy, Debug)]
+enum Workspace {
+    /// package.json's `workspaces` list, as npm and yarn read it.
+    List,
+    /// package.json's `workspaces.packages`, as yarn 1 reads it.
+    Object,
+    /// pnpm-workspace.yaml's `packages`.
+    Pnpm,
+}
+
+/// `--by-package` adds each workspace package's totals to the text and JSON reports: the files in
+/// folders with a package.json that the workspace's globs match and its `!` globs don't, each in
+/// its nearest package. A package.json or pnpm-workspace.yaml that doesn't parse, or a glob that
+/// doesn't, fails naming it, and so does a write that doesn't fit.
+#[hegel::test(test_cases = 40)]
+fn packages_total_their_own_files(tc: TestCase) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let globs = vec!["packages/*", "apps/**/", "!packages/private"];
+    match tc.draw(gs::sampled_from(vec![Workspace::List, Workspace::Object, Workspace::Pnpm])) {
+        Workspace::List => write(root, "package.json", &serde_json::json!({ "workspaces": globs }).to_string()),
+        Workspace::Object => {
+            write(root, "package.json", &serde_json::json!({ "workspaces": { "packages": globs } }).to_string());
+        }
+        Workspace::Pnpm => {
+            write(root, "package.json", "{}");
+            write(
+                root,
+                "pnpm-workspace.yaml",
+                &format!("packages:\n{}", globs.iter().map(|g| format!("  - '{g}'\n")).collect::<String>()),
+            );
+        }
+    }
+    // Folders, and the package each one's files are in: `packages/x/sub` is in `packages/x`, a
+    // folder without a package.json and `packages/private` in none.
+    let folders = [
+        ("packages/a", Some("packages/a")),
+        ("packages/a/src/deep", Some("packages/a")),
+        ("packages/b", Some("packages/b")),
+        ("packages/private", None),
+        ("packages/none", None),
+        ("apps/web/site", Some("apps/web/site")),
+        ("tools", None),
+        ("", None),
+    ];
+    for (folder, package) in &folders {
+        if Some(*folder) == *package || folder.ends_with("private") {
+            let name = tc.draw(gs::booleans()).then(|| format!("@w/{}", folder.replace('/', "-")));
+            write(root, &format!("{folder}/package.json"), &serde_json::json!({ "name": name }).to_string());
+        }
+    }
+    // A file outside the root is in no package.
+    let outside = Item { name: "a".into(), kind: Kind::Variable, line: 1, column: 1, documented: false };
+    let mut reports = vec![FileReport { path: PathBuf::from("outside.ts"), items: vec![outside] }];
+    let mut expected: Vec<(String, Totals)> = Vec::new();
+    for f in 0..tc.draw(gs::integers::<usize>().max_value(8)) {
+        let (folder, package) = tc.draw(gs::sampled_from(folders.to_vec()));
+        let documented = tc.draw(gs::booleans());
+        let item = Item { name: "a".into(), kind: Kind::Variable, line: 1, column: 1, documented };
+        reports.push(FileReport { path: root.join(folder).join(format!("f{f}.ts")), items: vec![item] });
+        if let Some(package) = package {
+            let path = root.join(package).display().to_string();
+            let at = expected.iter().position(|e| e.0 == path).unwrap_or_else(|| {
+                expected.push((path, Totals::default()));
+                expected.len() - 1
+            });
+            expected[at].1 = Totals {
+                documented: expected[at].1.documented + usize::from(documented),
+                total: expected[at].1.total + 1,
+            };
+        }
+    }
+    expected.sort_by(|a, b| a.0.cmp(&b.0));
+    let found = packages::packages(root, &reports).unwrap();
+    assert_eq!(found.iter().map(|p| (p.path.clone(), p.totals)).collect::<Vec<_>>(), expected);
+    for package in &found {
+        let json: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(Path::new(&package.path).join("package.json")).unwrap()).unwrap();
+        assert_eq!(package.name.as_deref(), json["name"].as_str());
+    }
+
+    // The reports, with and without the flag.
+    let by_package = Settings::new(&matches(&["--by-package"]), Default::default());
+    let without = Settings::new(&matches(&[]), Default::default());
+    for format in [Format::Text, Format::Json, Format::Lcov] {
+        let written = |settings: &Settings| {
+            let mut out = Vec::new();
+            packages::write(settings, root, format, &reports, &mut out).unwrap();
+            String::from_utf8(out).unwrap()
+        };
+        let (plain, with) = (written(&without), written(&by_package));
+        match format {
+            Format::Text => {
+                let lines: Vec<_> = found
+                    .iter()
+                    .map(|p| {
+                        format!("{:>6.1}%  {}/{}  {} total\n", p.percent, p.totals.documented, p.totals.total, p.path)
+                    })
+                    .collect();
+                assert_eq!(with, plain + &lines.concat());
+            }
+            Format::Json => {
+                let mut json: serde_json::Value = serde_json::from_str(&plain).unwrap();
+                json["packages"] = serde_json::to_value(&found).unwrap();
+                assert_eq!(serde_json::from_str::<serde_json::Value>(&with).unwrap(), json);
+            }
+            Format::Lcov => assert_eq!(with, plain),
+        }
+        // A writer with room for less than all of it fails.
+        let mut all = Vec::new();
+        packages::write(&by_package, root, format, &reports, &mut all).unwrap();
+        if !all.is_empty() {
+            let room = tc.draw(gs::integers::<usize>().max_value(all.len() - 1));
+            assert!(packages::write(&by_package, root, format, &reports, &mut Room(room)).is_err());
+        }
+    }
+
+    // What doesn't parse, and what its error says.
+    let (file, text, culprit) = tc.draw(gs::sampled_from(vec![
+        ("package.json", "{", "package.json"),
+        ("package.json", r#"{ "workspaces": ["[z"] }"#, "[z"),
+        ("package.json", r#"{ "workspaces": ["![z"] }"#, "[z"),
+        ("pnpm-workspace.yaml", "packages: [", "pnpm-workspace.yaml"),
+    ]));
+    write(root, file, text);
+    let error = packages::write(&by_package, root, Format::Text, &reports, &mut Vec::new()).unwrap_err();
+    assert!(error.contains(culprit), "{error}");
+}
+
+/// The binary with nested configs and `--by-package`: a package's total follows the text total,
+/// a nested threshold fails naming its config, and a nested config that doesn't load fails the
+/// scan.
+#[hegel::test(test_cases = 3)]
+fn the_cli_scans_nested_configs_and_packages(tc: TestCase) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(root, "docov.json", r#"{ "nested": true }"#);
+    write(root, "package.json", r#"{ "workspaces": ["packages/*"] }"#);
+    write(root, "packages/a/package.json", "{}");
+    let documented = tc.draw(gs::booleans());
+    let doc = if documented { "/** Docs. */\n" } else { "" };
+    write(root, "packages/a/a.ts", &format!("{doc}export const a = 1;\n"));
+    write(root, "packages/a/docov.json", r#"{ "threshold": 100 }"#);
+
+    let (code, out, err) = docov(root, &["--by-package"], false);
+    let a = Path::new("packages").join("a");
+    let percent = if documented { "100.0%  1/1" } else { "  0.0%  0/1" };
+    assert!(out.ends_with(&format!("total\n {percent}  {} total\n", a.display())), "{out}");
+    if documented {
+        assert_eq!((code, err.as_str()), (0, ""));
+    } else {
+        let config = a.join("docov.json");
+        assert_eq!(
+            (code, err),
+            (1, format!("docov: {}: 0.0% documented, under the 100% threshold\n", config.display()))
+        );
+    }
+
+    write(root, "packages/a/docov.json", r#"{ "threshold": 150 }"#);
+    let (code, out, err) = docov(root, &[], false);
+    assert_eq!((code, out.as_str()), (2, ""));
+    assert!(err.contains("expected a number from 0 to 100"), "{err}");
 }

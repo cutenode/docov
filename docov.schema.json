@@ -58,6 +58,11 @@
       "$ref": "#/$defs/Extends",
       "description": "Config files whose settings this one builds on, relative to this file's folder. This file's\nkeys win over theirs, and in a list each file's win over the ones before it."
     },
+    "nested": {
+      "default": false,
+      "description": "Scan each file with the nearest docov.json, docov.jsonc or .docovrc above it, up to this file's folder, merged over this one. Only the root config's counts.",
+      "type": "boolean"
+    },
     "paths": {
       "default": [],
       "description": "Files and folders to scan, relative to this file's folder. Defaults to the folder docov runs in.",

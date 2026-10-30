@@ -27,6 +27,8 @@ pub struct Config {
     pub exclude: Vec<Exclude>,
     /// Each feature's keys, which the features' own files define.
     pub keys: feature::Keys,
+    /// The same keys as JSON, for nested configs to merge over.
+    json: Map<String, Value>,
     /// The config file's folder, as a path from the current folder (empty for the current folder,
     /// or with no file).
     pub dir: PathBuf,
@@ -203,15 +205,29 @@ impl Config {
     /// extends.
     pub fn load(path: Option<&Path>) -> Result<Self, Error> {
         let Some(path) = path.map(Path::to_path_buf).or_else(find) else { return Ok(Self::default()) };
-        let layer = layer(&path, &mut Vec::new())?;
-        let keys = feature::Keys::parse(&Value::Object(layer.keys).to_string()).expect("each file's keys parse");
-        Ok(Self {
+        Ok(Self::of(layer(&path, &mut Vec::new())?, &path))
+    }
+
+    /// The config file at `path` merged over this one, the way a nested config is: its `paths`
+    /// and `exclude` are its own, with none of this one's.
+    pub fn under(&self, path: &Path) -> Result<Self, Error> {
+        let mut merged = Layer { keys: self.json.clone(), files: self.files.clone(), ..Layer::default() };
+        merged.over(layer(path, &mut Vec::new())?);
+        Ok(Self::of(merged, path))
+    }
+
+    /// The settings in `layer`, from the config file at `path`.
+    fn of(layer: Layer, path: &Path) -> Self {
+        let keys =
+            feature::Keys::parse(&Value::Object(layer.keys.clone()).to_string()).expect("each file's keys parse");
+        Self {
             files: layer.files,
             paths: layer.paths.unwrap_or_default(),
             exclude: layer.exclude.into_iter().collect(),
             keys,
+            json: layer.keys,
             dir: path.parent().map(Path::to_path_buf).unwrap_or_default(),
-        })
+        }
     }
 
     /// The JSON Schema for this file, as `docov --print-schema` prints it.

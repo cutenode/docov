@@ -16,7 +16,8 @@ pub fn init(dir: &Path) -> Result<u8, Vec<String>> {
         return Err(vec![format!("{name} is already there")]);
     }
     let files = walk::files(&[dir.to_owned()], &[]).map_err(|e| vec![e.to_string()])?;
-    let reports = batch::scan(&files, Scope::default())?;
+    let files: Vec<_> = files.iter().map(|file| (file.as_path(), Scope::default())).collect();
+    let reports = batch::scan(&files)?;
     // A percentage, from 0 to 100.
     let threshold = Totals::of(&reports).percent().floor() as u8;
     let json = serde_json::json!({ "$schema": SCHEMA_URL, "threshold": threshold });

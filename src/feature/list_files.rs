@@ -2,7 +2,7 @@
 
 use std::{
     io::{self, Write},
-    path::PathBuf,
+    path::Path,
 };
 
 use crate::feature::{Entry, Feature, NoKeys};
@@ -34,6 +34,6 @@ impl Feature for ListFiles {
 }
 
 /// Writes `files` to `out`, one per line.
-pub fn write(files: &[PathBuf], out: &mut impl Write) -> io::Result<()> {
-    files.iter().try_for_each(|file| writeln!(out, "{}", file.display()))
+pub fn write<'a>(files: impl IntoIterator<Item = &'a Path>, out: &mut impl Write) -> io::Result<()> {
+    files.into_iter().try_for_each(|file| writeln!(out, "{}", file.display()))
 }

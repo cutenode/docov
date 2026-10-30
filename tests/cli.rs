@@ -210,7 +210,7 @@ fn print_config_and_list_files_show_what_a_scan_would_use() {
     let json: serde_json::Value = serde_json::from_str(&out).unwrap();
     assert_eq!(code, 0);
     assert_eq!(json["files"], serde_json::json!(["docov.json"]));
-    assert_eq!(json["features"], serde_json::json!({ "scope": "all", "threshold": 80.0 }));
+    assert_eq!((&json["features"]["scope"], &json["features"]["threshold"]), (&"all".into(), &80.0.into()));
 
     let (code, out, _) = docov(dir.path(), &["--list-files"]);
     let files = [Path::new("src").join("a.ts"), Path::new("src").join("c.js")].map(|p| p.display().to_string() + "\n");

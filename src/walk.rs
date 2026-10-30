@@ -34,7 +34,7 @@ impl Exclude {
 /// out what .gitignore and `exclude` do, and hidden files. A file named in `paths` is always
 /// included, to fail if it isn't one of them.
 pub fn files(paths: &[PathBuf], exclude: &[Exclude]) -> Result<Vec<PathBuf>, ignore::Error> {
-    let matchers = exclude.iter().map(Exclude::matcher).collect::<Result<Vec<_>, _>>()?;
+    let matchers = matchers(exclude)?;
 
     let (first, rest) = paths.split_first().map_or((Path::new("."), &[][..]), |(p, rest)| (p.as_path(), rest));
     let mut walk = WalkBuilder::new(first);
@@ -46,7 +46,7 @@ pub fn files(paths: &[PathBuf], exclude: &[Exclude]) -> Result<Vec<PathBuf>, ign
     walk.require_git(false).filter_entry(move |entry| {
         let is_dir = entry.file_type().is_some_and(|t| t.is_dir());
         let path = plain(entry.path());
-        !matchers.iter().any(|m| path.starts_with(plain(m.path())) && m.matched(path, is_dir).is_ignore())
+        !matchers.iter().any(|m| under(m, path) && m.matched(path, is_dir).is_ignore())
     });
 
     let mut files = Vec::new();
@@ -59,6 +59,25 @@ pub fn files(paths: &[PathBuf], exclude: &[Exclude]) -> Result<Vec<PathBuf>, ign
     }
     files.sort();
     Ok(files)
+}
+
+/// Leaves out of `files` those `exclude` does, by their own paths or a folder's above them.
+pub fn retain(files: &mut Vec<PathBuf>, exclude: &[Exclude]) -> Result<(), ignore::Error> {
+    let matchers = matchers(exclude)?;
+    files.retain(|file| {
+        let file = plain(file);
+        !matchers.iter().any(|m| under(m, file) && m.matched_path_or_any_parents(file, false).is_ignore())
+    });
+    Ok(())
+}
+
+fn matchers(exclude: &[Exclude]) -> Result<Vec<Gitignore>, ignore::Error> {
+    exclude.iter().map(Exclude::matcher).collect()
+}
+
+/// Whether `path` is under the folder `matcher`'s globs are relative to, the only place they apply.
+fn under(matcher: &Gitignore, path: &Path) -> bool {
+    path.starts_with(plain(matcher.path()))
 }
 
 /// `path` without a leading `./`, which the walk adds to what it finds under `.`.

@@ -5,6 +5,8 @@ pub mod collect;
 pub mod config;
 pub mod feature;
 pub mod init;
+pub mod nested;
+pub mod packages;
 pub mod report;
 pub mod walk;
 
