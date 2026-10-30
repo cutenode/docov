@@ -26,6 +26,8 @@ mod combined;
 mod config_cli;
 #[path = "props/fix.rs"]
 mod fix;
+#[path = "props/lsp.rs"]
+mod lsp;
 
 /// A generated module, and the items a scan of it should find.
 #[derive(Default)]

@@ -27,6 +27,7 @@ The npm package runs a prebuilt binary for macOS, Linux or Windows on x64 or arm
 ```
 docov [PATHS]... [--config FILE] [--threshold PERCENT] [--scope exports|all|public] [--format FORMAT[=FILE]]... [--output FILE] [--badge FILE] [--compare FILE] [--omit-covered] [--quiet]
 docov init
+docov lsp
 ```
 
 `docov --help` lists every flag.
@@ -198,6 +199,39 @@ docov --format text --format lcov=coverage/docov.lcov
 
 Badges are red under the threshold, yellow up to 10 points over it, and green past that. With no threshold they're blue.
 
+## Editors
+
+`docov lsp` is a language server on stdin and stdout. For each open JavaScript or TypeScript file it shows an information diagnostic at each undocumented item (`docov/undocumented`) and each doc check finding at its level, from the unsaved text, by the config `docov` would use for that file (nested configs included). It finds the config as if it ran in the workspace folder the file is in, or else in the file's own folder, and shows nothing for a file the config's `paths` or excludes leave out. On an undocumented item, a code action writes the stub `--fix` would. To stub every file at once, run `docov --fix`.
+
+VS Code needs an extension to start a language server, but editors with a generic LSP client can run it directly. In Neovim (0.10 or later):
+
+```lua
+vim.api.nvim_create_autocmd("FileType", {
+  pattern = { "javascript", "javascriptreact", "typescript", "typescriptreact" },
+  callback = function(args)
+    vim.lsp.start({
+      name = "docov",
+      cmd = { "docov", "lsp" }, -- or { "npx", "docov", "lsp" }
+      root_dir = vim.fs.root(args.buf, { "docov.json", "docov.jsonc", ".docovrc", "package.json", ".git" }),
+    })
+  end,
+})
+```
+
+In Helix's `languages.toml`, add it next to each language's own server:
+
+```toml
+[language-server.docov]
+command = "docov"
+args = ["lsp"]
+
+[[language]]
+name = "typescript"
+language-servers = ["typescript-language-server", "docov"]
+```
+
+and the same `[[language]]` for `javascript`, `jsx` and `tsx`.
+
 ## CI
 
 ### GitHub Action
@@ -297,6 +331,6 @@ git tag v1.2.3 && git push origin v1.2.3   # release Cargo.toml's version 1.2.3 
 
 Pushing a version tag runs `.github/workflows/release.yml`, which builds the binaries and publishes with trusted publishing, so there are no registry tokens. The npm packages are `@docov/cli` (`npm/docov`, a launcher) and an `@docov/<platform>-<arch>` package per binary. `tools/bootstrap-publishing.sh` publishes the first version by hand and sets up the trust, which both registries only allow for a package they already have.
 
-`cargo coverage` fails under the thresholds in `.cargo/config.toml`. On a pull request, lint and coverage are separate pass/fail checks for each OS. With `LCOV_DIR` set, `tools/coverage.sh` writes each Rust coverage run to `$LCOV_DIR/suite.lcov` and `props.lcov` in place of its table. CI sets it, puts each run's per-file numbers in the job summary, and uploads the lcov files as the `coverage-<os>` artifact. The property tests (`tests/props.rs`) use [Hegel](https://github.com/hegeldev/hegel-rust). They check scans against a model of generated modules, and the binary against generated projects.
+`cargo coverage` fails under the thresholds in `.cargo/config.toml`. On a pull request, lint and coverage are separate pass/fail checks for each OS. With `LCOV_DIR` set, `tools/coverage.sh` writes each Rust coverage run to `$LCOV_DIR/suite.lcov` and `props.lcov` in place of its table. CI sets it, puts each run's per-file numbers in the job summary, and uploads the lcov files as the `coverage-<os>` artifact. The property tests (`tests/props.rs`) use [Hegel](https://github.com/hegeldev/hegel-rust). They check scans against a model of generated modules, the language server over an in-memory connection, and the binary against generated projects.
 
 `tools/jsdoc-oracle.sh` runs jsdoc 4 (`npx --yes jsdoc@4 -X`, so it needs Node and the network) and `docov --scope all --format json` on the same files, and lists each declaration only one of them counts, or that they disagree on documenting. It isn't part of the checks: some disagreements are by design (jsdoc counts constructors, `this.x =` members, object literal members, destructured variables and `/** */` and `@license` blocks), and a `@typedef` or `@file` block right before an undocumented declaration documents it for docov but not for jsdoc unless `"virtual"` or `"fileDocs"` is on.

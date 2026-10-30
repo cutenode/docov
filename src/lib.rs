@@ -10,6 +10,7 @@ pub mod git;
 pub mod glob;
 pub mod init;
 pub mod jsdoc;
+pub mod lsp;
 pub mod metric;
 pub mod nested;
 pub mod packages;

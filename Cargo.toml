@@ -37,6 +37,10 @@ javascript-globals = "2.0.0"
 # unchanged. oxc's own config loading does the same.
 json-strip-comments = "3.1.2"
 jsonc-parser = { version = "0.34.0", features = ["cst"] }
+# `docov lsp`: rust-analyzer's synchronous server scaffold, and the protocol's types. lsp-types
+# 0.95 has `Url::to_file_path`, which 0.97's URI type lacks.
+lsp-server = "0.10.0"
+lsp-types = "0.95.1"
 # --watch.
 notify = "8.2.1"
 notify-debouncer-mini = "0.7.0"
