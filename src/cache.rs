@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     FileReport, Item, Rules,
     check::Diagnostic,
-    collect::{Facts, Ignore},
+    collect::{Facts, Ignore, Stub},
 };
 
 /// What a file's items were scanned from: the file as it was, by its size and modified time, and
@@ -54,7 +54,7 @@ struct Entry {
 }
 
 /// An item as the cache keeps it: with its `docov-ignore` comment, the facts the reports order and
-/// measure by and what the doc checks found, which reports leave out of the item itself.
+/// measure by, what the doc checks found and its stub, which reports leave out of the item itself.
 #[derive(Debug, Serialize, Deserialize)]
 struct Kept {
     #[serde(flatten)]
@@ -65,21 +65,23 @@ struct Kept {
     about: (usize, bool, bool, Option<bool>),
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     diagnostics: Vec<Diagnostic>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    stub: Option<Stub>,
 }
 
 impl Kept {
     fn of(item: &Item) -> Self {
-        let Facts { params, exported, release_tagged, typed, ref diagnostics, .. } = item.facts;
+        let Facts { params, exported, release_tagged, typed, ref diagnostics, ref stub, .. } = item.facts;
         let (ignore, about, diagnostics) =
             (item.ignore.clone(), (params, exported, release_tagged, typed), diagnostics.clone());
-        Self { item: item.clone(), ignore, about, diagnostics }
+        Self { item: item.clone(), ignore, about, diagnostics, stub: stub.clone() }
     }
 
     /// The item it keeps.
     fn item(&self) -> Item {
         let (params, exported, release_tagged, typed) = self.about;
-        let diagnostics = self.diagnostics.clone();
-        let facts = Facts { params, exported, release_tagged, typed, diagnostics, ..self.item.facts.clone() };
+        let (diagnostics, stub) = (self.diagnostics.clone(), self.stub.clone());
+        let facts = Facts { params, exported, release_tagged, typed, diagnostics, stub, ..self.item.facts.clone() };
         Item { ignore: self.ignore.clone(), facts, ..self.item.clone() }
     }
 }
