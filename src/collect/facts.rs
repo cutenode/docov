@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{Found, doc};
+use super::{Found, Stub, doc};
 use crate::check::Diagnostic;
 
 /// What an item's JSDoc says, and what about the item the reports order by. The JSON report leaves
@@ -37,6 +37,10 @@ pub struct Facts {
     /// What the doc checks that are on found in its JSDoc, by position. An ignored item has none.
     #[serde(skip)]
     pub diagnostics: Vec<Diagnostic>,
+    /// For an undocumented item with no block, the stub `--fix` writes above it, unless something
+    /// comes before it on its line.
+    #[serde(skip)]
+    pub stub: Option<Stub>,
 }
 
 impl Facts {
@@ -55,6 +59,7 @@ impl Facts {
             release_tagged: doc.is_some_and(|doc| doc::release_tags(doc) == 1),
             typed: found.params.as_ref().filter(|_| javascript).map(|_| doc.is_some_and(doc::typed)),
             diagnostics: Vec::new(),
+            stub: None,
         }
     }
 }

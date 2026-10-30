@@ -43,7 +43,7 @@ It exits 0 when every gate passes (or there isn't one), 1 when one fails, such a
 
 `--watch` scans again whenever a JavaScript, TypeScript or config file under the paths changes, with a line between reports, until Ctrl-C.
 
-`--stdin-filename PATH` scans stdin in place of the paths, as the file at PATH, whose extension picks the language, for editors to check a buffer before it's saved. It can't go with `--add-ignore`, `--write-baseline`, `--update-threshold`, `--watch`, `--changed` or `--staged`, which would act on that one file.
+`--stdin-filename PATH` scans stdin in place of the paths, as the file at PATH, whose extension picks the language, for editors to check a buffer before it's saved. It can't go with `--add-ignore`, `--fix`, `--write-baseline`, `--update-threshold`, `--watch`, `--changed` or `--staged`, which would act on that one file.
 
 `--cache` keeps each file's items in `.docov-cache` in the config's folder (or the file `--cache-location` names), and the next scan reuses them for each file whose size and modified time haven't changed, as long as docov's version and the settings that change what counts are the same. Add it to `.gitignore`.
 
@@ -58,7 +58,7 @@ With the default scope, `exports`, an item is anything a module exports:
 - CommonJS: `exports.a = …`, `module.exports.a = …`, `module.exports = …`, and each property of `module.exports = { … }`
 - the public members of exported classes (methods, properties, accessors, with a getter and its setter as one) and interfaces (properties and methods)
 
-An item is documented when a `/** … */` block with something in it sits right before it, or before its `export` or decorators. Ordinary comments, an empty `/** */`, and license headers (`/** @license … */`) don't count.
+An item is documented when a `/** … */` block with something in it sits right before it, or before its `export` or decorators. Ordinary comments, an empty `/** */`, license headers (`/** @license … */`) and a block whose description is just `TODO`, as `--fix` writes them, don't count.
 
 `--require-description` (`"requireDescription": true`) also wants the block to describe the item: text before its first tag, or a `@description`, `@desc`, `@summary`, `@classdesc` (on a class) or `@inheritdoc` tag. Without it, `/** @type {string} */` counts. A block of `@inheritdoc` alone documents its item either way, and `"inherit": "override"` counts a TypeScript class member marked `override` as documented too, since it inherits its docs.
 
@@ -68,7 +68,9 @@ A `// docov-ignore-next-line` comment (with an optional reason, `// docov-ignore
 
 To adopt docov in a project that's far from documented, `--add-ignore` (or `--add-ignore=REASON`) writes a `// docov-ignore-next-line` above every undocumented item, indented like it, and reports how many it wrote instead of the coverage. It changes no other line.
 
-`--explain FILE` prints, in place of a report, a line for each item in `FILE` saying whether it counts by the config `FILE` is scanned with (a nested config's too) and why (documented by the block at a line, ignored by a comment, or left out by a rule), and one for each declaration or block the scan passed over there and why (a re-export, a constructor, an overload's implementation, a destructured variable, a `require()` binding, a license header, a private member). When a nested config leaves `FILE` out, it says so. It exits 0.
+`--fix` writes a JSDoc stub above every undocumented item that has no block yet, indented like it, for filling in: a `TODO` description, a `@template` for each type parameter, a `@param` for each parameter (a destructured one by its place, as `param0`), `@returns` when its body returns a value, and `@file` for a file's own item. A `TODO` description documents nothing, so the coverage stays where it was until each one is written. It reports how many stubs it wrote, leaves every existing block as it is, and skips an item that starts after something else on its line. It can't go with `--add-ignore`.
+
+`--explain FILE` prints, in place of a report, a line for each item in `FILE` saying whether it counts by the config `FILE` is scanned with (a nested config's too) and why (documented by the block at a line, ignored by a comment, or left out by a rule), and one for each declaration or block the scan passed over there and why (a re-export, a constructor, an overload's implementation, a destructured variable, a `require()` binding, a license header, a stub, a private member). When a nested config leaves `FILE` out, it says so. It exits 0.
 
 Some things never count: constructors (their class's doc covers them), private members (`#x` and `private x`), an overload's implementation (only its signatures), destructured variables, `require()` bindings, `declare module` and `declare global` blocks, and re-exports from another file (`export { x } from './x'`, `export * from`), whose declarations count in their own file.
 

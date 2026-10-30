@@ -1,7 +1,6 @@
 //! `--add-ignore`: writes a `// docov-ignore-next-line` above every undocumented item, for adopting
 //! docov in a project that's far from documented.
 
-
 use crate::{
     FileReport, rewrite,
     feature::{Entry, Feature, NoKeys},
@@ -24,7 +23,6 @@ pub struct Flags {
     add_ignore: Option<String>,
 }
 
-
 impl Feature for AddIgnore {
     type Flags = Flags;
     type Keys = NoKeys;
@@ -38,20 +36,12 @@ impl Feature for AddIgnore {
 
     fn edit(&self, reports: &[FileReport]) -> Option<Result<String, String>> {
         let comment = self.0.as_deref()?;
-        let mut added = 0;
-        for report in reports {
+        let added = rewrite::insert_into(reports, |report| {
             let mut lines: Vec<usize> = report.counted().filter(|i| !i.documented).map(|i| i.line).collect();
             // Items on one line are next to each other, and one comment covers them all.
             lines.dedup();
-            if lines.is_empty() {
-                continue;
-            }
-            let inserts: Vec<_> = lines.iter().map(|&line| (line, comment)).collect();
-            if let Err(e) = rewrite::insert_above_in(&report.path, &inserts) {
-                return Some(Err(format!("{}: {e}", report.path.display())));
-            }
-            added += lines.len();
-        }
-        Some(Ok(format!("added {added} docov-ignore-next-line comment{}", if added == 1 { "" } else { "s" })))
+            lines.into_iter().map(|line| (line, comment)).collect()
+        });
+        Some(added.map(|added| format!("added {added} docov-ignore-next-line comment{}", if added == 1 { "" } else { "s" })))
     }
 }
