@@ -28,6 +28,8 @@ struct Module {
     file_ignore: Option<Ignore>,
     /// Whether its first comment says it's `@generated`.
     generated: bool,
+    /// How many declarations and blocks it has that a scan passes over.
+    skipped: usize,
 }
 
 /// `docov-ignore-next-line` comments and comments that aren't quite, with the reason each one
@@ -245,7 +247,9 @@ impl Module {
     fn doc(&mut self, tc: &TestCase) -> Option<Block> {
         let noise = ["// note", "/* note */", "/** */", "/**\n *\n */", "/** @license MIT */"];
         if tc.draw(gs::booleans()) {
-            self.write(tc.draw(gs::sampled_from(noise.to_vec())));
+            let noise = tc.draw(gs::sampled_from(noise.to_vec()));
+            self.skipped += usize::from(noise.contains("@license"));
+            self.write(noise);
         }
         let doc = tc.draw(gs::booleans()).then(|| tc.draw(gs::sampled_from(BLOCKS.to_vec())));
         if let Some(block) = doc {
@@ -267,19 +271,26 @@ impl Module {
         self.expected.push(Expected { via, value: false, item, doc, protected: false, overrides: false, params });
     }
 
-    /// A statement that exports and declares nothing.
+    /// A statement that exports and declares nothing, and whether a scan passes over it.
     fn nothing(&mut self, tc: &TestCase) {
         let statements = vec![
-            "window.x.y = 1;",
-            "x = 1;",
-            "exports[key] = 1;",
-            "other.exports.y = 1;",
-            "z.w = a;",
-            "go();",
-            "export = { a: 1 };",
-            "if (x) {}",
+            ("window.x.y = 1;", false),
+            ("x = 1;", false),
+            ("exports[key] = 1;", false),
+            ("other.exports.y = 1;", false),
+            ("z.w = a;", false),
+            ("go();", false),
+            ("export = { a: 1 };", false),
+            ("if (x) {}", false),
+            ("export * from './x';", true),
+            ("export * as ns from './x';", true),
+            ("export { y, z as w } from './y';", true),
+            ("declare global { interface W {} }", true),
+            ("import fs = require('fs');", true),
         ];
-        self.write(tc.draw(gs::sampled_from(statements)));
+        let (statement, skipped) = tc.draw(gs::sampled_from(statements));
+        self.skipped += usize::from(skipped);
+        self.write(statement);
     }
 
     /// A CommonJS export of a value rather than a declaration.
@@ -346,6 +357,7 @@ impl Module {
             }
         }
         if tc.draw(gs::booleans()) {
+            self.skipped += 1;
             self.write(&format!("const r{i} = require('r{i}');"));
         }
         for expected in &mut self.expected[first..] {
@@ -421,12 +433,14 @@ impl Module {
                 self.expected.last_mut().unwrap().params = Some(&["a"]);
                 if export != Export::DefaultInline && tc.draw(gs::booleans()) {
                     // Only the signature counts; the implementation after it doesn't.
+                    self.skipped += 1;
                     self.write(&format!("{prefix}function {name}(a: string): void;"));
                 }
                 self.write(&format!("{prefix}function {name}(a: unknown) {{}}"));
             }
             Kind::Variable if tc.draw(gs::booleans()) => {
                 // Nothing to name: destructuring declares no item.
+                self.skipped += 1;
                 self.write(&format!("{prefix}const {{ d{i} }} = {{ d{i}: 1 }};"));
             }
             Kind::Variable => {
@@ -480,6 +494,7 @@ impl Module {
             self.write(&after);
         }
         if tc.draw(gs::weighted_booleans(0.2)) {
+            self.skipped += 1;
             self.write(&format!("declare module 'm{i}' {{ export function f(): void; }}"));
         }
     }
@@ -507,6 +522,7 @@ impl Module {
                 }
                 3 => {
                     item(self, format!("g{j}"), Kind::Accessor);
+                    self.skipped += 1;
                     self.write(&format!("get g{j}() {{ return 1; }}\nset g{j}(v) {{}}"));
                 }
                 4 => {
@@ -524,10 +540,12 @@ impl Module {
                 7 => {
                     item(self, format!("v{j}"), Kind::Method);
                     self.expected.last_mut().unwrap().params = Some(&["a"]);
+                    self.skipped += 1;
                     self.write(&format!("v{j}(a: string): void;\nv{j}(a: unknown) {{}}"));
                 }
                 8 if !constructed => {
                     constructed = true;
+                    self.skipped += 1;
                     self.write("constructor() {}");
                 }
                 9 => {
@@ -540,7 +558,12 @@ impl Module {
                     self.expected.last_mut().unwrap().overrides = true;
                     self.write(&format!("override u{j}() {{}}"));
                 }
-                _ => self.write(&format!("#h{j} = 1;\nprivate q{j} = 1;\nprivate r{j}() {{}}")),
+                _ => {
+                    self.skipped += 4;
+                    self.write(&format!(
+                        "#h{j} = 1;\nprivate q{j} = 1;\nprivate r{j}() {{}}\nprivate accessor w{j} = 1;\nstatic {{}}"
+                    ));
+                }
             }
         }
     }
@@ -601,12 +624,9 @@ fn scans_find_what_modules_declare(tc: TestCase) {
     assert!(error.offset >= source.len() && error.offset <= broken.len(), "{error:?}");
 }
 
-/// The rules decide which of a generated module's items count and which are documented, the way
-/// the model says.
-#[hegel::test(test_cases = 300)]
-fn rules_decide_what_counts_and_what_is_documented(tc: TestCase) {
-    let Module { source, expected, generated, .. } = Module::generate(&tc);
-    let rules = Rules {
+/// Rules with every filter drawn, for a generated module.
+fn drawn_rules(tc: &TestCase) -> Rules {
+    Rules {
         scope: tc.draw(gs::sampled_from(vec![Scope::Exports, Scope::All])),
         require_description: tc.draw(gs::booleans()),
         exclude_tags: tc
@@ -633,7 +653,15 @@ fn rules_decide_what_counts_and_what_is_documented(tc: TestCase) {
             .collect(),
         // The settings that add items of their own have properties of their own.
         ..Rules::default()
-    };
+    }
+}
+
+/// The rules decide which of a generated module's items count and which are documented, the way
+/// the model says.
+#[hegel::test(test_cases = 300)]
+fn rules_decide_what_counts_and_what_is_documented(tc: TestCase) {
+    let Module { source, expected, generated, .. } = Module::generate(&tc);
+    let rules = drawn_rules(&tc);
     // And each rule for what's documented with nothing left out, for the filters not to hide.
     let mut all = vec![rules];
     for (require_description, inherit) in [(false, Inherit::Tag), (true, Inherit::Tag), (true, Inherit::Override)] {
@@ -1448,6 +1476,8 @@ fn the_public_scope_counts_what_entry_points_reach(tc: TestCase) {
     }
     let index_items = scan_file(&root.join("src/index.ts"), &rules).unwrap().items;
     assert_eq!(index_items.iter().map(|i| i.name.as_str()).collect::<Vec<_>>(), ["own", "cjs"]);
+    let explained = collect::explain(&root.join("src/index.ts"), &rules).unwrap();
+    assert!(explained[..2].iter().all(|line| line.ends_with("  undocumented")), "{explained:?}");
     let (mut names, modules) = reach(&stars, &defaults, wanted);
     names.extend(modules.iter().map(|&k| (k, format!("c{k}"))));
     names.sort();
@@ -1489,6 +1519,92 @@ fn the_public_scope_needs_a_package(tc: TestCase) {
     let out = docov(&["--scope", "public", "--format", "json"]);
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!((out.status.code(), &json["documented"], &json["total"]), (Some(0), &1.into(), &2.into()));
+}
+
+/// `--explain` has a line for every item a generated module declares, in its order and at its
+/// place, saying whether it counts and is documented as the rules decide, and a line for each
+/// declaration and block the scan passed over. A file skipped as generated has one line, saying
+/// so, and a file that can't be read fails, naming it.
+#[hegel::test(test_cases = 100)]
+fn explain_says_why_each_item_counts_and_what_was_passed_over(tc: TestCase) {
+    let module = Module::generate(&tc);
+    let mut rules = drawn_rules(&tc);
+    // Without the package's entry points, nothing is reached.
+    if tc.draw(gs::weighted_booleans(0.1)) {
+        rules.scope = Scope::Public;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("m.ts");
+    fs::write(&path, &module.source).unwrap();
+    let lines = collect::explain(&path, &rules).unwrap();
+    let at = |line: usize, column: usize| format!("{}:{line}:{column}  ", path.display());
+    if module.generated && rules.skip_generated {
+        assert_eq!(lines, [format!("{}skipped the file: its first comment says it's @generated", at(1, 1))]);
+        return;
+    }
+    let (skips, items): (Vec<_>, Vec<_>) = lines.iter().partition(|line| line.contains("  skipped "));
+    assert_eq!(skips.len(), module.skipped, "{}", lines.join("\n"));
+    assert_eq!(items.len(), module.expected.len(), "{}", lines.join("\n"));
+    for (line, expected) in items.iter().zip(&module.expected) {
+        let item = &expected.item;
+        let what = format!("{}{} {}  ", at(item.line, item.column), item.kind.as_str(), item.name);
+        let status = line.strip_prefix(&what).unwrap_or_else(|| panic!("{line} isn't {what}"));
+        let wanted = match expected.by(&rules) {
+            None => "left out: ",
+            _ if rules.scope == Scope::Public => "left out: not reached",
+            Some(item) if item.documented => "documented",
+            Some(item) if item.ignored() => "ignored by the docov-ignore",
+            Some(_) => "undocumented",
+        };
+        assert!(status.starts_with(wanted), "{line}: {wanted}");
+    }
+    assert!(matches!(collect::explain(&dir.path().join("gone.ts"), &rules), Err(collect::Error::Read { .. })));
+    fs::write(&path, format!("{}export function (", module.source)).unwrap();
+    assert!(matches!(collect::explain(&path, &rules), Err(collect::Error::Syntax { .. })));
+
+    // What only a file's own item and the members of `"members": "all"` say.
+    let source = "/** @file Helpers. */\n\n/**\n * Colors.\n * @property Red The red one.\n */\nexport enum Color {\n  Red,\n}\n";
+    fs::write(&path, source).unwrap();
+    let rules =
+        Rules { file_docs: FileDocs::Require, members: Members::All, require_description: true, ..Rules::default() };
+    assert_eq!(
+        collect::explain(&path, &rules).unwrap(),
+        [
+            format!("{}module {}  documented by the block at 1:1", at(1, 1), path.display()),
+            format!("{}enum Color  documented by the block at 3:1", at(7, 1)),
+            format!("{}property Color.Red  documented by a matching @property in its parent's block", at(8, 3)),
+        ]
+    );
+}
+
+/// From the command line, `--explain FILE` writes its lines in place of a report and exits 0, and
+/// a file it can't read, or output it can't write, exits 2.
+#[hegel::test(test_cases = 3)]
+fn explain_runs_from_the_command_line(tc: TestCase) {
+    let dir = tempfile::tempdir().unwrap();
+    let documented = tc.draw(gs::booleans());
+    let doc = if documented { "/** A. */\n" } else { "" };
+    write(dir.path(), "a.ts", &format!("{doc}export const a = 1;\nexport * from './b';\n"));
+    let docov = |args: &[&str]| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_docov"));
+        command.args(args).current_dir(dir.path());
+        command
+    };
+    let out = docov(&["--explain", "a.ts", "--threshold", "100"]).output().unwrap();
+    let line = if documented {
+        "a.ts:2:1  variable a  documented by the block at 1:1"
+    } else {
+        "a.ts:1:1  variable a  undocumented"
+    };
+    let skipped =
+        format!("a.ts:{}:1  skipped *: a re-export, which counts in its own file", if documented { 3 } else { 2 });
+    assert_eq!((out.status.code(), String::from_utf8(out.stdout).unwrap()), (Some(0), format!("{line}\n{skipped}\n")));
+    let out = docov(&["--explain", "gone.ts"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8(out.stderr).unwrap().contains("gone.ts"));
+    let (reader, writer) = std::io::pipe().unwrap();
+    drop(reader);
+    assert_eq!(docov(&["--explain", "a.ts"]).stdout(writer).output().unwrap().status.code(), Some(2));
 }
 
 fn render(format: Format, files: &[FileReport]) -> String {

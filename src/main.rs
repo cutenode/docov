@@ -3,7 +3,7 @@
 use std::{io, path::PathBuf, process::ExitCode, sync::Arc};
 
 use clap::{CommandFactory, FromArgMatches, Parser};
-use docov::{Config, Format, Scope, Settings, feature, public, report, scan_file, walk};
+use docov::{Config, Format, Scope, Settings, feature, feature::explain::Explain, public, report, scan_file, walk};
 use rayon::{iter::Either, prelude::*};
 
 /// Checks how much of a JavaScript or TypeScript project's API has JSDoc.
@@ -55,6 +55,9 @@ fn run(cli: Cli, matches: &clap::ArgMatches) -> Result<bool, Vec<String>> {
     let mut rules = settings.rules();
     if rules.scope == Scope::Public {
         rules.public = Some(Arc::new(public::Api::load(&config.dir, &paths)?));
+    }
+    if let Some(explained) = settings.get::<Explain>().write(&rules, &mut io::stdout().lock()) {
+        return explained.map(|()| true).map_err(|e| vec![e]);
     }
 
     let files = walk::files(&paths, &config.dir, &config.exclude).map_err(|e| vec![e.to_string()])?;

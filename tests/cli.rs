@@ -508,3 +508,18 @@ fn the_public_scope_follows_the_package_entry_points() {
         (2, "", format!("docov: {package}: entry point ./lib/main.js has no source file\n"))
     );
 }
+
+#[test]
+fn explain_says_why_for_each_item_in_a_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = "/** A. */\nexport function a() {}\nexport class C {\n  constructor() {}\n}\n/** @internal */\nexport const i = 1;\n";
+    fs::write(dir.path().join("a.ts"), source).unwrap();
+    let (code, out, _) = docov(dir.path(), &["--explain", "a.ts", "--exclude-tag", "internal"]);
+    let lines = [
+        "a.ts:2:1  function a  documented by the block at 1:1",
+        "a.ts:3:1  class C  undocumented",
+        "a.ts:4:3  skipped C.constructor: a constructor, which its class's doc covers",
+        "a.ts:7:1  variable i  left out: its JSDoc has @internal",
+    ];
+    assert_eq!((code, out), (0, lines.map(|l| format!("{l}\n")).concat()));
+}
