@@ -61,6 +61,8 @@ Some things never count: constructors (their class's doc covers them), private m
 
 `--access public,protected` (or `"access": ["public", "protected", "package"]`) counts only items with those access levels, like jsdoc's `--access`: an item's level is its `@public`, `@protected`, `@package` or `@private` tag (or `@access` with one of those), else `protected` for a TypeScript `protected` member, else `public`. Without it, access tags change nothing.
 
+Example coverage is a second figure: the share of counted items whose JSDoc has an `@example`, as rustdoc's `--show-coverage` counts it. The JSON report always has it (`withExamples` and `examplesPercent`, for each file and in all), `--examples` adds it to each line of the text report, and `--examples-threshold PERCENT` (`"examplesThreshold"`) fails the scan under it.
+
 `"ignoreDeprecated": true` leaves out items whose JSDoc has `@deprecated`, and `"skipGenerated": true` leaves out every item in a file whose first comment has `@generated`.
 
 ### docov.json

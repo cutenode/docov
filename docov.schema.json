@@ -177,6 +177,17 @@
         "null"
       ]
     },
+    "examplesThreshold": {
+      "default": null,
+      "description": "The lowest percentage of counted items with an @example that passes.",
+      "format": "double",
+      "maximum": 100,
+      "minimum": 0,
+      "type": [
+        "number",
+        "null"
+      ]
+    },
     "exclude": {
       "default": [],
       "description": "Gitignore-style globs of files to leave out, relative to this file's folder, on top of .gitignore.",

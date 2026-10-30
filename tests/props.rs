@@ -3,8 +3,8 @@
 use std::{fs, path::Path, path::PathBuf, process::Command};
 
 use docov::feature::{
-    Feature, access::Access, add_ignore::AddIgnore, exports::Exports, inherit::Inherit, kinds::Kinds,
-    report_unused_ignores::ReportUnusedIgnores, sort::Sort,
+    Feature, access::Access, add_ignore::AddIgnore, examples::Examples, exports::Exports, inherit::Inherit,
+    kinds::Kinds, report_unused_ignores::ReportUnusedIgnores, sort::Sort,
 };
 use docov::{
     FileReport, Format, Item, Kind, Rules, Scope, Totals, collect, collect::Facts, collect::Ignore, config, feature,
@@ -813,7 +813,7 @@ fn priority_puts_exported_functions_with_more_parameters_first(tc: TestCase) {
         let at = ALL_KINDS.iter().position(|k| *k == item.kind).unwrap();
         item.kind = [Kind::Function, Kind::Method, Kind::Class, Kind::Variable][at % 4];
     }
-    let options = report::Options { sort: Sort::Priority };
+    let options = report::Options { sort: Sort::Priority, ..report::Options::default() };
     let mut out = Vec::new();
     report::write_with(Format::Text, &files, &options, &mut out).unwrap();
     let text = String::from_utf8(out).unwrap();
@@ -846,6 +846,53 @@ fn priority_puts_exported_functions_with_more_parameters_first(tc: TestCase) {
     let shown = json["files"].as_array().unwrap().iter().flat_map(|f| f["items"].as_array().unwrap().clone());
     let facts = files.iter().flat_map(|f| &f.items).map(|i| serde_json::json!([i.facts.has_example, i.facts.since]));
     assert!(shown.map(|i| serde_json::json!([i["hasExample"], i["since"]])).eq(facts));
+}
+
+/// Example coverage is the share of counted items with an `@example`. The JSON report has it for
+/// each file and in all, `--examples` puts it on each of the text report's lines and changes
+/// nothing else, and its threshold fails the scan under it.
+#[hegel::test(test_cases = 100)]
+fn examples_are_a_second_metric(tc: TestCase) {
+    let files = reports(&tc, true);
+    let of = |f: &FileReport| {
+        let counted: Vec<_> = f.items.iter().filter(|i| i.documented || i.ignore.is_none()).collect();
+        Totals { documented: counted.iter().filter(|i| i.facts.has_example).count(), total: counted.len() }
+    };
+    let all = files
+        .iter()
+        .map(of)
+        .fold(Totals::default(), |a, b| Totals { documented: a.documented + b.documented, total: a.total + b.total });
+    let json: serde_json::Value = serde_json::from_str(&render(Format::Json, &files)).unwrap();
+    let shown = |v: &serde_json::Value| (v["withExamples"].as_u64(), v["examplesPercent"].as_f64());
+    let wanted = |t: Totals| (Some(t.documented as u64), Some(t.percent()));
+    assert_eq!(shown(&json), wanted(all));
+    assert!(json["files"].as_array().unwrap().iter().map(shown).eq(files.iter().map(|f| wanted(of(f)))));
+
+    let options = report::Options { examples: true, ..report::Options::default() };
+    let mut out = Vec::new();
+    report::write_with(Format::Text, &files, &options, &mut out).unwrap();
+    let text = String::from_utf8(out).unwrap();
+    let mut figures = files.iter().filter(|f| of(f).total > 0).map(of).chain([all]);
+    let plain: Vec<String> = text
+        .lines()
+        .map(|line| {
+            if line.starts_with("         ") {
+                return line.to_owned();
+            }
+            let t = figures.next().unwrap();
+            let figure = format!("  examples {}/{}  ", t.documented, t.total);
+            assert!(line.contains(&figure), "{line}");
+            line.replacen(&figure, "  ", 1)
+        })
+        .collect();
+    assert_eq!(plain, render(Format::Text, &files).lines().collect::<Vec<_>>());
+
+    let threshold = tc.draw(gs::optional(gs::integers::<u8>().max_value(100))).map(f64::from);
+    let percent = all.percent();
+    let failure = threshold
+        .filter(|&t| percent < t)
+        .map(|t| format!("{percent:.1}% with examples, under the {t}% examples threshold"));
+    assert_eq!(Examples { text: false, threshold }.gate(&files), failure);
 }
 
 /// A function's parameters are documented when each has an `@param` (or `@arg`, or `@argument`)
@@ -1446,6 +1493,12 @@ fn rules_come_from_flags_over_the_config(tc: TestCase) {
         run.keys.insert("exports".into(), keys.clone());
     }
 
+    let examples = tc.draw(gs::booleans());
+    if examples {
+        run.args.push("--examples".into());
+    }
+    let examples_threshold =
+        run.set(&tc, "examplesThreshold", vec![0.0, 50.5], |t| vec!["--examples-threshold".into(), t.to_string()]);
     let sort = tc.draw(gs::sampled_from(vec![Sort::Position, Sort::Priority]));
     run.args.extend(["--sort".into(), if sort == Sort::Priority { "priority" } else { "position" }.into()]);
     let ignore_deprecated = run.set(&tc, "ignoreDeprecated", vec![false, true], |_| vec![]);
@@ -1464,6 +1517,8 @@ fn rules_come_from_flags_over_the_config(tc: TestCase) {
     assert_eq!(patterns, names.unwrap_or_default());
     assert_eq!(settings.get::<Kinds>().by_kind, by_kind);
     assert_eq!(settings.report().sort, sort);
+    assert_eq!(settings.report().examples, examples);
+    assert_eq!(*settings.get::<Examples>(), Examples { text: examples, threshold: examples_threshold });
     assert_eq!(rules.kinds, kinds);
     assert_eq!(*settings.get::<Scope>(), scope.unwrap_or_default());
     assert_eq!(rules.scope, scope.unwrap_or_default());

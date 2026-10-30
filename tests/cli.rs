@@ -371,3 +371,27 @@ export function two(a, b) {}
     assert_eq!(listed(&[]), ["variable v", "class C", "function one", "function two"]);
     assert_eq!(listed(&["--sort", "priority"]), ["function two", "function one", "class C", "variable v"]);
 }
+
+#[test]
+fn examples_are_counted_and_gated() {
+    let dir = project();
+    fs::write(dir.path().join("src/c.js"), "/**\n * C.\n * @example new C()\n */\nexport class C {}\n").unwrap();
+    let (code, out, _) = docov(dir.path(), &["--examples"]);
+    let a = Path::new("src").join("a.ts").display().to_string();
+    let c = Path::new("src").join("c.js").display().to_string();
+    assert_eq!(code, 0);
+    assert_eq!(
+        out,
+        format!(
+            "  50.0%  1/2  examples 0/2  {a}\n         {a}:3:1  variable b\n 100.0%  1/1  examples 1/1  {c}\n  66.7%  2/3  examples 1/3  total\n"
+        )
+    );
+    let (_, out, _) = docov(dir.path(), &["--format", "json"]);
+    let json: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!((&json["withExamples"], &json["files"][1]["examplesPercent"]), (&1.into(), &100.0.into()));
+
+    let (code, _, err) = docov(dir.path(), &["--examples-threshold", "50"]);
+    assert_eq!((code, err.as_str()), (1, "docov: 33.3% with examples, under the 50% examples threshold\n"));
+    fs::write(dir.path().join("docov.json"), r#"{ "examplesThreshold": 30 }"#).unwrap();
+    assert_eq!(docov(dir.path(), &[]).0, 0);
+}

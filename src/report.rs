@@ -2,9 +2,13 @@
 
 mod json;
 mod lcov;
+pub mod metric;
 mod text;
 
-use std::io::{self, Write};
+use std::{
+    io::{self, Write},
+    iter::Sum,
+};
 
 use rustc_hash::FxHashMap;
 use serde::Serialize;
@@ -40,10 +44,7 @@ impl Totals {
 
     /// The sum over every file.
     pub fn of(files: &[FileReport]) -> Self {
-        files
-            .iter()
-            .map(FileReport::totals)
-            .fold(Self::default(), |a, b| Self { documented: a.documented + b.documented, total: a.total + b.total })
+        files.iter().map(FileReport::totals).sum()
     }
 
     /// The sums for each kind of item there is, in [`Kind`]'s order.
@@ -60,11 +61,19 @@ impl Totals {
     }
 }
 
+impl Sum for Totals {
+    fn sum<I: Iterator<Item = Self>>(totals: I) -> Self {
+        totals.fold(Self::default(), |a, b| Self { documented: a.documented + b.documented, total: a.total + b.total })
+    }
+}
+
 /// How to write a report, past its format: what features ask for.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default)]
 pub struct Options {
     /// The order of each file's undocumented items in the text report.
     pub sort: Sort,
+    /// Whether the text report's lines have an examples figure.
+    pub examples: bool,
 }
 
 /// Writes `files` to `out` in `format`.
