@@ -1,5 +1,7 @@
 //! Which items count, and when one is documented: the scan's settings, which features fill in.
 
+use std::sync::Arc;
+
 use regex::Regex;
 use rustc_hash::FxHashSet;
 
@@ -7,6 +9,7 @@ use super::{Found, Via, doc};
 use crate::{
     Kind, Scope,
     feature::{access::Access, exports::Exports, file_docs::FileDocs, inherit::Inherit, members::Members},
+    public::Api,
 };
 
 /// Which items count, and when one is documented. The default is docov's out of the box.
@@ -41,6 +44,8 @@ pub struct Rules {
     /// Whether `X.prototype.m = …` and `X.m = …` add members, and `this.a = …` in a CommonJS file
     /// exports.
     pub commonjs_members: bool,
+    /// What the package's entry points reach, for the public scope.
+    pub public: Option<Arc<Api>>,
 }
 
 impl From<Scope> for Rules {
@@ -51,17 +56,36 @@ impl From<Scope> for Rules {
 
 impl Rules {
     /// Whether `found` counts: it's in scope (`exported` holds the names exported apart from their
-    /// declarations, and how), and no filter leaves it out.
-    pub(super) fn counts(&self, found: &Found, exported: &FxHashSet<(&str, Via)>) -> bool {
-        self.in_scope(found, exported) && !self.leaves_out(found)
+    /// declarations, and how, and `reached` the local names the package's entry points reach in
+    /// its file, if they reach it), and no filter leaves it out.
+    pub(super) fn counts(
+        &self,
+        found: &Found,
+        exported: &FxHashSet<(&str, Via)>,
+        reached: Option<&FxHashSet<String>>,
+    ) -> bool {
+        self.in_scope(found, exported, reached) && !self.leaves_out(found)
     }
 
-    fn in_scope(&self, found: &Found, exported: &FxHashSet<(&str, Via)>) -> bool {
+    fn in_scope(&self, found: &Found, exported: &FxHashSet<(&str, Via)>, reached: Option<&FxHashSet<String>>) -> bool {
         // A value assigned to a global is an item only when globals count.
         if found.via == Some(Via::Global) && !self.exports.globals {
             return false;
         }
-        self.scope == Scope::All || self.exported(found, exported)
+        match self.scope {
+            Scope::All => true,
+            Scope::Exports => self.exported(found, exported),
+            // Reached by its module-level name, or, for what has no name the graph follows (a
+            // CommonJS export, a file's own item), by its file.
+            Scope::Public => {
+                let commonjs =
+                    found.via == Some(Via::Cjs) || found.binding.is_some_and(|b| exported.contains(&(b, Via::Cjs)));
+                let local =
+                    found.binding.unwrap_or_else(|| found.name.split_once('.').map_or(&found.name, |(owner, _)| owner));
+                self.exported(found, exported)
+                    && reached.is_some_and(|names| found.standalone || commonjs || names.contains(local))
+            }
+        }
     }
 
     /// Whether `found` is exported by a way of exporting that counts, where it's declared or apart

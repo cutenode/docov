@@ -481,3 +481,30 @@ fn types_are_counted_over_javascript_functions() {
     assert_eq!((code, &json["typed"], &json["files"][1]["typesPercent"]), (1, &1.into(), &100.0.into()));
     assert_eq!(err, "docov: 50.0% with types, under the 75% types threshold\n");
 }
+
+#[test]
+fn the_public_scope_follows_the_package_entry_points() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src")).unwrap();
+    fs::write(dir.path().join("package.json"), r#"{ "exports": { ".": "./dist/index.js" } }"#).unwrap();
+    fs::write(dir.path().join("tsconfig.json"), r#"{ "compilerOptions": { "outDir": "dist", "rootDir": "src" } }"#)
+        .unwrap();
+    fs::write(dir.path().join("src/index.ts"), "export { a } from './a.js';\nexport * from './b';\n").unwrap();
+    fs::write(dir.path().join("src/a.ts"), "/** A. */\nexport function a() {}\nexport function hidden() {}\n").unwrap();
+    fs::write(dir.path().join("src/b.ts"), "export const b = 1;\n").unwrap();
+    let (code, out, _) = docov(dir.path(), &["--scope", "public"]);
+    let (a, b) =
+        (Path::new("src").join("a.ts").display().to_string(), Path::new("src").join("b.ts").display().to_string());
+    assert_eq!(
+        (code, out),
+        (0, format!(" 100.0%  1/1  {a}\n   0.0%  0/1  {b}\n         {b}:1:1  variable b\n  50.0%  1/2  total\n"))
+    );
+
+    fs::write(dir.path().join("package.json"), r#"{ "main": "./lib/main.js" }"#).unwrap();
+    let (code, out, err) = docov(dir.path(), &["--scope", "public"]);
+    let package = Path::new("package.json").display();
+    assert_eq!(
+        (code, out.as_str(), err),
+        (2, "", format!("docov: {package}: entry point ./lib/main.js has no source file\n"))
+    );
+}

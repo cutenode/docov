@@ -1291,6 +1291,206 @@ fn javascript_functions_are_typed_by_their_tags(tc: TestCase) {
     assert_eq!(feature.gate(&files), failure);
 }
 
+/// What a generated index re-exports from module `k`: nothing it can resolve, a name, or all of
+/// the module's names (but `default`, through `export *`).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum Wanted {
+    Name(String),
+    All,
+    AllButDefault,
+}
+
+/// The declarations a model of the generated package reaches: `(module, name)` for each, and
+/// each module reached at all.
+fn reach(
+    stars: &[Option<usize>],
+    defaults: &[Option<String>],
+    start: Vec<(usize, Wanted)>,
+) -> (Vec<(usize, String)>, Vec<usize>) {
+    let (mut found, mut modules, mut seen, mut work) = (Vec::new(), Vec::new(), Vec::new(), start);
+    while let Some((k, wanted)) = work.pop() {
+        if seen.contains(&(k, wanted.clone())) {
+            continue;
+        }
+        seen.push((k, wanted.clone()));
+        modules.push(k);
+        let own = [format!("f{k}_0"), format!("f{k}_1")];
+        match wanted {
+            Wanted::Name(name) if name == "default" => found.extend(defaults[k].clone().map(|d| (k, d))),
+            Wanted::Name(name) if own.contains(&name) => found.push((k, name)),
+            Wanted::Name(name) => work.extend(stars[k].map(|next| (next, Wanted::Name(name)))),
+            every => {
+                found.extend(own.map(|name| (k, name)));
+                if every == Wanted::All {
+                    found.extend(defaults[k].clone().map(|d| (k, d)));
+                }
+                work.extend(stars[k].map(|next| (next, Wanted::AllButDefault)));
+            }
+        }
+    }
+    found.sort();
+    found.dedup();
+    modules.sort();
+    modules.dedup();
+    (found, modules)
+}
+
+/// A generated package: modules that declare functions, a default and a CommonJS export, some
+/// re-exporting the next with `export *`, and an index that re-exports them every way there is,
+/// named in package.json directly, through tsconfig's `outDir`, or through a declaration file.
+/// The public scope counts exactly what the model says its entry points reach, each in its own
+/// file. An entry point with no source, a package.json that isn't JSON, or none at all fails the
+/// load, naming the culprit.
+#[hegel::test(test_cases = 60)]
+fn the_public_scope_counts_what_entry_points_reach(tc: TestCase) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let n = tc.draw(gs::integers::<usize>().min_value(1).max_value(3));
+    let (mut stars, mut defaults) = (vec![None; n], Vec::new());
+    for (i, star) in stars.iter_mut().enumerate() {
+        // Its default export, and the item that is.
+        let (default, item) = tc.draw(gs::sampled_from(vec![
+            ("export default function dI() {}", Some("dI")),
+            ("export default class dI {}", Some("dI")),
+            ("function dI() {}\nexport default dI;", Some("dI")),
+            ("export default 1;", Some("default")),
+            ("", None),
+        ]));
+        defaults.push(item.map(|d| d.replace('I', &i.to_string())));
+        let mut text = format!(
+            "export function f{i}_0() {{}}\nexport function f{i}_1() {{}}\n{}\nfunction hidden{i}() {{}}\nexports.c{i} = 1;\n",
+            default.replace('I', &i.to_string())
+        );
+        if i + 1 < n && tc.draw(gs::booleans()) {
+            text.push_str(&format!("export * from './m{}.js';\n", i + 1));
+            *star = Some(i + 1);
+        }
+        write(root, &format!("src/m{i}.ts"), &text);
+    }
+    let mut index = String::from("export const own = 1;\nexports.cjs = 1;\n");
+    let mut wanted = Vec::new();
+    let mut written = Vec::new();
+    for _ in 0..tc.draw(gs::integers::<usize>().max_value(4)) {
+        let (way, k, j) = (
+            tc.draw(gs::integers::<u8>().max_value(8)),
+            tc.draw(gs::integers::<usize>().max_value(n - 1)),
+            tc.draw(gs::integers::<usize>().max_value(2)),
+        );
+        if written.contains(&(way, k, j)) {
+            continue;
+        }
+        written.push((way, k, j));
+        // A name from module k, or from one after it, which only `export *` there finds. f{m}_2
+        // is no module's.
+        let m = (k + tc.draw(gs::integers::<usize>().max_value(1))).min(n - 1);
+        let f = format!("f{m}_{j}");
+        let (text, want) = match way {
+            0 => (format!("export * from './m{k}';"), Some(Wanted::AllButDefault)),
+            1 => (format!("export {{ {f} as e{k}_{j} }} from './m{k}.js';"), Some(Wanted::Name(f))),
+            2 => (format!("export {{ default as d{k} }} from './m{k}';"), Some(Wanted::Name("default".into()))),
+            3 => (format!("export * as ns{k} from './m{k}';"), Some(Wanted::All)),
+            4 => (
+                format!("import {{ {f} as g{k}_{j} }} from './m{k}.js';\nexport {{ g{k}_{j} }};"),
+                Some(Wanted::Name(f)),
+            ),
+            5 => (format!("import dd{k} from './m{k}';\nexport {{ dd{k} }};"), Some(Wanted::Name("default".into()))),
+            6 => (format!("import * as all{k} from './m{k}';\nexport {{ all{k} }};"), Some(Wanted::All)),
+            // What resolves to nothing, or to what isn't a module it can read.
+            7 => (
+                format!(
+                    "export * from './missing{k}';\nexport {{ x{k} }} from './missing{k}';\nimport {{ z{k} }} from './missing{k}';\nexport * from './data.json';\nexport * from './latin1.js';\nexport * from '\\uD800';"
+                ),
+                None,
+            ),
+            _ => (format!("import {{ f{k}_0 as unused{k} }} from './m{k}';"), None),
+        };
+        index.push_str(&text);
+        index.push('\n');
+        wanted.extend(want.map(|w| (k, w)));
+    }
+    write(root, "src/index.ts", &index);
+    write(root, "src/data.json", "{}");
+    fs::write(root.join("src/latin1.js"), b"// caf\xe9\n").unwrap();
+
+    // How package.json names the index, the tsconfig.json that goes with it, and whether the index
+    // is found.
+    let (manifest, tsconfig, found) = tc.draw(gs::sampled_from(vec![
+        (r#"{ "main": "./src/index.ts" }"#, None, true),
+        (r#"{ "exports": ["./src/index.ts", null] }"#, Some("{"), true),
+        (
+            r#"{ "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" }, "./*": "./dist/*.js" } }"#,
+            Some(r#"{ "compilerOptions": { "outDir": "dist", "rootDir": "src" } }"#),
+            true,
+        ),
+        (r#"{ "module": "lib/index.js" }"#, Some("// built\n{ \"compilerOptions\": { \"outDir\": \"./lib\", }, }"), true),
+        (r#"{ "typings": "./types/index.d.ts", "main": "./src/index.ts" }"#, None, false),
+    ]));
+    write(root, "package.json", manifest);
+    if let Some(tsconfig) = tsconfig {
+        write(root, "tsconfig.json", tsconfig);
+    }
+    // From the package's folder, or from a path under it.
+    let from_path = tc.draw(gs::booleans());
+    let (start, paths) =
+        if from_path { (root.join("nowhere"), vec![root.join("src")]) } else { (root.to_owned(), vec![]) };
+    let api = docov::public::Api::load(&start, &paths);
+    if !found {
+        let errors = api.unwrap_err();
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("entry point ./types/index.d.ts has no source file"), "{errors:?}");
+        return;
+    }
+    let rules = Rules { scope: Scope::Public, public: Some(std::sync::Arc::new(api.unwrap())), ..Rules::default() };
+    let mut counted = Vec::new();
+    for i in 0..n {
+        let report = scan_file(&root.join(format!("src/m{i}.ts")), &rules).unwrap();
+        counted.extend(report.items.into_iter().map(|item| (i, item.name)));
+    }
+    let index_items = scan_file(&root.join("src/index.ts"), &rules).unwrap().items;
+    assert_eq!(index_items.iter().map(|i| i.name.as_str()).collect::<Vec<_>>(), ["own", "cjs"]);
+    let (mut names, modules) = reach(&stars, &defaults, wanted);
+    names.extend(modules.iter().map(|&k| (k, format!("c{k}"))));
+    names.sort();
+    counted.sort();
+    assert_eq!(counted, names, "{index}");
+    // Scanned without its path, a file has nothing reached.
+    let source = fs::read_to_string(root.join("src/index.ts")).unwrap();
+    assert_eq!(scan(&source, SourceType::ts(), &rules).unwrap(), []);
+}
+
+/// The public scope's load fails without a package.json, or with one that isn't JSON, and from
+/// the command line its errors exit 2, while a package it can load is counted.
+#[hegel::test(test_cases = 5)]
+fn the_public_scope_needs_a_package(tc: TestCase) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(root, "src/index.ts", "/** A. */\nexport const a = 1;\nexport const b = 1;\n");
+    write(root, "src/other.ts", "export const c = 1;\n");
+    let docov =
+        |args: &[&str]| Command::new(env!("CARGO_BIN_EXE_docov")).args(args).current_dir(root).output().unwrap();
+    let broken = tc.draw(gs::booleans());
+    if broken {
+        let errors = docov::public::Api::load(&root.join("src"), &[root.join("src")]).unwrap_err();
+        assert_eq!(errors, ["the public scope needs a package.json"]);
+        write(root, "package.json", "{ main: 1 }");
+        let errors = docov::public::Api::load(root, &[]).unwrap_err();
+        assert!(
+            errors[0].starts_with(&format!("{}: key must be a string", root.join("package.json").display())),
+            "{errors:?}"
+        );
+        let out = docov(&["--scope", "public"]);
+        assert_eq!((out.status.code(), out.stdout.is_empty()), (Some(2), true));
+        fs::write(root.join("package.json"), b"{ \"main\": \"caf\xe9\" }").unwrap();
+        let errors = docov::public::Api::load(root, &[]).unwrap_err();
+        assert!(errors[0].contains("stream did not contain valid UTF-8"), "{errors:?}");
+        return;
+    }
+    write(root, "package.json", r#"{ "main": "./src/index.ts" }"#);
+    let out = docov(&["--scope", "public", "--format", "json"]);
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!((out.status.code(), &json["documented"], &json["total"]), (Some(0), &1.into(), &2.into()));
+}
+
 fn render(format: Format, files: &[FileReport]) -> String {
     let mut out = Vec::new();
     report::write(format, files, &mut out).unwrap();
@@ -1695,7 +1895,7 @@ fn malformed_configs_fail_to_load_where_they_break(tc: TestCase) {
         ("{ 1: 2 }", "key must be a string", 3),
         (r#"{ "paths": [1 }"#, "expected `,` or `]`", 15),
         (r#"{ "paths": 1 }"#, "invalid type: integer `1`, expected a sequence", 12),
-        (r#"{ "scope": "some" }"#, "unknown variant `some`, expected `exports` or `all`", 17),
+        (r#"{ "scope": "some" }"#, "unknown variant `some`, expected one of `exports`, `all`, `public`", 17),
     ]));
     let path = dir.path().join("docov.json");
     fs::write(&path, format!("{padding}{text}")).unwrap();

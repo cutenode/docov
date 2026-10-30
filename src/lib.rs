@@ -3,6 +3,7 @@
 pub mod collect;
 pub mod config;
 pub mod feature;
+pub mod public;
 pub mod report;
 pub mod rewrite;
 pub mod walk;

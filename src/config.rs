@@ -159,6 +159,20 @@ impl Config {
 
     /// The JSON Schema for this file, as `docov --print-schema` prints it.
     pub fn json_schema() -> String {
-        serde_json::to_string_pretty(&schema()).expect("a schema serializes") + "\n"
+        serde_json::to_string_pretty(&sorted(schema())).expect("a schema serializes") + "\n"
+    }
+}
+
+/// `value` with every object's keys in order, whether or not serde_json keeps them in the order
+/// they were added (a dependency can turn that on for the whole build).
+fn sorted(value: Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let mut entries: Vec<_> = map.into_iter().map(|(key, value)| (key, sorted(value))).collect();
+            entries.sort_by(|a, b| a.0.cmp(&b.0));
+            Value::Object(entries.into_iter().collect())
+        }
+        Value::Array(values) => Value::Array(values.into_iter().map(sorted).collect()),
+        value => value,
     }
 }

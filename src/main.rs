@@ -1,9 +1,9 @@
 //! The `docov` command.
 
-use std::{io, path::PathBuf, process::ExitCode};
+use std::{io, path::PathBuf, process::ExitCode, sync::Arc};
 
 use clap::{CommandFactory, FromArgMatches, Parser};
-use docov::{Config, Format, Settings, feature, report, scan_file, walk};
+use docov::{Config, Format, Scope, Settings, feature, public, report, scan_file, walk};
 use rayon::{iter::Either, prelude::*};
 
 /// Checks how much of a JavaScript or TypeScript project's API has JSDoc.
@@ -52,7 +52,10 @@ fn run(cli: Cli, matches: &clap::ArgMatches) -> Result<bool, Vec<String>> {
     // the first (`.././src` is `../src`), which would keep the excludes from matching.
     let config_paths = config.paths.iter().map(|p| config.dir.join(p).components().collect());
     let paths = if cli.paths.is_empty() { config_paths.collect() } else { cli.paths };
-    let rules = settings.rules();
+    let mut rules = settings.rules();
+    if rules.scope == Scope::Public {
+        rules.public = Some(Arc::new(public::Api::load(&config.dir, &paths)?));
+    }
 
     let files = walk::files(&paths, &config.dir, &config.exclude).map_err(|e| vec![e.to_string()])?;
     let (reports, errors): (Vec<_>, Vec<_>) = files.par_iter().partition_map(|path| match scan_file(path, &rules) {

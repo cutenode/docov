@@ -25,7 +25,7 @@ The npm package runs a prebuilt binary for macOS, Linux or Windows on x64 or arm
 ## Usage
 
 ```
-docov [PATHS]... [--config FILE] [--threshold PERCENT] [--scope exports|all] [--format text|json|lcov]
+docov [PATHS]... [--config FILE] [--threshold PERCENT] [--scope exports|all|public] [--format text|json|lcov]
 ```
 
 With no paths it scans the current folder: every `.js`, `.mjs`, `.cjs`, `.jsx`, `.ts`, `.mts`, `.cts` and `.tsx` file, leaving out hidden files and what `.gitignore` leaves out (in a git repository or not). A file named on the command line is always scanned.
@@ -54,6 +54,8 @@ To adopt docov in a project that's far from documented, `--add-ignore` (or `--ad
 Some things never count: constructors (their class's doc covers them), private members (`#x` and `private x`), an overload's implementation (only its signatures), destructured variables, `require()` bindings, `declare module` and `declare global` blocks, and re-exports from another file (`export { x } from './x'`, `export * from`), whose declarations count in their own file.
 
 `--scope all` counts every module-level declaration, exported or not.
+
+`--scope public` counts only a package's public API: what its entry points export. It reads the package.json in the config's folder (or else the nearest one above the scanned paths), takes every path in its `exports` (under every condition and subpath, leaving out `*` patterns), `main`, `module`, `types` and `typings`, and finds each one's source file, back through tsconfig.json's `outDir` and `rootDir` (or `src`) for a built file, and from a `.d.ts` to the module it declares. From there it follows `export * from`, `export { x } from`, `export * as ns from` and imports exported again through the module graph, the way Node and TypeScript resolve them, and counts each declaration it reaches once, in its own file. A reached file's CommonJS exports count too. An entry point with no source file is an error (exit 2).
 
 `"members": "all"` counts more members, where their parent counts: TypeScript enum members (`Color.Red`), the members of a type alias's object type (`Options.timeout`), and the properties of an object literal whose block has `@enum`, `@namespace` or `@lends X` (`Name.prop`, or `X.prop`). A matching `@property` in the parent's block documents one of these. The default, `"classes"`, counts only the members of classes and interfaces.
 

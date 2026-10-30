@@ -170,7 +170,8 @@ pub struct SyntaxError {
 pub fn scan_file(path: &Path, rules: &Rules) -> Result<FileReport, Error> {
     let source_type = SourceType::from_path(path).map_err(|_| Error::Language { path: path.to_owned() })?;
     let source = fs::read_to_string(path).map_err(|source| Error::Read { path: path.to_owned(), source })?;
-    match scan(&source, source_type, rules) {
+    let reached = rules.public.as_ref().and_then(|api| api.reach(path));
+    match collect(&source, source_type, rules, reached) {
         Ok(mut items) => {
             if let Some(file) = items.first_mut().filter(|i| i.kind == Kind::Module && i.name.is_empty()) {
                 file.name = path.display().to_string();
@@ -185,8 +186,20 @@ pub fn scan_file(path: &Path, rules: &Rules) -> Result<FileReport, Error> {
 }
 
 /// The items in `source` that count by `rules`. Any syntax error fails the scan: a partial AST
-/// would undercount.
+/// would undercount. Under the public scope it has no path to know what the entry points reach,
+/// so nothing is.
 pub fn scan(source: &str, source_type: SourceType, rules: &Rules) -> Result<Vec<Item>, SyntaxError> {
+    collect(source, source_type, rules, None)
+}
+
+/// [`scan`], with `reached`, the local names the public scope's entry points reach in the file,
+/// if they reach it.
+fn collect(
+    source: &str,
+    source_type: SourceType,
+    rules: &Rules,
+    reached: Option<&FxHashSet<String>>,
+) -> Result<Vec<Item>, SyntaxError> {
     let allocator = Allocator::default();
     let parsed = Parser::new(&allocator, source, source_type).parse();
     if let Some(error) = parsed.diagnostics.errors().next() {
@@ -234,7 +247,7 @@ pub fn scan(source: &str, source_type: SourceType, rules: &Rules) -> Result<Vec<
     let Collector { found, exported, .. } = collector;
     Ok(found
         .into_iter()
-        .filter(|f| rules.counts(f, &exported))
+        .filter(|f| rules.counts(f, &exported, reached))
         .map(|f| {
             let (line, column) = lines.position(f.at as usize);
             let facts = Facts::of(&f, rules.exported(&f, &exported), source_type.is_javascript());
