@@ -25,6 +25,21 @@
         }
       ]
     },
+    "DocMarkdownOptions": {
+      "additionalProperties": false,
+      "description": "doc-markdown's options.",
+      "properties": {
+        "allowlist": {
+          "default": [],
+          "description": "Words that look like code and aren't, on top of the default ones.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
     "Exports": {
       "additionalProperties": false,
       "description": "Which ways of exporting count.",
@@ -172,6 +187,26 @@
         }
       ]
     },
+    "Level": {
+      "description": "How much a check's findings matter.",
+      "oneOf": [
+        {
+          "const": "off",
+          "description": "The check doesn't run.",
+          "type": "string"
+        },
+        {
+          "const": "warn",
+          "description": "Its findings are reported, and the scan still passes.",
+          "type": "string"
+        },
+        {
+          "const": "error",
+          "description": "Its findings are reported, and fail the scan.",
+          "type": "string"
+        }
+      ]
+    },
     "Members": {
       "description": "Which members count.",
       "oneOf": [
@@ -186,6 +221,11 @@
           "type": "string"
         }
       ]
+    },
+    "NoOptions": {
+      "additionalProperties": false,
+      "description": "The options of a check that has none.",
+      "type": "object"
     },
     "Override": {
       "additionalProperties": false,
@@ -287,6 +327,243 @@
       ],
       "type": "object"
     },
+    "Rules": {
+      "additionalProperties": false,
+      "properties": {
+        "doc-markdown": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Level"
+            },
+            {
+              "items": false,
+              "minItems": 1,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Level"
+                },
+                {
+                  "$ref": "#/$defs/DocMarkdownOptions"
+                }
+              ],
+              "type": "array"
+            }
+          ],
+          "description": "A description's code is in backticks, and its lists have no lazy continuation lines."
+        },
+        "empty-tag-description": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Level"
+            },
+            {
+              "items": false,
+              "minItems": 1,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Level"
+                },
+                {
+                  "$ref": "#/$defs/NoOptions"
+                }
+              ],
+              "type": "array"
+            }
+          ],
+          "description": "Each @param, @returns, @throws and @yields tag has a description."
+        },
+        "informative-docs": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Level"
+            },
+            {
+              "items": false,
+              "minItems": 1,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Level"
+                },
+                {
+                  "$ref": "#/$defs/NoOptions"
+                }
+              ],
+              "type": "array"
+            }
+          ],
+          "description": "A description says more than its item's name."
+        },
+        "param-names": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Level"
+            },
+            {
+              "items": false,
+              "minItems": 1,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Level"
+                },
+                {
+                  "$ref": "#/$defs/NoOptions"
+                }
+              ],
+              "type": "array"
+            }
+          ],
+          "description": "Each @param names a parameter of its function or method."
+        },
+        "require-param": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Level"
+            },
+            {
+              "items": false,
+              "minItems": 1,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Level"
+                },
+                {
+                  "$ref": "#/$defs/NoOptions"
+                }
+              ],
+              "type": "array"
+            }
+          ],
+          "description": "Each parameter of a function or method has a matching @param."
+        },
+        "require-returns": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Level"
+            },
+            {
+              "items": false,
+              "minItems": 1,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Level"
+                },
+                {
+                  "$ref": "#/$defs/NoOptions"
+                }
+              ],
+              "type": "array"
+            }
+          ],
+          "description": "A function or method that returns a value has @returns, unless its return type is void."
+        },
+        "require-template": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Level"
+            },
+            {
+              "items": false,
+              "minItems": 1,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Level"
+                },
+                {
+                  "$ref": "#/$defs/NoOptions"
+                }
+              ],
+              "type": "array"
+            }
+          ],
+          "description": "Each type parameter of a declaration has a @template."
+        },
+        "require-throws": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Level"
+            },
+            {
+              "items": false,
+              "minItems": 1,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Level"
+                },
+                {
+                  "$ref": "#/$defs/NoOptions"
+                }
+              ],
+              "type": "array"
+            }
+          ],
+          "description": "An exported function or method that throws has @throws."
+        },
+        "require-yields": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Level"
+            },
+            {
+              "items": false,
+              "minItems": 1,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Level"
+                },
+                {
+                  "$ref": "#/$defs/NoOptions"
+                }
+              ],
+              "type": "array"
+            }
+          ],
+          "description": "A generator that yields a value has @yields."
+        },
+        "summary-sentence": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Level"
+            },
+            {
+              "items": false,
+              "minItems": 1,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Level"
+                },
+                {
+                  "$ref": "#/$defs/SummarySentenceOptions"
+                }
+              ],
+              "type": "array"
+            }
+          ],
+          "description": "A description's first sentence is short and ends with a period."
+        },
+        "valid-link": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Level"
+            },
+            {
+              "items": false,
+              "minItems": 1,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Level"
+                },
+                {
+                  "$ref": "#/$defs/NoOptions"
+                }
+              ],
+              "type": "array"
+            }
+          ],
+          "description": "Each {@link} is well formed, and a target that's a name is declared or imported in its file."
+        }
+      },
+      "type": "object"
+    },
     "Scope": {
       "description": "Which declarations count toward coverage.",
       "oneOf": [
@@ -306,6 +583,25 @@
           "type": "string"
         }
       ]
+    },
+    "SummarySentenceOptions": {
+      "additionalProperties": false,
+      "description": "summary-sentence's options.",
+      "properties": {
+        "maxLength": {
+          "default": 120,
+          "description": "The most characters the summary may have.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "period": {
+          "default": true,
+          "description": "Whether the summary ends with `.`, `!` or `?`.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -345,6 +641,17 @@
       "default": false,
       "description": "Count `X.prototype.m = …` and `X.m = …` at the top level as members of X, a function or class declared there, and `this.a = …` in a CommonJS file as an export.",
       "type": "boolean"
+    },
+    "completeThreshold": {
+      "default": null,
+      "description": "The lowest percentage of counted items documented with a @param for each parameter that passes.",
+      "format": "double",
+      "maximum": 100,
+      "minimum": 0,
+      "type": [
+        "number",
+        "null"
+      ]
     },
     "examplesThreshold": {
       "default": null,
@@ -480,6 +787,10 @@
       "default": false,
       "description": "Count a JSDoc block only with text before its first tag, or @description, @summary, @classdesc or @inheritdoc.",
       "type": "boolean"
+    },
+    "rules": {
+      "$ref": "#/$defs/Rules",
+      "description": "Doc checks to turn on, by rule id: \"off\", \"warn\" or \"error\", or that level with the check's options, as [\"warn\", { … }]. Every check is off by default."
     },
     "scope": {
       "$ref": "#/$defs/Scope",

@@ -12,11 +12,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     FileReport, Item, Rules,
+    check::Diagnostic,
     collect::{Facts, Ignore},
 };
 
 /// What a file's items were scanned from: the file as it was, by its size and modified time, and
-/// the rules, which change a scan's items.
+/// the rules, which change a scan's items and what the doc checks find.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Stamp {
     size: u64,
@@ -52,8 +53,8 @@ struct Entry {
     items: Vec<Kept>,
 }
 
-/// An item as the cache keeps it: with its `docov-ignore` comment and the facts the reports order
-/// and measure by, which reports leave out of the item itself.
+/// An item as the cache keeps it: with its `docov-ignore` comment, the facts the reports order and
+/// measure by and what the doc checks found, which reports leave out of the item itself.
 #[derive(Debug, Serialize, Deserialize)]
 struct Kept {
     #[serde(flatten)]
@@ -62,18 +63,23 @@ struct Kept {
     ignore: Option<Ignore>,
     /// Its facts' `params`, `exported`, `release_tagged` and `typed`.
     about: (usize, bool, bool, Option<bool>),
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    diagnostics: Vec<Diagnostic>,
 }
 
 impl Kept {
     fn of(item: &Item) -> Self {
-        let Facts { params, exported, release_tagged, typed, .. } = item.facts;
-        Self { item: item.clone(), ignore: item.ignore.clone(), about: (params, exported, release_tagged, typed) }
+        let Facts { params, exported, release_tagged, typed, ref diagnostics, .. } = item.facts;
+        let (ignore, about, diagnostics) =
+            (item.ignore.clone(), (params, exported, release_tagged, typed), diagnostics.clone());
+        Self { item: item.clone(), ignore, about, diagnostics }
     }
 
     /// The item it keeps.
     fn item(&self) -> Item {
         let (params, exported, release_tagged, typed) = self.about;
-        let facts = Facts { params, exported, release_tagged, typed, ..self.item.facts.clone() };
+        let diagnostics = self.diagnostics.clone();
+        let facts = Facts { params, exported, release_tagged, typed, diagnostics, ..self.item.facts.clone() };
         Item { ignore: self.ignore.clone(), facts, ..self.item.clone() }
     }
 }

@@ -9,6 +9,7 @@ use serde::{Serialize, Serializer};
 use super::{Found, Via, doc};
 use crate::{
     Kind, Scope,
+    check::Checks,
     feature::{access::Access, exports::Exports, file_docs::FileDocs, inherit::Inherit, members::Members},
     public::Api,
 };
@@ -50,11 +51,20 @@ pub struct Rules {
     /// what they reach in it, not by this whole.
     #[serde(skip)]
     pub public: Option<Arc<Api>>,
+    /// The doc checks that are on, if any are, which each scanned file's items go through. The
+    /// cache stamps a file by their levels and options.
+    #[serde(serialize_with = "checks")]
+    pub checks: Option<Arc<Checks>>,
 }
 
 /// Regexes, by their sources.
 fn sources<S: Serializer>(regexes: &[Regex], serializer: S) -> Result<S::Ok, S::Error> {
     serializer.collect_seq(regexes.iter().map(Regex::as_str))
+}
+
+/// The checks that are on, if any are, by their levels and options.
+fn checks<S: Serializer>(checks: &Option<Arc<Checks>>, serializer: S) -> Result<S::Ok, S::Error> {
+    checks.as_deref().serialize(serializer)
 }
 
 impl From<Scope> for Rules {

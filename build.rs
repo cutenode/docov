@@ -1,5 +1,6 @@
-//! Registers every file in src/feature/ as a feature and every file in src/report/ as an output
-//! format, so adding either adds a file and no line in a shared list.
+//! Registers every file in src/feature/ as a feature, every file in src/report/ as an output format
+//! and every file in src/check/ as a doc check, so adding one adds a file and no line in a shared
+//! list.
 
 use std::{env, fs, path::Path};
 
@@ -15,6 +16,15 @@ fn main() {
     register("report", "formats.rs", "mod", "/// Every output format", "pub const FORMATS: &[Format]", |name| {
         format!("{name}::FORMAT")
     });
+    // A check's rule id is its file name in kebab case.
+    register(
+        "check",
+        "checks.rs",
+        "pub mod",
+        "/// Each check's rule id and a maker of its entry",
+        "const ENTRIES: &[Registered]",
+        |name| format!("({:?}, {name}::entry)", name.replace('_', "-")),
+    );
 }
 
 /// Writes `out` in OUT_DIR: a `module` for each Rust file in src/`folder`/, and `list`, of the

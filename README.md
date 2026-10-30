@@ -96,7 +96,33 @@ Example coverage is a second figure: the share of counted items whose JSDoc has 
 
 `--types` adds type coverage for JavaScript (`.js`, `.mjs`, `.cjs` and `.jsx` files): the share of counted functions and methods whose JSDoc gives each `@param` a `{type}`, and its `@returns` one when it has one. An undocumented function isn't typed. It's a line after the text report's total and `typed` and `typesPercent` in the JSON report, and `--types-threshold PERCENT` (`"typesThreshold"`, which turns it on too) fails the scan under it.
 
+`--complete` adds complete coverage: the share of counted items that are documented with a matching `@param` for each parameter. It's a line after the text report's total and `complete` and `completePercent` in the JSON report, and `--complete-threshold PERCENT` (`"completeThreshold"`, which turns it on too) fails the scan under it.
+
 `"ignoreDeprecated": true` leaves out items whose JSDoc has `@deprecated`, and `"skipGenerated": true` leaves out every item in a file whose first comment has `@generated`.
+
+### Doc checks
+
+Checks on what each counted item's JSDoc block says. Each is off until `--rule ID=LEVEL` (repeatable) or docov.json's `rules` turns it on, at `warn` or `error`, with its options if it has some:
+
+```jsonc
+"rules": { "require-param": "error", "param-names": "warn", "summary-sentence": ["warn", { "maxLength": 80 }] }
+```
+
+Each finding prints to stderr as `docov: path:line:column: rule-id: message`, and the `github`, `sarif`, `unix` and `markdown` formats list them too. A finding at `error` fails the scan (exit 1). A flag's level wins over the config's, which keeps its options, and a config's `rules` replaces the whole `rules` of one it extends or nests under. An item a `docov-ignore` comment takes out of the total isn't checked. The checks that want a tag leave a block with `@inheritdoc` alone.
+
+- `require-param`: each parameter of a function or method has a matching `@param`, by name, or for a destructured one, at its place (as `paramsDocumented` counts them).
+- `param-names`: each `@param` names a parameter, so none is left over from a rename. A destructured parameter takes the name of the `@param` at its place, and `@param options.a` belongs to `options`.
+- `require-returns`: a function or method whose own body returns a value has `@returns`, unless its return type is `void`, `undefined` or `Promise<void>`.
+- `require-yields`: a generator that yields a value has `@yields`.
+- `require-throws`: an exported function or method with a `throw` of its own (outside a `try` that catches it) has `@throws`.
+- `require-template`: each type parameter of a declaration has a `@template`.
+- `empty-tag-description`: each `@param`, `@returns`, `@throws` and `@yields` says something past its type and name, except a `@returns` of nothing.
+- `informative-docs`: a description says more than its item's name (`/** The user name. */` on `userName` doesn't).
+- `valid-link`: each `{@link}`, `{@linkcode}` and `{@linkplain}` is closed, has a target and no unescaped `{`, and each `@see` has text. A target that's a name, or a namepath like `A#b` by its first part, is declared or imported in the same file or is a JavaScript, browser or Node.js global. Names in other files aren't looked up.
+- `summary-sentence`: a description's first sentence is at most `maxLength` characters (120) and, with `period` (on by default), ends with `.`, `!` or `?`.
+- `doc-markdown`: a description's words that look like code (`snake_case`, `a::b`, `camelCase`) are in backticks, and its lists have no lazy continuation lines. `allowlist` adds words to the default list (`JavaScript`, `GitHub` and others).
+
+`const f = () => …` is a variable to docov, so the checks on parameters, returns and throws don't look at it.
 
 ### docov.json
 
@@ -119,7 +145,7 @@ Example coverage is a second figure: the share of counted items whose JSDoc has 
 
 `--jsdoc-config FILE` (or `"jsdocConfig": "jsdoc.json"`, relative to the config) scans the files a [jsdoc config](https://jsdoc.app/about-configuring-jsdoc) documents: its `source.include` are the paths, unless there are paths already, and `source.exclude` leaves files and folders out, both relative to the jsdoc config. `source.includePattern` and `excludePattern` filter files only when the config writes them, since jsdoc's default `includePattern` would leave out TypeScript. It has to be JSON; docov can't read a `.js` config.
 
-With `"nested": true` in the root config, each file is scanned with the nearest docov.json, docov.jsonc or .docovrc in a folder above it, up to the root config's folder, merged over the root config, the way [oxlint's nested configs](https://oxc.rs/docs/guide/usage/linter/nested-config.html) work. A nested config's `exclude` applies in its folder, its gates (`threshold`, `maxUndocumented`, `overrides`, `baseline` and the examples, release-tags and types thresholds) hold for its own files (a failure names the config), and its `paths` aren't read.
+With `"nested": true` in the root config, each file is scanned with the nearest docov.json, docov.jsonc or .docovrc in a folder above it, up to the root config's folder, merged over the root config, the way [oxlint's nested configs](https://oxc.rs/docs/guide/usage/linter/nested-config.html) work. A nested config's `exclude` applies in its folder, its gates (`threshold`, `maxUndocumented`, `overrides`, `baseline`, the examples, release-tags, types and complete thresholds, and the doc checks' errors) hold for its own files (a failure names the config), and its `paths` aren't read.
 
 `--by-package` adds a total line for each workspace package after the text total, and a `packages` array to the JSON. The packages are the folders with a package.json that the globs in the root config folder's package.json `workspaces` or pnpm-workspace.yaml `packages` match.
 
@@ -155,14 +181,14 @@ docov --format text --format lcov=coverage/docov.lcov
 - `json`: every item, documented or not, with its kind, line and column, and totals per file, per kind and overall. Each item also says whether its JSDoc describes it (`hasDescription`) and has an `@example` (`hasExample`), whether each parameter has a matching `@param` (`paramsDocumented`, `null` for what isn't a function or method), whether it's `deprecated`, and its `since` text (or `null`).
 - `lcov`: a line record for each line with items on it, hit when all of them are documented, and each item as a function, hit when it's documented. Coverage services and editor gutters read it.
 - `cobertura`: Cobertura XML (coverage-04.dtd) with the same line records, a package per folder and a class per file, for GitLab's merge request coverage and other CI coverage views.
-- `github`: GitHub Actions annotations, a warning on each undocumented item and an error for each failed gate. In GitHub Actions (`GITHUB_ACTIONS=true`) with no `--format`, docov writes these after the text, the way [oxlint](https://oxc.rs/docs/guide/usage/linter/output-formats.html) does.
-- `markdown`: the total, any failed gates, a table of the files, and each file's undocumented items in a folded `<details>` block. Made for `$GITHUB_STEP_SUMMARY` (`--format markdown=$GITHUB_STEP_SUMMARY`) and pull request comments. `--compare BASE.json` takes an earlier `--format json` report (from the base branch, say) and adds the percentage before and the change, for the total and each file, with files marked `new` or `gone`.
-- `sarif`: SARIF 2.1.0 with one rule, `docov/undocumented`, and a result at each undocumented item, for GitHub code scanning (`github/codeql-action/upload-sarif`) and other SARIF viewers.
+- `github`: GitHub Actions annotations, a warning on each undocumented item, one at its level on each doc check finding, and an error for each failed gate. In GitHub Actions (`GITHUB_ACTIONS=true`) with no `--format`, docov writes these after the text, the way [oxlint](https://oxc.rs/docs/guide/usage/linter/output-formats.html) does.
+- `markdown`: the total, any failed gates, a table of the files, and each file's undocumented items in a folded `<details>` block, then the doc checks' findings in one. Made for `$GITHUB_STEP_SUMMARY` (`--format markdown=$GITHUB_STEP_SUMMARY`) and pull request comments. `--compare BASE.json` takes an earlier `--format json` report (from the base branch, say) and adds the percentage before and the change, for the total and each file, with files marked `new` or `gone`.
+- `sarif`: SARIF 2.1.0, a result at each undocumented item under the rule `docov/undocumented` and one at its level for each doc check finding under the check's own rule (`docov/require-param`), for GitHub code scanning (`github/codeql-action/upload-sarif`) and other SARIF viewers.
 - `gitlab`: a GitLab Code Quality report, an issue of severity `minor` at each undocumented item. Each fingerprint is a hash of the item's path, kind and name, so GitLab tells new issues from old ones.
 - `junit`: JUnit XML, a test suite per file and a test case per item that fails when the item is undocumented.
 - `checkstyle`: Checkstyle XML, a warning at each undocumented item.
 - `rdjson`: [reviewdog](https://github.com/reviewdog/reviewdog)'s diagnostic format (`reviewdog -f=rdjson`).
-- `unix`: `path:line:column: kind name undocumented [docov]` for each undocumented item, the way compilers write warnings, for editors' problem matchers and grep.
+- `unix`: `path:line:column: kind name undocumented [docov]` for each undocumented item and `path:line:column: rule-id: message` for each doc check finding, the way compilers write warnings, for editors' problem matchers and grep.
 - `html`: one self-contained page (`--format html=report.html`) with a table of the files and each file's source, its undocumented declarations highlighted. It has no scripts and follows the system's light or dark mode.
 - `badge`: an SVG badge of the total, drawn without a network call. `--badge FILE` is short for `--format badge=FILE`.
 - `shields`: the JSON a [shields.io endpoint badge](https://shields.io/badges/endpoint-badge) reads, for a badge from a file you publish.
@@ -258,7 +284,7 @@ Codecov [merges every upload](https://docs.codecov.com/docs/merging-reports) for
 
 The toolchain is pinned in `rust-toolchain.toml`, and Node in `.node-version`. The checks need [cargo-nextest](https://nexte.st) and [cargo-llvm-cov](https://github.com/taiki-e/cargo-llvm-cov).
 
-Each flag and docov.json key belongs to a feature, one file in `src/feature/` that implements `Feature`. Each output format is one file in `src/report/` with a `FORMAT` naming it, describing it for `--help`, and rendering it. `build.rs` registers every file in both folders, so a new feature or format is a new file and nothing else.
+Each flag and docov.json key belongs to a feature, one file in `src/feature/` that implements `Feature`. Each output format is one file in `src/report/` with a `FORMAT` naming it, describing it for `--help`, and rendering it. Each doc check is one file in `src/check/` that implements `Check`, its rule id the file name in kebab case. `build.rs` registers every file in the three folders, so a new feature, format or check is a new file and nothing else.
 
 ```bash
 cargo run -- [PATHS]...   # docov on a project

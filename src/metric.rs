@@ -39,6 +39,15 @@ pub const TYPES: Metric = Metric {
     has: |i| i.facts.typed == Some(true),
 };
 
+/// The share of counted items that are documented, and for a function or method, with a matching
+/// `@param` for each parameter.
+pub const COMPLETE: Metric = Metric {
+    name: "complete",
+    keys: ["complete", "completePercent"],
+    over: |_| true,
+    has: |i| i.documented && i.facts.params_documented != Some(false),
+};
+
 impl Metric {
     /// How many of `file`'s items it's over have it (`documented`), out of how many (`total`).
     pub fn file(self, file: &FileReport) -> Totals {

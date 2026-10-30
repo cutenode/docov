@@ -1,5 +1,6 @@
 //! Properties of features working together: gates under extended and nested configs, the cache
-//! with the rules, and `--print-config` over every feature's setting.
+//! with the rules, `--print-config` over every feature's setting, and the doc checks with nested
+//! configs, ignored items and the cache.
 
 use std::{
     fs,
@@ -7,8 +8,8 @@ use std::{
 };
 
 use docov::{
-    Kind, Rules, Scope, Settings, Totals, batch, cache::Cache, config::Config, feature::overrides::Overrides, jsdoc,
-    nested, scan_file, walk,
+    Kind, Rules, Scope, Settings, Totals, batch, cache::Cache, check, config::Config, feature::overrides::Overrides,
+    jsdoc, nested, scan_file, walk,
 };
 use hegel::{TestCase, generators as gs};
 use serde_json::json;
@@ -220,8 +221,8 @@ fn the_cache_keys_on_the_rules(tc: TestCase) {
 
 /// `--print-config` describes each feature with a setting worth printing as it was written, the
 /// flags winning: the gates (thresholds by glob and negative ones too, overrides,
-/// `maxUndocumented`, the baseline, the changed files and the diff threshold), what counts, and
-/// the metrics and order the reports add.
+/// `maxUndocumented`, the baseline, the changed files and the diff threshold), what counts, the
+/// metrics and order the reports add, and the doc checks' levels and options.
 #[hegel::test(test_cases = 30)]
 fn print_config_describes_every_setting(tc: TestCase) {
     let dir = tempfile::tempdir().unwrap();
@@ -259,6 +260,8 @@ fn print_config_describes_every_setting(tc: TestCase) {
         "commonjsMembers": flags,
         "examplesThreshold": 30,
         "releaseTagsThreshold": 40,
+        "completeThreshold": 50,
+        "rules": { "require-param": "error", "summary-sentence": ["warn", { "maxLength": 80 }] },
     });
     write(dir.path(), "docov.json", &config.to_string());
     let changed = tc.draw(gs::sampled_from(vec![
@@ -270,7 +273,7 @@ fn print_config_describes_every_setting(tc: TestCase) {
     let mut args = changed.0;
     if flags {
         args.extend(["--baseline", "other.json", "--write-baseline", "--diff-threshold", "90", "--diff-base", "main"]);
-        args.extend(["--sort", "priority", "--examples", "--types"]);
+        args.extend(["--sort", "priority", "--examples", "--types", "--rule", "require-param=warn"]);
     }
     let config = Config::load(Some(&dir.path().join("docov.json"))).unwrap();
     let described = Settings::new(&matches(&args), config.keys).describe();
@@ -305,6 +308,11 @@ fn print_config_describes_every_setting(tc: TestCase) {
         ("release_tags", json!({ "on": true, "threshold": 40.0 })),
         ("types", json!({ "on": flags, "threshold": null })),
         ("sort", json!(if flags { "priority" } else { "position" })),
+        ("complete", json!({ "on": true, "threshold": 50.0 })),
+        (
+            "rules",
+            json!({ "require-param": if flags { "warn" } else { "error" }, "summary-sentence": ["warn", { "maxLength": 80 }] }),
+        ),
     ];
     for (name, value) in expected {
         assert_eq!(described.get(name), Some(&value), "{name}");
@@ -547,4 +555,200 @@ fn the_cli_explains_by_the_effective_config(tc: TestCase) {
     let (code, _, err) = docov_with_stdin(root, &["--explain", path, "--stdin-filename", path], b"");
     assert_eq!(code, 2);
     assert!(err.contains("cannot be used with"), "{err}");
+}
+
+/// A function a doc check property scans: `require-param` finds `a` at its block, and
+/// `param-names` finds `b` on the block's third line.
+const CHECKED: &str = "/**\n * F.\n * @param b B.\n */\nexport function f{i}(a) {}\n";
+
+/// Each nested config's files go through its own doc checks: its `rules` in place of the root
+/// config's, as a key it sets always replaces the root's whole, and a `--rule` flag's level over
+/// both. Each config's gate fails on its own files' errors alone, a nested one's naming it.
+#[hegel::test(test_cases = 40)]
+fn doc_checks_go_by_each_nested_config(tc: TestCase) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let levels = || {
+        let level = || tc.draw(gs::optional(gs::sampled_from(vec!["off", "warn", "error"])));
+        let pairs = [("require-param", level()), ("param-names", level())];
+        pairs
+            .into_iter()
+            .filter_map(|(id, level)| Some((id.to_owned(), json!(level?))))
+            .collect::<serde_json::Map<_, _>>()
+    };
+    let top_rules = levels();
+    let pkg_rules = tc.draw(gs::booleans()).then(levels);
+    let flag = tc.draw(gs::optional(gs::sampled_from(vec!["off", "warn", "error"])));
+    write(root, "docov.json", &json!({ "nested": true, "rules": top_rules }).to_string());
+    let pkg = pkg_rules.as_ref().map_or_else(|| json!({}), |rules| json!({ "rules": rules }));
+    write(root, "pkg/docov.json", &pkg.to_string());
+    let counts = [tc.draw(gs::integers::<usize>().max_value(3)), tc.draw(gs::integers::<usize>().max_value(3))];
+    for (folder, count) in ["", "pkg/"].into_iter().zip(counts) {
+        let source: String = (0..count).map(|i| CHECKED.replace("{i}", &i.to_string())).collect();
+        write(root, &format!("{folder}m.ts"), &source);
+    }
+
+    let args: Vec<String> =
+        flag.iter().flat_map(|level| ["--rule".to_owned(), format!("require-param={level}")]).collect();
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let mut config = Config::load(Some(&root.join("docov.json"))).unwrap();
+    let settings = Settings::new(&matches(&args), std::mem::take(&mut config.keys));
+    let files = walk::files(&[root.to_owned()], |_, _| false).unwrap();
+    let plan = nested::Plan::new(&config, settings, &matches(&args), files).unwrap();
+    let reports = batch::scan(&plan.files(), &Cache::default()).unwrap();
+
+    // Whether a rule is an error by a group's rules, if it's on.
+    let level = |rules: &serde_json::Map<String, serde_json::Value>, id: &str| -> Option<bool> {
+        let flagged = flag.filter(|_| id == "require-param");
+        let level = flagged.or_else(|| rules.get(id).and_then(serde_json::Value::as_str))?;
+        (level != "off").then_some(level == "error")
+    };
+    let pkg = format!("{}: ", root.join("pkg").join("docov.json").display());
+    let mut failures = Vec::new();
+    for (g, count) in counts.into_iter().enumerate() {
+        let rules = if g == 1 { pkg_rules.as_ref().unwrap_or(&top_rules) } else { &top_rules };
+        let mut wanted = Vec::new();
+        for i in 0..count {
+            for (id, line) in [("require-param", 5 * i + 1), ("param-names", 5 * i + 3)] {
+                wanted.extend(level(rules, id).map(|error| (line, id, error)));
+            }
+        }
+        wanted.sort_unstable();
+        let path = root.join(if g == 1 { "pkg/m.ts" } else { "m.ts" });
+        let report = reports.iter().find(|r| r.path == path).unwrap();
+        let mut found: Vec<_> = report
+            .items
+            .iter()
+            .flat_map(|i| i.facts.diagnostics.iter().map(|d| (d.line, d.rule, d.severity == check::Level::Error)))
+            .collect();
+        found.sort_unstable();
+        assert_eq!(found, wanted, "{path:?}");
+        let errors = wanted.iter().filter(|(_, _, error)| *error).count();
+        if errors > 0 {
+            let failure = format!("the doc checks found {errors} error{}", if errors == 1 { "" } else { "s" });
+            failures.push(if g == 1 { format!("{pkg}{failure}") } else { failure });
+        }
+    }
+    assert_eq!(plan.gates(&reports).1, failures);
+}
+
+/// The doc checks run on each counted item with a block, and on nothing else: an item a
+/// `docov-ignore` comment takes out of the total (undocumented, with tags alone and
+/// `requireDescription` on) gets no findings, while a documented one under the same comment
+/// does, and an item `excludeTags` leaves out isn't there to check. The checks change nothing about
+/// the items past their findings.
+#[hegel::test(test_cases = 60)]
+fn doc_checks_leave_ignored_items_be(tc: TestCase) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("a.ts");
+    let comment = tc.draw(gs::sampled_from(vec!["", "// docov-ignore-next-line\n", "/* docov-ignore-file */\n"]));
+    let described = tc.draw(gs::booleans());
+    let internal = tc.draw(gs::booleans());
+    let block = format!(
+        "/**\n{} * @param b B.\n{} */\n",
+        if described { " * F.\n" } else { "" },
+        if internal { " * @internal\n" } else { "" }
+    );
+    // The file comment goes first, and the line comment right above the function.
+    let source = match comment {
+        "/* docov-ignore-file */\n" => format!("{comment}{block}export function f(a) {{}}\n"),
+        _ => format!("{block}{comment}export function f(a) {{}}\n"),
+    };
+    write(dir.path(), "a.ts", &source);
+    let require_description = tc.draw(gs::booleans());
+    let exclude_tags = tc.draw(gs::booleans());
+    let plain = Rules {
+        require_description,
+        exclude_tags: if exclude_tags { vec!["internal".into()] } else { Vec::new() },
+        ..Rules::default()
+    };
+    let setting = check::Setting { level: check::Level::Warn, options: None };
+    let checks = check::Checks::new([("require-param", &setting), ("param-names", &setting)]).unwrap();
+    let rules = Rules { checks: Some(std::sync::Arc::new(checks)), ..plain.clone() };
+
+    let checked = scan_file(&path, &rules).unwrap();
+    let mut items = checked.items.clone();
+    for item in &mut items {
+        item.facts.diagnostics.clear();
+    }
+    assert_eq!(items, scan_file(&path, &plain).unwrap().items);
+    let counted = !(internal && exclude_tags);
+    let ignored = !comment.is_empty() && require_description && !described;
+    let found: Vec<_> = checked.items.iter().flat_map(|i| i.facts.diagnostics.iter().map(|d| d.rule)).collect();
+    let wanted = if counted && !ignored { vec!["param-names", "require-param"] } else { Vec::new() };
+    let mut found = found;
+    found.sort_unstable();
+    assert_eq!(found, wanted, "{source}");
+    assert_eq!(checked.items.len(), usize::from(counted));
+}
+
+/// A doc check setting a cache test scans with, by index: each finds something else in [`CHECKED`].
+fn setting(index: u8) -> Option<(&'static str, check::Setting)> {
+    let (id, level, options) = match index {
+        0 => return None,
+        1 => ("require-param", check::Level::Off, None),
+        2 => ("require-param", check::Level::Warn, None),
+        3 => ("require-param", check::Level::Error, None),
+        4 => ("summary-sentence", check::Level::Warn, Some(json!({ "maxLength": 1 }))),
+        _ => ("summary-sentence", check::Level::Warn, Some(json!({ "maxLength": 1, "period": false }))),
+    };
+    Some((id, check::Setting { level, options }))
+}
+
+/// The cache keeps what the doc checks found, and gives a file's items back only for the levels
+/// and options of the checks they were scanned with: a check that's off is as good as none. A
+/// cache whose finding names no rule docov has, or no rule at all, is read as empty, and rebuilt.
+#[hegel::test(test_cases = 30)]
+fn the_cache_keys_on_the_rule_levels(tc: TestCase) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("a.ts");
+    write(dir.path(), "a.ts", &CHECKED.replace("{i}", ""));
+    let draw = || tc.draw(gs::integers::<u8>().max_value(5));
+    let (first, second) = (draw(), draw());
+    let rules = |index: u8| {
+        let setting = setting(index);
+        let checks = check::Checks::new(setting.iter().map(|(id, setting)| (*id, setting)));
+        Rules { checks: checks.map(std::sync::Arc::new), ..Rules::default() }
+    };
+    let (first_rules, second_rules) = (rules(first), rules(second));
+    let cache_path = dir.path().join(".docov-cache");
+    let scanned = batch::scan(&[(path.as_path(), &first_rules)], &Cache::read(cache_path.clone())).unwrap();
+    let fresh = scan_file(&path, &first_rules).unwrap();
+    assert_eq!(scanned, vec![fresh.clone()]);
+    let findings = fresh.items.iter().any(|i| !i.facts.diagnostics.is_empty());
+    assert_eq!(findings, ![0, 1].contains(&first));
+
+    let cache = Cache::read(cache_path.clone());
+    let kept = cache.stamp(&path, &second_rules).and_then(|stamp| cache.get(&path, stamp));
+    assert_eq!(cache.stamp(&path, &rules(0)), cache.stamp(&path, &rules(1)));
+    let off = |index: u8| index < 2;
+    let same = first == second || (off(first) && off(second));
+    assert_eq!(kept.as_ref(), same.then_some(&scanned[0].items));
+    let again = batch::scan(&[(path.as_path(), &second_rules)], &cache).unwrap();
+    assert_eq!(again, vec![scan_file(&path, &second_rules).unwrap()]);
+
+    let text = fs::read_to_string(&cache_path).unwrap();
+    for rule in ["\"nope\"", "1"] {
+        let renamed = text.replace("\"rule\":\"require-param\"", &format!("\"rule\":{rule}"));
+        fs::write(&cache_path, &renamed).unwrap();
+        let cache = Cache::read(cache_path.clone());
+        let kept = cache.stamp(&path, &second_rules).and_then(|stamp| cache.get(&path, stamp));
+        assert_eq!(kept.is_some(), renamed == text);
+    }
+}
+
+/// The binary prints each doc check finding to stderr, whatever the format, before why the scan
+/// fails, which a finding at `error` makes it do.
+#[hegel::test(test_cases = 4)]
+fn the_cli_prints_doc_check_findings(tc: TestCase) {
+    let dir = tempfile::tempdir().unwrap();
+    write(dir.path(), "a.ts", &CHECKED.replace("{i}", ""));
+    let level = tc.draw(gs::sampled_from(vec!["warn", "error"]));
+    let format = tc.draw(gs::sampled_from(vec!["text", "unix", "json"]));
+    let rule = format!("require-param={level}");
+    let (code, out, err) = docov(dir.path(), &["--rule", &rule, "--format", format], false);
+    let found = "a.ts:1:1: require-param: missing @param for `a`";
+    let failure = if level == "error" { "docov: the doc checks found 1 error\n" } else { "" };
+    assert_eq!((code, err), (i32::from(level == "error"), format!("docov: {found}\n{failure}")));
+    assert_eq!(out.contains(found), format == "unix", "{out}");
 }

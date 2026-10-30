@@ -1,0 +1,133 @@
+//! What a declaration's code says that its JSDoc should say too, for the doc checks: its type
+//! parameters, and for a function, whether its own body returns, yields or throws.
+
+use oxc_ast::ast::{
+    ArrowFunctionExpression, Class, Expression, Function, FunctionBody, ReturnStatement, TSType, TSTypeAnnotation,
+    TSTypeName, TSTypeParameterDeclaration, ThrowStatement, TryStatement, YieldExpression,
+};
+use oxc_ast_visit::{Visit, walk};
+use oxc_syntax::scope::ScopeFlags;
+
+/// What a declaration's code says that its JSDoc should say too.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Shape<'s> {
+    /// Its type parameters' names.
+    pub type_params: Vec<&'s str>,
+    /// Whether its own body returns a value: `return x;` (not a bare `return;`, `undefined` or
+    /// `void x`), or an arrow function's expression body.
+    pub returns: bool,
+    /// Whether its own body yields a value.
+    pub yields: bool,
+    /// Whether its own body throws, outside a `try` block that has a `catch`.
+    pub throws: bool,
+    /// Whether its return type is `void`, `undefined` or `Promise<void>`.
+    pub void: bool,
+}
+
+impl<'s> Shape<'s> {
+    /// A declaration's, from its type parameters alone.
+    pub(super) fn generic(type_params: Option<&TSTypeParameterDeclaration<'s>>) -> Self {
+        let type_params =
+            type_params.map_or_else(Vec::new, |d| d.params.iter().map(|p| p.name.name.as_str()).collect());
+        Self { type_params, ..Self::default() }
+    }
+
+    /// A function's or method's, or a signature's (with no body).
+    pub(super) fn function(
+        type_params: Option<&TSTypeParameterDeclaration<'s>>,
+        return_type: Option<&TSTypeAnnotation<'s>>,
+        body: Option<&FunctionBody<'s>>,
+    ) -> Self {
+        let mut found = Body::default();
+        if let Some(body) = body {
+            found.visit_function_body(body);
+        }
+        let void = return_type.is_some_and(|t| nothing(&t.type_annotation));
+        let Body { returns, yields, throws, .. } = found;
+        Self { returns, yields, throws, void, ..Self::generic(type_params) }
+    }
+
+    /// A function value's, or nothing for a value that isn't a function.
+    pub(super) fn value(value: &Expression<'s>) -> Self {
+        match value {
+            Expression::FunctionExpression(f) => Self::of(f),
+            Expression::ArrowFunctionExpression(f) => Self::arrow(f),
+            _ => Self::default(),
+        }
+    }
+
+    /// A function's.
+    pub(super) fn of(f: &Function<'s>) -> Self {
+        Self::function(f.type_parameters.as_deref(), f.return_type.as_deref(), f.body.as_deref())
+    }
+
+    fn arrow(f: &ArrowFunctionExpression<'s>) -> Self {
+        let mut found = Body::default();
+        found.visit_arrow_function_body(&f.body);
+        let shape = Self::function(f.type_parameters.as_deref(), f.return_type.as_deref(), None);
+        let returns = found.returns || f.body.as_expression().is_some_and(is_value);
+        Self { returns, throws: found.throws, ..shape }
+    }
+}
+
+/// Whether a returned expression is a value: not `undefined` or `void x`.
+fn is_value(expression: &Expression) -> bool {
+    !expression.is_undefined() && !expression.is_void()
+}
+
+/// Whether a return type says the function returns nothing: `void`, `undefined` or
+/// `Promise<void>`.
+fn nothing(t: &TSType) -> bool {
+    match t {
+        TSType::TSVoidKeyword(_) | TSType::TSUndefinedKeyword(_) => true,
+        TSType::TSTypeReference(r) => {
+            matches!(&r.type_name, TSTypeName::IdentifierReference(id) if id.name == "Promise")
+                && r.type_arguments.as_ref().and_then(|a| a.params.first()).is_some_and(nothing)
+        }
+        _ => false,
+    }
+}
+
+/// What a function's own body does, past the functions and classes inside it.
+#[derive(Default)]
+struct Body {
+    returns: bool,
+    yields: bool,
+    throws: bool,
+    /// How many `try` blocks with a `catch` it's in.
+    caught: usize,
+}
+
+impl<'a> Visit<'a> for Body {
+    fn visit_function(&mut self, _: &Function<'a>, _: ScopeFlags) {}
+    fn visit_arrow_function_expression(&mut self, _: &ArrowFunctionExpression<'a>) {}
+    fn visit_class(&mut self, _: &Class<'a>) {}
+
+    fn visit_return_statement(&mut self, it: &ReturnStatement<'a>) {
+        self.returns |= it.argument.as_ref().is_some_and(is_value);
+        walk::walk_return_statement(self, it);
+    }
+
+    fn visit_yield_expression(&mut self, it: &YieldExpression<'a>) {
+        self.yields |= it.argument.is_some();
+        walk::walk_yield_expression(self, it);
+    }
+
+    fn visit_throw_statement(&mut self, it: &ThrowStatement<'a>) {
+        self.throws |= self.caught == 0;
+        walk::walk_throw_statement(self, it);
+    }
+
+    fn visit_try_statement(&mut self, it: &TryStatement<'a>) {
+        let caught = usize::from(it.handler.is_some());
+        self.caught += caught;
+        self.visit_block_statement(&it.block);
+        self.caught -= caught;
+        if let Some(handler) = &it.handler {
+            self.visit_catch_clause(handler);
+        }
+        if let Some(finalizer) = &it.finalizer {
+            self.visit_block_statement(finalizer);
+        }
+    }
+}

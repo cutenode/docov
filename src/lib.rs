@@ -2,6 +2,7 @@
 
 pub mod batch;
 pub mod cache;
+pub mod check;
 pub mod collect;
 pub mod config;
 pub mod feature;

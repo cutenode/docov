@@ -15,6 +15,7 @@ use serde_json::Value;
 
 use crate::{
     FileReport, Item, Kind,
+    check::{Diagnostic, Level},
     feature::{color::Styled, sort::Sort},
     metric::Metric,
     packages::Package,
@@ -107,6 +108,19 @@ fn slash(path: &Path) -> String {
 /// Each undocumented item that counts, with its file.
 fn undocumented(files: &[FileReport]) -> impl Iterator<Item = (&FileReport, &Item)> {
     files.iter().flat_map(|file| file.counted().filter(|item| !item.documented).map(move |item| (file, item)))
+}
+
+/// What the doc checks found in each counted item, with its file, in the order of the files and
+/// their items.
+pub fn diagnostics(files: &[FileReport]) -> impl Iterator<Item = (&FileReport, &Diagnostic)> {
+    files
+        .iter()
+        .flat_map(|file| file.counted().flat_map(move |item| item.facts.diagnostics.iter().map(move |d| (file, d))))
+}
+
+/// A doc check finding's level, as SARIF and GitHub annotations name it.
+fn severity(diagnostic: &Diagnostic) -> &'static str {
+    if diagnostic.severity == Level::Error { "error" } else { "warning" }
 }
 
 /// `text` with what XML and HTML read as markup escaped, for text and attribute values alike.

@@ -4,6 +4,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::{Found, doc};
+use crate::check::Diagnostic;
 
 /// What an item's JSDoc says, and what about the item the reports order by. The JSON report leaves
 /// out the skipped fields, which the cache keeps apart.
@@ -33,6 +34,9 @@ pub struct Facts {
     /// `@returns` one when it has one.
     #[serde(skip)]
     pub typed: Option<bool>,
+    /// What the doc checks that are on found in its JSDoc, by position. An ignored item has none.
+    #[serde(skip)]
+    pub diagnostics: Vec<Diagnostic>,
 }
 
 impl Facts {
@@ -50,6 +54,7 @@ impl Facts {
             exported,
             release_tagged: doc.is_some_and(|doc| doc::release_tags(doc) == 1),
             typed: found.params.as_ref().filter(|_| javascript).map(|_| doc.is_some_and(doc::typed)),
+            diagnostics: Vec::new(),
         }
     }
 }

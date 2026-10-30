@@ -2,11 +2,13 @@
 
 use std::{fs, io, path::Path, path::PathBuf};
 
-mod doc;
+mod diagnose;
+pub(crate) mod doc;
 mod explain;
 mod facts;
 mod ignore;
 mod rules;
+mod shape;
 
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
@@ -22,7 +24,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use self::ignore::Ignores;
-pub use self::{explain::explain, facts::Facts, ignore::Ignore, rules::Rules};
+pub use self::{explain::explain, facts::Facts, ignore::Ignore, rules::Rules, shape::Shape};
 use crate::{
     Totals,
     feature::{file_docs::FileDocs, members::Members},
@@ -215,6 +217,8 @@ struct Collected<'s> {
     lines: Lines<'s>,
     /// What it passed over, when asked to keep that.
     skips: Vec<Skip>,
+    /// The names it declares or imports at its top level, when the doc checks are on.
+    names: FxHashSet<&'s str>,
 }
 
 /// A declaration, or a block, the scan passed over, and why, for `--explain`.
@@ -226,17 +230,23 @@ struct Skip {
 
 impl Collected<'_> {
     /// The items that count by `rules` (`reached` holds the local names the public scope's entry
-    /// points reach in the file, if they reach it).
+    /// points reach in the file, if they reach it), each with what the doc checks found in it
+    /// unless it's [ignored](Item::ignored).
     fn items(self, rules: &Rules, source_type: SourceType, reached: Option<&FxHashSet<String>>) -> Vec<Item> {
-        let Self { found, exported, ignores, lines, .. } = self;
+        let Self { found, exported, ignores, lines, names, .. } = self;
         found
-            .into_iter()
+            .iter()
             .filter(|f| rules.counts(f, &exported, reached))
             .map(|f| {
                 let (line, column) = lines.position(f.at as usize);
-                let facts = Facts::of(&f, rules.exported(&f, &exported), source_type.is_javascript());
-                let documented = rules.documents(&f);
-                Item { name: f.name, kind: f.kind, line, column, documented, facts, ignore: ignores.covering(line) }
+                let is_exported = rules.exported(f, &exported);
+                let facts = Facts::of(f, is_exported, source_type.is_javascript());
+                let (documented, ignore) = (rules.documents(f), ignores.covering(line));
+                let mut item = Item { name: f.name.clone(), kind: f.kind, line, column, documented, facts, ignore };
+                if let Some(checks) = rules.checks.as_ref().filter(|_| !item.ignored()) {
+                    item.facts.diagnostics = diagnose::diagnose(checks, f, is_exported, &lines, &names);
+                }
+                item
             })
             .collect()
     }
@@ -280,8 +290,9 @@ fn collect<T>(
     let generated = parsed.program.comments.first().is_some_and(|c| c.span.source_text(source).contains("@generated"));
     if rules.skip_generated && generated {
         collector.skip(0, || "the file".into(), "its first comment says it's @generated");
-        let skips = collector.skips.unwrap_or_default();
-        return Ok(finish(Collected { found: Vec::new(), exported: FxHashSet::default(), ignores, lines, skips }));
+        let (skips, found, exported, names) =
+            (collector.skips.unwrap_or_default(), Vec::new(), FxHashSet::default(), FxHashSet::default());
+        return Ok(finish(Collected { found, exported, ignores, lines, skips, names }));
     }
     let legal = parsed.program.comments.iter().filter(|c| c.content == CommentContent::JsdocLegal && c.is_leading());
     for comment in legal {
@@ -303,7 +314,8 @@ fn collect<T>(
     }
 
     let Collector { found, exported, skips, .. } = collector;
-    Ok(finish(Collected { found, exported, ignores, lines, skips: skips.unwrap_or_default() }))
+    let names = diagnose::names(&parsed.program, source, rules);
+    Ok(finish(Collected { found, exported, ignores, lines, skips: skips.unwrap_or_default(), names }))
 }
 
 struct Found<'s> {
@@ -322,6 +334,8 @@ struct Found<'s> {
     overrides: bool,
     /// For a function or method, each parameter's name, or `None` for a destructured one.
     params: Option<Vec<Option<&'s str>>>,
+    /// What its code says, for the doc checks.
+    shape: Shape<'s>,
     /// Whether it's documented, for an item whose own rule says: a file's, or a comment's type.
     documented: Option<bool>,
     /// Whether it counts under any scope, as a file's own item and a comment's type do.
@@ -333,8 +347,14 @@ struct Found<'s> {
 impl<'s> Found<'s> {
     fn new(name: String, kind: Kind, at: u32, doc: Option<JSDoc<'s>>) -> Self {
         let (binding, via, protected, overrides, params, documented) = (None, None, false, false, None, None);
-        let (standalone, listed) = (false, false);
-        Self { name, kind, at, doc, binding, via, protected, overrides, params, documented, standalone, listed }
+        let (shape, standalone, listed) = (Shape::default(), false, false);
+        Self { name, kind, at, doc, binding, via, protected, overrides, params, shape, documented, standalone, listed }
+    }
+
+    /// Sets its parameters and shape from a value assigned to it, when that's a function.
+    fn value(&mut self, value: &Expression<'s>) {
+        self.params = value_params(value);
+        self.shape = Shape::value(value);
     }
 }
 
@@ -531,7 +551,9 @@ impl<'s> Collector<'s> {
             }
             Declaration::TSInterfaceDeclaration(i) => self.interface(i, site(&i.id)),
             Declaration::TSTypeAliasDeclaration(t) => {
-                let doc = self.push(site(&t.id), t.span.start, t.id.name.to_string(), Kind::Type).doc.clone();
+                let found = self.push(site(&t.id), t.span.start, t.id.name.to_string(), Kind::Type);
+                found.shape = Shape::generic(t.type_parameters.as_deref());
+                let doc = found.doc.clone();
                 if let TSType::TSTypeLiteral(literal) = &t.type_annotation
                     && self.rules.members == Members::All
                 {
@@ -586,7 +608,7 @@ impl<'s> Collector<'s> {
         }
         if !is_module_exports {
             if let Some(name) = target.static_property_name().and_then(|name| name.as_str()) {
-                self.push(site, at, name.to_owned(), value_kind(value)).params = value_params(value);
+                self.push(site, at, name.to_owned(), value_kind(value)).value(value);
             }
             return;
         }
@@ -600,7 +622,7 @@ impl<'s> Collector<'s> {
                 Kind::Variable => Kind::Default,
                 kind => kind,
             };
-            self.push(site, at, name.unwrap_or("default").to_owned(), kind).params = value_params(value);
+            self.push(site, at, name.unwrap_or("default").to_owned(), kind).value(value);
             return;
         };
         for property in &object.properties {
@@ -611,7 +633,7 @@ impl<'s> Collector<'s> {
             }
             let start = p.span.start;
             let key = key_name(self.source, &p.key);
-            self.push(Site { at: start, ..site }, start, key, value_kind(&p.value)).params = value_params(&p.value);
+            self.push(Site { at: start, ..site }, start, key, value_kind(&p.value)).value(&p.value);
         }
     }
 
@@ -631,7 +653,7 @@ impl<'s> Collector<'s> {
         let (Some(&via), Some(key)) = (self.declared.get(owner), key) else { return };
         let kind = if value.is_function() { Kind::Method } else { Kind::Property };
         let site = Site { at, binding: Some(owner), via };
-        self.member(site, at, (owner, key), kind, None).params = value_params(value);
+        self.member(site, at, (owner, key), kind, None).value(value);
     }
 
     fn function(&mut self, f: &Function<'s>, site: Site<'s>, overload: Option<&'s str>) {
@@ -641,14 +663,17 @@ impl<'s> Collector<'s> {
         } else if overload == Some(name) {
             return self.skip(f.span.start, || name.to_owned(), OVERLOAD);
         }
-        self.push(site, f.span.start, name.to_owned(), Kind::Function).params = Some(params(&f.params));
+        let found = self.push(site, f.span.start, name.to_owned(), Kind::Function);
+        found.params = Some(params(&f.params));
+        found.shape = Shape::of(f);
     }
 
     fn class(&mut self, class: &Class<'s>, site: Site<'s>) {
         let class_name = class.id.as_ref().map_or("default", |id| id.name.as_str());
         // Decorators can come before `export`, and a doc before them attaches to the first one.
         let start = class.decorators.first().map_or(class.span.start, |d| d.span.start);
-        self.push(site, start, class_name.to_owned(), Kind::Class);
+        self.push(site, start, class_name.to_owned(), Kind::Class).shape =
+            Shape::generic(class.type_parameters.as_deref());
 
         // A getter and its setter are one property: the getter carries the doc.
         let getters: FxHashSet<String> = class
@@ -670,7 +695,7 @@ impl<'s> Collector<'s> {
                 let name = key.private_name().map_or_else(|| key_name(source, key), |name| format!("#{name}"));
                 format!("{class_name}.{name}")
             };
-            let (start, key, kind, accessibility, overrides, method_params) = match element {
+            let (start, key, kind, accessibility, overrides, method) = match element {
                 ClassElement::MethodDefinition(m) if m.kind.is_constructor() => {
                     self.skip(m.span.start, || member(&m.key), "a constructor, which its class's doc covers");
                     continue;
@@ -693,7 +718,7 @@ impl<'s> Collector<'s> {
                     }
                     let method = m.kind == MethodDefinitionKind::Method;
                     let kind = if method { Kind::Method } else { Kind::Accessor };
-                    (m.span.start, key, kind, m.accessibility, m.r#override, method.then(|| params(&m.value.params)))
+                    (m.span.start, key, kind, m.accessibility, m.r#override, method.then_some(&m.value))
                 }
                 ClassElement::PropertyDefinition(p) if is_private(&p.key, p.accessibility) => {
                     self.skip(p.span.start, || member(&p.key), "private");
@@ -714,13 +739,15 @@ impl<'s> Collector<'s> {
             let found = self.push(Site { at: start, ..site }, start, format!("{class_name}.{key}"), kind);
             found.protected = accessibility == Some(TSAccessibility::Protected);
             found.overrides = overrides;
-            found.params = method_params;
+            found.params = method.map(|m| params(&m.params));
+            found.shape = method.map_or_else(Shape::default, |m| Shape::of(m));
         }
     }
 
     fn interface(&mut self, interface: &TSInterfaceDeclaration<'s>, site: Site<'s>) {
         let name = interface.id.name.as_str();
-        self.push(site, interface.span.start, name.to_owned(), Kind::Interface);
+        self.push(site, interface.span.start, name.to_owned(), Kind::Interface).shape =
+            Shape::generic(interface.type_parameters.as_deref());
         self.signatures(&interface.body.body, name, site, None);
     }
 
@@ -728,16 +755,20 @@ impl<'s> Collector<'s> {
     /// which a matching `@property` in `parent` documents too.
     fn signatures(&mut self, signatures: &[TSSignature<'s>], owner: &str, site: Site<'s>, parent: Option<&JSDoc>) {
         for signature in signatures {
-            let (start, key, kind, method_params) = match signature {
+            let (start, key, kind, method) = match signature {
                 TSSignature::TSPropertySignature(p) => {
                     (p.span.start, key_name(self.source, &p.key), Kind::Property, None)
                 }
                 TSSignature::TSMethodSignature(m) => {
-                    (m.span.start, key_name(self.source, &m.key), Kind::Method, Some(params(&m.params)))
+                    (m.span.start, key_name(self.source, &m.key), Kind::Method, Some(m))
                 }
                 _ => continue,
             };
-            self.member(site, start, (owner, &key), kind, parent).params = method_params;
+            let found = self.member(site, start, (owner, &key), kind, parent);
+            found.params = method.map(|m| params(&m.params));
+            found.shape = method.map_or_else(Shape::default, |m| {
+                Shape::function(m.type_parameters.as_deref(), m.return_type.as_deref(), None)
+            });
         }
     }
 
@@ -754,7 +785,7 @@ impl<'s> Collector<'s> {
             let ObjectPropertyKind::ObjectProperty(p) = property else { continue };
             let (key, kind) =
                 (key_name(self.source, &p.key), if p.value.is_function() { Kind::Method } else { Kind::Property });
-            self.member(site, p.span.start, (owner, &key), kind, Some(&parent)).params = value_params(&p.value);
+            self.member(site, p.span.start, (owner, &key), kind, Some(&parent)).value(&p.value);
         }
     }
 }

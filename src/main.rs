@@ -189,6 +189,9 @@ fn run(cli: &Cli, matches: &clap::ArgMatches, watched: &mut Vec<PathBuf>) -> Res
         metrics: &settings.metrics(),
     };
     report::write(&outputs, &context, &mut color.stream(io::stdout().lock())).map_err(|e| vec![e])?;
+    for (file, diagnostic) in report::diagnostics(&reports) {
+        eprintln!("docov: {}:{diagnostic}", file.path.display());
+    }
     if baseline.write {
         for path in plan.save_baselines(&reports).map_err(|e| vec![e])? {
             eprintln!("docov: wrote the undocumented items to {}", path.display());
