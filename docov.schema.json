@@ -1,68 +1,68 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Config",
-  "description": "docov's settings. Flags on the command line win over them.",
-  "type": "object",
-  "properties": {
-    "$schema": {
-      "description": "This file's JSON Schema, for editors.",
-      "type": [
-        "string",
-        "null"
-      ],
-      "default": null
-    },
-    "exclude": {
-      "description": "Gitignore-style globs of files to leave out, relative to this file's folder, on top of .gitignore.",
-      "type": "array",
-      "default": [],
-      "items": {
-        "type": "string"
-      }
-    },
-    "paths": {
-      "description": "Files and folders to scan, relative to this file's folder. Defaults to the folder docov runs in.",
-      "type": "array",
-      "default": [],
-      "items": {
-        "type": "string"
-      }
-    },
-    "scope": {
-      "description": "Which declarations count.",
-      "$ref": "#/$defs/Scope",
-      "default": "exports"
-    },
-    "threshold": {
-      "description": "The lowest documented percentage that passes.",
-      "type": [
-        "number",
-        "null"
-      ],
-      "format": "double",
-      "default": null,
-      "maximum": 100,
-      "minimum": 0
-    }
-  },
-  "additionalProperties": false,
-  "allowComments": true,
-  "allowTrailingCommas": true,
   "$defs": {
     "Scope": {
       "description": "Which declarations count toward coverage.",
       "oneOf": [
         {
+          "const": "exports",
           "description": "What a module exports, with the public members of exported classes and interfaces.",
-          "type": "string",
-          "const": "exports"
+          "type": "string"
         },
         {
+          "const": "all",
           "description": "Every module-level declaration, exported or not.",
-          "type": "string",
-          "const": "all"
+          "type": "string"
         }
       ]
     }
-  }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "allowComments": true,
+  "allowTrailingCommas": true,
+  "description": "docov's settings. Flags on the command line win over them.",
+  "properties": {
+    "$schema": {
+      "default": null,
+      "description": "This file's JSON Schema, for editors.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "exclude": {
+      "default": [],
+      "description": "Gitignore-style globs of files to leave out, relative to this file's folder, on top of .gitignore.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "paths": {
+      "default": [],
+      "description": "Files and folders to scan, relative to this file's folder. Defaults to the folder docov runs in.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "scope": {
+      "$ref": "#/$defs/Scope",
+      "default": "exports",
+      "description": "Which declarations count."
+    },
+    "threshold": {
+      "default": null,
+      "description": "The lowest documented percentage that passes.",
+      "format": "double",
+      "maximum": 100,
+      "minimum": 0,
+      "type": [
+        "number",
+        "null"
+      ]
+    }
+  },
+  "title": "Config",
+  "type": "object"
 }

@@ -110,7 +110,25 @@ fn bad_configs_and_files_fail_with_their_paths() {
     fs::write(dir.path().join("docov.json"), "// settings\n{ /* a typo */ \"treshold\": 1, }").unwrap();
     let (code, _, err) = docov(dir.path(), &[]);
     assert_eq!(code, 2);
-    assert!(err.ends_with("unknown field `treshold`, expected one of `$schema`, `paths`, `exclude`, `threshold`, `scope` at line 2 column 25\n"), "{err}");
+    assert!(err.starts_with("docov: docov.json: unknown field `treshold`, expected one of "), "{err}");
+    assert!(err.ends_with(" at line 2 column 25\n"), "{err}");
+    // Features add keys, so the list is checked key by key.
+    for key in ["$schema", "paths", "exclude", "threshold", "scope"] {
+        assert!(err.contains(&format!("`{key}`")), "{key}: {err}");
+    }
+    // Not an object, a key that isn't a string, a value that isn't JSON, and a known key of the
+    // wrong type, each with where it is.
+    let bad = [
+        ("[]", "invalid type: sequence, expected an object at line 1 column 0"),
+        ("{ 1: 2 }", "key must be a string at line 1 column 3"),
+        (r#"{ "paths": [1 }"#, "expected `,` or `]` at line 1 column 15"),
+        (r#"{ "paths": 1 }"#, "invalid type: integer `1`, expected a sequence at line 1 column 12"),
+    ];
+    for (text, message) in bad {
+        fs::write(dir.path().join("docov.json"), text).unwrap();
+        let (code, _, err) = docov(dir.path(), &[]);
+        assert_eq!((code, err), (2, format!("docov: docov.json: {message}\n")), "{text}");
+    }
     // A slash that starts no comment would otherwise vanish.
     fs::write(dir.path().join("docov.json"), r#"{ "threshold": 5 / }"#).unwrap();
     let (code, _, err) = docov(dir.path(), &[]);
@@ -126,6 +144,17 @@ fn bad_configs_and_files_fail_with_their_paths() {
     let (code, _, err) = docov(dir.path(), &["missing-folder"]);
     assert_eq!(code, 2);
     assert!(err.contains("missing-folder"), "{err}");
+}
+
+#[test]
+fn help_describes_docov_and_lists_every_features_flags() {
+    let dir = project();
+    let (code, out, _) = docov(dir.path(), &["--help"]);
+    assert_eq!(code, 0);
+    assert!(out.starts_with("Checks how much of a JavaScript or TypeScript project's API has JSDoc."), "{out}");
+    for flag in ["--threshold <PERCENT>", "--scope <SCOPE>"] {
+        assert!(out.contains(flag), "{flag}: {out}");
+    }
 }
 
 #[test]
