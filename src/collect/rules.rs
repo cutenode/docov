@@ -36,6 +36,8 @@ pub struct Rules {
     pub ignore_deprecated: bool,
     /// Whether a file whose first comment has `@generated` has nothing to count.
     pub skip_generated: bool,
+    /// Whether a scan looks for the `docov-ignore` comments that change nothing.
+    pub unused_ignores: bool,
     /// Which ways of exporting count.
     pub exports: Exports,
     /// Whether each file is an item, documented by a JSDoc block about it.

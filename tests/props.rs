@@ -10,8 +10,7 @@ use std::{
 use docov::feature::{
     Feature, access::Access, add_ignore::AddIgnore, commonjs_members::CommonjsMembers, complete::Complete,
     examples::Examples, exports::Exports, file_docs::FileDocs, inherit::Inherit, members::Members,
-    release_tags::ReleaseTags, report_unused_ignores::ReportUnusedIgnores, rules::DocChecks, sort::Sort, types::Types,
-    virtual_types::VirtualTypes,
+    release_tags::ReleaseTags, rules::DocChecks, sort::Sort, types::Types, virtual_types::VirtualTypes,
 };
 use docov::{
     Context, FileReport, Item, Kind, Output, Rules, Scope, Totals, check, collect, collect::Facts, collect::Ignore,
@@ -28,6 +27,8 @@ mod config_cli;
 mod fix;
 #[path = "props/lsp.rs"]
 mod lsp;
+#[path = "props/unused.rs"]
+mod unused;
 
 /// A generated module, and the items a scan of it should find.
 #[derive(Default)]
@@ -801,6 +802,7 @@ fn reports(tc: &TestCase, ignores: bool) -> Vec<FileReport> {
                     }),
                 })
                 .collect(),
+            ..Default::default()
         })
         .collect()
 }
@@ -2045,7 +2047,7 @@ fn javascript_functions_are_typed_by_their_tags(tc: TestCase) {
     let wanted = if name == "ts" { vec![None; 4] } else { vec![Some(typed), None, Some(false), None] };
     assert_eq!(found, wanted, "{name}: {source}");
 
-    let files = vec![FileReport { path: PathBuf::from(format!("m.{name}")), items }];
+    let files = vec![FileReport { path: PathBuf::from(format!("m.{name}")), items, ..Default::default() }];
     let all = Totals {
         documented: wanted.iter().filter(|t| **t == Some(true)).count(),
         total: wanted.iter().filter(|t| t.is_some()).count(),
@@ -2291,6 +2293,8 @@ fn explain_says_why_each_item_counts_and_what_was_passed_over(tc: TestCase) {
         assert_eq!(lines, [format!("{}skipped the file: its first comment says it's @generated", at(1, 1))]);
         return;
     }
+    // Unused `docov-ignore` comments have properties of their own.
+    let lines: Vec<_> = lines.into_iter().filter(|line| !line.contains("  unused docov-ignore")).collect();
     let (skips, items): (Vec<_>, Vec<_>) = lines.iter().partition(|line| line.contains("  skipped "));
     assert_eq!(skips.len(), module.skipped, "{}", lines.join("\n"));
     assert_eq!(items.len(), module.expected.len(), "{}", lines.join("\n"));
@@ -2411,7 +2415,10 @@ fn every_format_leaves_ignored_items_out(tc: TestCase) {
             .collect();
     let examples = flag();
     let counted = |files: &[FileReport]| -> Vec<FileReport> {
-        files.iter().map(|f| FileReport { path: f.path.clone(), items: f.counted().cloned().collect() }).collect()
+        files
+            .iter()
+            .map(|f| FileReport { path: f.path.clone(), items: f.counted().cloned().collect(), ..Default::default() })
+            .collect()
     };
     let without_ignored = counted(&drawn.files);
     assert_eq!(Totals::of(&without_ignored), Totals::of(&drawn.files));
@@ -2438,32 +2445,6 @@ fn every_format_leaves_ignored_items_out(tc: TestCase) {
         }
         assert_eq!(json, serde_json::from_str::<serde_json::Value>(&shown).unwrap());
     }
-}
-
-/// With `--report-unused-ignores`, each `docov-ignore-next-line` whose items are all documented
-/// fails the scan, once, at the comment. Off, or with none, nothing does.
-#[hegel::test(test_cases = 100)]
-fn unused_ignores_fail_the_scan(tc: TestCase) {
-    let files = reports(&tc, true);
-    let mut wanted = Vec::new();
-    for file in &files {
-        // Each comment's line, and whether all its items are documented.
-        let mut comments: Vec<(usize, bool)> = Vec::new();
-        for item in &file.items {
-            let Some(ignore) = item.ignore.as_ref().filter(|i| !i.file) else { continue };
-            match comments.last_mut() {
-                Some((line, all)) if *line == ignore.line => *all &= item.documented,
-                _ => comments.push((ignore.line, item.documented)),
-            }
-        }
-        let unused = comments.iter().filter(|(_, all)| *all);
-        wanted.extend(unused.map(|(line, _)| format!("{}:{line}:1: unused docov-ignore", file.path.display())));
-    }
-    let settings = settings(tempfile::tempdir().unwrap().path(), "{}", &[]);
-    let root = docov::root::Root::new(Path::new(""));
-    let run = docov::feature::Run { reports: &files, root: &root, settings: &settings };
-    assert_eq!(ReportUnusedIgnores(false).gate(&run), Vec::<String>::new());
-    assert_eq!(ReportUnusedIgnores(true).gate(&run), wanted);
 }
 
 /// The totals by kind add up to the total, one per kind there is, in order. The JSON report has
@@ -3145,8 +3126,8 @@ fn adding_ignores_covers_every_undocumented_item(tc: TestCase) {
         facts: Facts::default(),
         ignore: None,
     };
-    let gone = FileReport { path: dir.path().join("gone.ts"), items: vec![item.clone()] };
-    let locked = FileReport { path: dir.path().join("locked.ts"), items: vec![item] };
+    let gone = FileReport { path: dir.path().join("gone.ts"), items: vec![item.clone()], ..Default::default() };
+    let locked = FileReport { path: dir.path().join("locked.ts"), items: vec![item], ..Default::default() };
     fs::write(&locked.path, "export const a = 1;\n").unwrap();
     let mut permissions = fs::metadata(&locked.path).unwrap().permissions();
     permissions.set_readonly(true);
@@ -3532,7 +3513,10 @@ fn gates_leave_ignored_items_out(tc: TestCase) {
         }
     }
     let shown = |files: &[FileReport]| -> Vec<FileReport> {
-        files.iter().map(|f| FileReport { path: f.path.clone(), items: f.counted().cloned().collect() }).collect()
+        files
+            .iter()
+            .map(|f| FileReport { path: f.path.clone(), items: f.counted().cloned().collect(), ..Default::default() })
+            .collect()
     };
     // Baseline entries for any of the items, ignored or documented ones too.
     let all: Vec<(&FileReport, &Item)> = files.iter().flat_map(|f| f.items.iter().map(move |i| (f, i))).collect();

@@ -232,7 +232,7 @@ fn adding_ignores_covers_a_files_own_item(tc: TestCase) {
     let path = dir.path().join("m.ts");
     fs::write(&path, &source).unwrap();
     let scope = tc.draw(gs::sampled_from(vec![Scope::Exports, Scope::All]));
-    let rules = Rules { file_docs: FileDocs::Require, ..Rules::from(scope) };
+    let rules = Rules { file_docs: FileDocs::Require, unused_ignores: true, ..Rules::from(scope) };
     let add = AddIgnore(Some("// docov-ignore-next-line".into()));
     let settings = settings(dir.path(), "{}", &[]);
     let root = Root::new(Path::new(""));

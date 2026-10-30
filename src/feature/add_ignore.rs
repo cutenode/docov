@@ -2,7 +2,7 @@
 //! docov in a project that's far from documented.
 
 use crate::{
-    FileReport, rewrite,
+    FileReport, Kind, rewrite,
     feature::{Entry, Feature, NoKeys},
 };
 
@@ -40,6 +40,12 @@ impl Feature for AddIgnore {
             let mut lines: Vec<usize> = report.counted().filter(|i| !i.documented).map(|i| i.line).collect();
             // Items on one line are next to each other, and one comment covers them all.
             lines.dedup();
+            // A comment above the file's code covers the file's own item too, so that needs none
+            // of its own.
+            let module = report.counted().next().is_some_and(|i| i.kind == Kind::Module && !i.documented);
+            if module && lines.get(1).is_some_and(|&line| line <= report.code_line) {
+                lines.remove(0);
+            }
             lines.into_iter().map(|line| (line, comment)).collect()
         });
         Some(added.map(|added| format!("added {added} docov-ignore-next-line comment{}", if added == 1 { "" } else { "s" })))

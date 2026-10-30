@@ -214,7 +214,7 @@ fn the_cache_keys_on_the_rules(tc: TestCase) {
 
     let cache = Cache::read(cache_path);
     let kept = cache.stamp(&path, &second_rules).and_then(|stamp| cache.get(&path, stamp));
-    assert_eq!(kept.as_ref(), (first == second).then_some(&scanned[0].items));
+    assert_eq!(kept.as_ref(), (first == second).then_some(&scanned[0]));
     let again = batch::scan(&[(path.as_path(), &second_rules)], &cache).unwrap();
     assert_eq!(again, vec![scan_file(&path, &second_rules).unwrap()]);
 }
@@ -470,7 +470,7 @@ fn facts_survive_the_cache(tc: TestCase) {
 
     let cache = Cache::read(cache_path);
     let kept = cache.stamp(&path, &rules).and_then(|stamp| cache.get(&path, stamp));
-    assert_eq!(kept.as_ref(), Some(&fresh.items));
+    assert_eq!(kept.as_ref(), Some(&fresh));
 }
 
 /// Under the public scope, each nested config's files count by what its own folder's package.json
@@ -714,7 +714,7 @@ fn the_cache_keys_on_the_rule_levels(tc: TestCase) {
     assert_eq!(cache.stamp(&path, &rules(0)), cache.stamp(&path, &rules(1)));
     let off = |index: u8| index < 2;
     let same = first == second || (off(first) && off(second));
-    assert_eq!(kept.as_ref(), same.then_some(&scanned[0].items));
+    assert_eq!(kept.as_ref(), same.then_some(&scanned[0]));
     let again = batch::scan(&[(path.as_path(), &second_rules)], &cache).unwrap();
     assert_eq!(again, vec![scan_file(&path, &second_rules).unwrap()]);
 

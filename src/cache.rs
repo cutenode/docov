@@ -51,6 +51,9 @@ struct Entry {
     #[serde(flatten)]
     stamp: Stamp,
     items: Vec<Kept>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    unused_ignores: Vec<Ignore>,
+    code_line: usize,
 }
 
 /// An item as the cache keeps it: with its `docov-ignore` comment, the facts the reports order and
@@ -118,10 +121,11 @@ impl Cache {
         self.path.as_ref().and_then(|_| Stamp::of(path, rules))
     }
 
-    /// The items the file at `path` had when it last had `stamp`.
-    pub fn get(&self, path: &Path, stamp: Stamp) -> Option<Vec<Item>> {
+    /// The report the file at `path` had when it last had `stamp`.
+    pub fn get(&self, path: &Path, stamp: Stamp) -> Option<FileReport> {
         let entry = self.files.get(&*path.to_string_lossy()).filter(|entry| entry.stamp == stamp)?;
-        Some(entry.items.iter().map(Kept::item).collect())
+        let (items, unused_ignores) = (entry.items.iter().map(Kept::item).collect(), entry.unused_ignores.clone());
+        Some(FileReport { path: path.to_owned(), items, unused_ignores, code_line: entry.code_line })
     }
 
     /// Writes `reports`, each with its stamp, to the cache file, in place of what it held.
@@ -132,7 +136,12 @@ impl Cache {
             .filter_map(|(report, stamp)| {
                 Some((
                     report.path.to_string_lossy().into_owned(),
-                    Entry { stamp: (*stamp)?, items: report.items.iter().map(Kept::of).collect() },
+                    Entry {
+                        stamp: (*stamp)?,
+                        items: report.items.iter().map(Kept::of).collect(),
+                        unused_ignores: report.unused_ignores.clone(),
+                        code_line: report.code_line,
+                    },
                 ))
             })
             .collect();

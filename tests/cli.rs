@@ -369,6 +369,36 @@ fn unused_ignores_fail_when_reported() {
 }
 
 #[test]
+fn ignores_that_cover_nothing_are_unused() {
+    let dir = tempfile::tempdir().unwrap();
+    let files = [
+        ("blank.ts", "// docov-ignore-next-line\n\nexport const a = 1;\n"),
+        ("file.ts", "/** B. */\nexport const b = 1;\n/* docov-ignore-file */\n"),
+        ("generated.ts", "// @generated\n// docov-ignore-next-line\nexport const c = 1;\n"),
+        ("nested.ts", "/** D. */\nexport function d() {\n  // docov-ignore-next-line\n  const e = 1;\n}\n"),
+        ("scope.ts", "// docov-ignore-next-line\nconst f = 1;\n"),
+        ("stacked.ts", "// docov-ignore-next-line\n// docov-ignore-next-line\nexport const g = 1;\n"),
+        ("statement.ts", "// docov-ignore-next-line\ngo();\n/** H. */\nexport const h = 1;\n"),
+        ("top.ts", "// docov-ignore-next-line\n/** I. */\nexport const i = 1;\n"),
+    ];
+    for (name, source) in files {
+        fs::write(dir.path().join(name), source).unwrap();
+    }
+    fs::write(dir.path().join("docov.json"), r#"{ "skipGenerated": true }"#).unwrap();
+    let unused =
+        |names: &[&str]| names.iter().map(|n| format!("docov: {n}: unused docov-ignore\n")).collect::<String>();
+    let (code, _, err) = docov(dir.path(), &["--report-unused-ignores"]);
+    let wanted = ["blank.ts:1:1", "file.ts:3:1", "nested.ts:3:3", "scope.ts:1:1", "stacked.ts:1:1", "statement.ts:1:1"];
+    assert_eq!((code, err), (1, unused(&[&wanted[..], &["top.ts:1:1"]].concat())));
+    // The first comment before a file's code covers its own item, which then needs it.
+    fs::write(dir.path().join("docov.json"), r#"{ "skipGenerated": true, "fileDocs": "require" }"#).unwrap();
+    let (code, _, err) = docov(dir.path(), &["--report-unused-ignores"]);
+    assert_eq!((code, err), (1, unused(&["nested.ts:3:3", "stacked.ts:1:1"])));
+    let (_, out, _) = docov(dir.path(), &["--explain", "nested.ts"]);
+    assert!(out.ends_with("nested.ts:3:3  unused docov-ignore-next-line: removing it changes nothing\n"), "{out}");
+}
+
+#[test]
 fn each_line_of_a_gate_is_an_annotation_of_its_own() {
     let dir = tempfile::tempdir().unwrap();
     let source = "// docov-ignore-next-line\n/** A. */ export const a = 1;\n// docov-ignore-next-line\n/** B. */ export const b = 1;\n";
@@ -410,6 +440,17 @@ fn add_ignore_covers_a_files_own_item_once() {
         (0, " 100.0%  1/1  bin.js\n 100.0%  1/1  total\n".into(), String::new())
     );
     assert_eq!(docov(dir.path(), &["--add-ignore"]).2, "docov: added 0 docov-ignore-next-line comments\n");
+}
+
+#[test]
+fn add_ignore_lets_a_comment_above_the_code_cover_the_file_too() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("docov.json"), r#"{ "fileDocs": "require" }"#).unwrap();
+    fs::write(dir.path().join("a.js"), "// header\nexport const a = 1;\n").unwrap();
+    assert_eq!(docov(dir.path(), &["--add-ignore"]).2, "docov: added 1 docov-ignore-next-line comment\n");
+    let ignored = "// header\n// docov-ignore-next-line\nexport const a = 1;\n";
+    assert_eq!(fs::read_to_string(dir.path().join("a.js")).unwrap(), ignored);
+    assert_eq!(docov(dir.path(), &["--report-unused-ignores"]).0, 0);
 }
 
 #[test]
