@@ -7,7 +7,7 @@ use serde_json::json;
 
 use crate::{
     check,
-    report::{Context, Format, RULE, diagnostics, json, message, severity, slash, undocumented},
+    report::{Context, Format, RULE, diagnostics, json, message, rule_id, severity, slash, undocumented},
 };
 
 /// The format.
@@ -43,7 +43,7 @@ fn render(context: &Context) -> String {
     let checks: Vec<_> = check::catalog().filter(|(id, _)| found.iter().any(|(_, d)| d.rule == *id)).collect();
     results.extend(found.iter().map(|(file, d)| {
         json!({
-            "ruleId": format!("docov/{}", d.rule),
+            "ruleId": rule_id(d.rule),
             "ruleIndex": 1 + checks.iter().position(|(id, _)| *id == d.rule).expect("each finding's rule is listed"),
             "level": severity(d),
             "message": { "text": d.message },
@@ -57,7 +57,7 @@ fn render(context: &Context) -> String {
         "defaultConfiguration": { "level": "warning" },
     });
     let rules = std::iter::once(rule)
-        .chain(checks.iter().map(|(id, about)| json!({ "id": format!("docov/{id}"), "shortDescription": { "text": about } })));
+        .chain(checks.iter().map(|(id, about)| json!({ "id": rule_id(id), "shortDescription": { "text": about } })));
     let driver = json!({
         "name": "docov",
         "version": env!("CARGO_PKG_VERSION"),

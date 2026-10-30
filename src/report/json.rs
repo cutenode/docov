@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize, Serializer};
 use crate::report::{Context, Format};
 use crate::{
     Item, Kind, Totals,
+    check::Diagnostic,
     metric::{EXAMPLES, Metric},
     packages::Package,
 };
@@ -73,12 +74,16 @@ struct JsonItem<'a> {
     ignored: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     reason: Option<&'a str>,
+    /// What the doc checks found, when they found something, which in an ignored item they don't.
+    #[serde(skip_serializing_if = "<[_]>::is_empty")]
+    diagnostics: &'a [Diagnostic],
 }
 
 impl<'a> JsonItem<'a> {
     fn of(item: &'a Item) -> Self {
         let ignore = item.ignore.as_ref().filter(|_| item.ignored());
-        Self { item, ignored: ignore.is_some(), reason: ignore.and_then(|i| i.reason.as_deref()) }
+        let diagnostics = if ignore.is_some() { &[] } else { &*item.facts.diagnostics };
+        Self { item, ignored: ignore.is_some(), reason: ignore.and_then(|i| i.reason.as_deref()), diagnostics }
     }
 }
 
