@@ -3,7 +3,6 @@
 use std::{
     fs,
     path::{Path, PathBuf},
-    process::Command,
     time::Duration,
 };
 
@@ -21,7 +20,7 @@ use docov::{
 use hegel::{TestCase, generators as gs};
 use oxc_span::SourceType;
 
-use super::{Room, plain, render, reports, write};
+use super::{Room, docov_command, plain, render, reports, write};
 
 /// The folders generated config files go in.
 const FOLDERS: [&str; 4] = ["", "x/", "x/y/", "z/"];
@@ -194,7 +193,7 @@ fn extended_configs_merge_nearest_first(tc: TestCase) {
 /// Runs the binary in `dir`, with stdout closed if `closed` (a pipe whose reader has gone, as with
 /// `docov | head` after head exits), and returns its code, stdout and stderr.
 pub(super) fn docov(dir: &Path, args: &[&str], closed: bool) -> (i32, String, String) {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_docov"));
+    let mut command = docov_command();
     command.args(args).current_dir(dir);
     if closed {
         let (reader, writer) = std::io::pipe().unwrap();
@@ -703,7 +702,7 @@ fn threads_size_the_pool_once(tc: TestCase) {
 
 /// Runs the binary in `dir` with `stdin` as its standard input.
 pub(super) fn docov_with_stdin(dir: &Path, args: &[&str], stdin: &[u8]) -> (i32, String, String) {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_docov"))
+    let mut child = docov_command()
         .args(args)
         .current_dir(dir)
         .stdin(std::process::Stdio::piped())
@@ -843,7 +842,7 @@ fn the_cli_colors_only_when_asked_or_on_a_terminal(tc: TestCase) {
     for (color, no_color, colored) in
         [("always", false, true), ("never", false, false), ("auto", false, false), ("auto", true, false)]
     {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_docov"));
+        let mut command = docov_command();
         command.args(["--color", color, "--threshold", threshold]).current_dir(dir.path());
         if no_color {
             command.env("NO_COLOR", "1");
