@@ -15,7 +15,14 @@ impl Collected<'_> {
         for found in self.found.iter().filter(|f| rules.counts(f, &self.exported, reached)) {
             let Some(doc) = &found.doc else { continue };
             let exported = rules.exported(found, &self.exported);
-            let subject = Subject { exported, doc, params: found.params.as_deref(), shape: &found.shape };
+            let subject = Subject {
+                name: &found.name,
+                exported,
+                doc,
+                params: found.params.as_deref(),
+                shape: &found.shape,
+                source: self.lines.source,
+            };
             checks.run(path, &subject, |at| self.lines.position(at as usize));
         }
     }

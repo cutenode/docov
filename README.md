@@ -100,6 +100,7 @@ Each finding prints to stderr as `docov: path:line:column: rule-id: message`, an
 - `require-throws`: an exported function or method with a `throw` of its own (outside a `try` that catches it) has `@throws`.
 - `require-template`: each type parameter of a declaration has a `@template`.
 - `empty-tag-description`: each `@param`, `@returns`, `@throws` and `@yields` says something past its type and name, except a `@returns` of nothing.
+- `informative-docs`: a description says more than its item's name (`/** The user name. */` on `userName` doesn't).
 
 `const f = () => …` is a variable to docov, so the checks on parameters, returns and throws don't look at it.
 

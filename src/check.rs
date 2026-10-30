@@ -71,6 +71,8 @@ impl fmt::Display for Diagnostic {
 
 /// An item with a JSDoc block, as a check sees it.
 pub struct Subject<'a, 's> {
+    /// Its name, `Class.member` for a member.
+    pub name: &'a str,
     /// Whether it's exported, by the ways of exporting that count.
     pub exported: bool,
     /// Its block.
@@ -79,6 +81,8 @@ pub struct Subject<'a, 's> {
     pub params: Option<&'a [Option<&'s str>]>,
     /// What its code says.
     pub shape: &'a Shape<'s>,
+    /// The file's text, which the block's spans are offsets into.
+    pub source: &'s str,
 }
 
 impl Subject<'_, '_> {
@@ -86,6 +90,11 @@ impl Subject<'_, '_> {
     pub fn block(&self) -> u32 {
         // The block's span starts past its `/**`.
         self.doc.span.start - 3
+    }
+
+    /// Where its description's text starts, if it has one.
+    pub fn description(&self) -> Option<u32> {
+        lines(self.source, self.doc.comment().span).find(|(_, line)| !line.is_empty()).map(|(at, _)| at)
     }
 
     /// Whether it has any of the tags `names` (without their `@`).
@@ -298,4 +307,17 @@ impl Checks {
         found.sort();
         found
     }
+}
+
+/// The lines of the text at `span` in `source`, past each one's leading `*`, with where each
+/// starts.
+pub fn lines(source: &str, span: oxc_span::Span) -> impl Iterator<Item = (u32, &str)> {
+    let text = span.source_text(source);
+    text.split('\n').scan(span.start, |at, line| {
+        let start = *at;
+        *at += line.len() as u32 + 1;
+        let trimmed = line.trim_start();
+        let rest = trimmed.strip_prefix('*').map_or(trimmed, |rest| rest.strip_prefix(' ').unwrap_or(rest));
+        Some((start + (line.len() - rest.len()) as u32, rest.trim_end()))
+    })
 }

@@ -220,6 +220,27 @@
           ],
           "description": "Each @param, @returns, @throws and @yields tag has a description."
         },
+        "informative-docs": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Level"
+            },
+            {
+              "items": false,
+              "minItems": 1,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Level"
+                },
+                {
+                  "$ref": "#/$defs/NoOptions"
+                }
+              ],
+              "type": "array"
+            }
+          ],
+          "description": "A description says more than its item's name."
+        },
         "param-names": {
           "anyOf": [
             {

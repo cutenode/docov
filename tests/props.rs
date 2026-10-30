@@ -2814,3 +2814,42 @@ fn tags_have_descriptions(tc: TestCase) {
     let on = [("empty-tag-description", empty_level)];
     assert_eq!(diagnose(&source, &on, Rules::default()), at_level(wanted.collect(), empty_on), "{source}");
 }
+
+/// `informative-docs` finds a description whose words, without case and past filler words like
+/// "the" and "gets", are all words of its item's own name, split at camelCase, digits and
+/// separators.
+#[hegel::test(test_cases = 100)]
+fn descriptions_say_more_than_the_name(tc: TestCase) {
+    let (informative_level, informative_on) = level(&tc);
+    let (name, words) = tc.draw(gs::sampled_from(vec![
+        ("userName", vec!["user", "name", "User", "NAME", "user-name", "userName", "user_name"]),
+        ("HTTPServer", vec!["http", "server", "HTTP", "Server"]),
+        ("getValue2", vec!["get", "value", "2", "value2"]),
+        ("id", vec!["id", "ID"]),
+    ]));
+    let filler = ["the", "a", "an", "this", "gets", "sets", "returns", "The"];
+    let pool: Vec<&str> = words.iter().copied().chain(filler).collect();
+    let mut description = tc.draw(gs::vecs(gs::sampled_from(pool)).max_size(4));
+    let extra = tc.draw(gs::booleans());
+    if extra {
+        description.push("cached");
+    }
+    let text = description.join(" ");
+    let member = tc.draw(gs::booleans());
+    // A block with no description has nothing to check.
+    let described = tc.draw(gs::weighted_booleans(0.9));
+    let source = if member {
+        format!("export class C {{\n  /** {text}. */\n  {name}() {{}}\n}}\n")
+    } else if described {
+        format!("/**\n * {text}.\n * @since 1\n */\nexport function {name}() {{}}\n")
+    } else {
+        format!("/**\n * @since 1\n */\nexport function {name}() {{}}\n")
+    };
+    // A description of punctuation alone says no more than the name, too.
+    let (line, column) = if member { (2, 7) } else { (2, 4) };
+    let message = format!("the description only restates the name `{name}`");
+    let wanted =
+        Vec::from_iter((!extra && (member || described)).then_some((line, column, "informative-docs", message)));
+    let on = [("informative-docs", informative_level)];
+    assert_eq!(diagnose(&source, &on, Rules::default()), at_level(wanted, informative_on), "{source}");
+}
