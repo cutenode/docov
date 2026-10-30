@@ -4,7 +4,9 @@
 use std::{
     fs,
     io::{self, Write},
+    iter::Sum,
     path::{MAIN_SEPARATOR, Path, PathBuf},
+    time::SystemTime,
 };
 
 use serde::Serialize;
@@ -53,6 +55,8 @@ pub struct Context<'a> {
     pub files: &'a [FileReport],
     /// Why the scan fails, a message for each failed gate.
     pub failures: &'a [String],
+    /// When the scan ran, for formats that say.
+    pub now: SystemTime,
 }
 
 /// `path` with `/` between its parts, as URLs and CI services want it, on Windows too.
@@ -78,6 +82,19 @@ fn json(value: &impl Serialize) -> String {
     serde_json::to_string_pretty(value).expect("a report serializes") + "\n"
 }
 
+/// A line record for each line with items, hit when they're all documented. Items come in
+/// source order, so those sharing a line are next to each other.
+fn lines(file: &FileReport) -> Vec<(usize, bool)> {
+    let mut lines: Vec<(usize, bool)> = Vec::new();
+    for item in &file.items {
+        match lines.last_mut() {
+            Some((line, documented)) if *line == item.line => *documented &= item.documented,
+            _ => lines.push((item.line, item.documented)),
+        }
+    }
+    lines
+}
+
 /// What a finding at an undocumented item says: `function a is undocumented`.
 fn message(item: &Item) -> String {
     format!("{} {} is undocumented", item.kind.as_str(), item.name)
@@ -100,10 +117,13 @@ impl Totals {
 
     /// The sum over every file.
     pub fn of(files: &[FileReport]) -> Self {
-        files
-            .iter()
-            .map(FileReport::totals)
-            .fold(Self::default(), |a, b| Self { documented: a.documented + b.documented, total: a.total + b.total })
+        files.iter().map(FileReport::totals).sum()
+    }
+}
+
+impl Sum for Totals {
+    fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
+        iter.fold(Self::default(), |a, b| Self { documented: a.documented + b.documented, total: a.total + b.total })
     }
 }
 

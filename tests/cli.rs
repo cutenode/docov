@@ -174,8 +174,8 @@ fn lcov_marks_each_items_line() {
     let dir = project();
     // Named files keep the paths they were given, separators and all.
     let (code, out, _) = docov(dir.path(), &["--format", "lcov", "src/c.js", "src/a.ts"]);
-    let a = "SF:src/a.ts\nDA:2,1\nDA:3,0\nLH:1\nLF:2\nend_of_record\n";
-    let c = "SF:src/c.js\nDA:2,1\nLH:1\nLF:1\nend_of_record\n";
+    let a = "TN:docov\nSF:src/a.ts\nFN:2,a\nFN:3,b\nFNDA:1,a\nFNDA:0,b\nFNF:2\nFNH:1\nDA:2,1\nDA:3,0\nLH:1\nLF:2\nend_of_record\n";
+    let c = "TN:docov\nSF:src/c.js\nFN:2,C\nFNDA:1,C\nFNF:1\nFNH:1\nDA:2,1\nLH:1\nLF:1\nend_of_record\n";
     assert_eq!((code, out), (0, format!("{a}{c}")));
 }
 
@@ -188,7 +188,7 @@ fn several_formats_go_to_stdout_and_their_files_from_one_scan() {
     let args = ["--format", "text", "--format", &format!("lcov={}", lcov.display()), "--format", "json"];
     let (_, out, _) = docov(dir.path(), &args);
     assert_eq!((code, out), (0, format!("{text}{json}")));
-    assert!(fs::read_to_string(dir.path().join(&lcov)).unwrap().starts_with("SF:"));
+    assert!(fs::read_to_string(dir.path().join(&lcov)).unwrap().starts_with("TN:docov\nSF:"));
 
     // --output is the file for the one format without its own.
     let (code, out, _) = docov(dir.path(), &["--output", "out.txt"]);

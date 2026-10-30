@@ -1,6 +1,6 @@
 //! The `docov` command.
 
-use std::{env, io, path::PathBuf, process::ExitCode};
+use std::{env, io, path::PathBuf, process::ExitCode, time::SystemTime};
 
 use clap::{CommandFactory, FromArgMatches, Parser};
 use docov::{Config, Scope, Settings, feature, report, scan_file, walk};
@@ -65,7 +65,7 @@ fn run(cli: Cli, matches: &clap::ArgMatches) -> Result<bool, Vec<String>> {
         return Err(errors);
     }
     let failures = settings.gates(&reports);
-    let context = report::Context { files: &reports, failures: &failures };
+    let context = report::Context { files: &reports, failures: &failures, now: SystemTime::now() };
     report::write(&outputs, &context, &mut io::stdout().lock()).map_err(|e| vec![e])?;
     for failure in &failures {
         eprintln!("docov: {failure}");

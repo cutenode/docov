@@ -1,6 +1,11 @@
 //! Properties over generated modules, projects and reports.
 
-use std::{fs, path::Path, path::PathBuf, process::Command};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+    time::{Duration, UNIX_EPOCH},
+};
 
 use docov::{Context, FileReport, Item, Kind, Output, Scope, Totals, collect, config, report, scan, scan_file};
 use hegel::{TestCase, generators as gs};
@@ -431,16 +436,19 @@ const FAILURES: [&str; 4] = [
 struct Drawn {
     files: Vec<FileReport>,
     failures: Vec<String>,
+    /// When the scan ran, in milliseconds since 1970.
+    now_ms: u64,
 }
 
 impl Drawn {
     fn draw(tc: &TestCase) -> Self {
         let failures = tc.draw(gs::vecs(gs::sampled_from(FAILURES.to_vec())).max_size(2));
-        Self { files: reports(tc), failures: failures.into_iter().map(String::from).collect() }
+        let now_ms = tc.draw(gs::integers::<u64>().max_value(4_000_000_000_000));
+        Self { files: reports(tc), failures: failures.into_iter().map(String::from).collect(), now_ms }
     }
 
     fn context(&self) -> Context<'_> {
-        Context { files: &self.files, failures: &self.failures }
+        Context { files: &self.files, failures: &self.failures, now: UNIX_EPOCH + Duration::from_millis(self.now_ms) }
     }
 }
 
@@ -771,6 +779,84 @@ fn ci_formats_report_each_undocumented_item(tc: TestCase) {
     }
 }
 
+/// `lcov` and `cobertura` agree on the lines: each line with items is a record, hit when they're
+/// all documented. `lcov` names each item as a function, hit when it's documented, and
+/// `cobertura` puts each folder's files in one package, with line rates from 0 to 1.
+#[hegel::test(test_cases = 100)]
+fn coverage_formats_agree_on_lines(tc: TestCase) {
+    let drawn = Drawn::draw(&tc);
+    let render = |name| report::format(name).unwrap().render(&drawn.context());
+    let slash = |path: &Path| path.display().to_string().replace(std::path::MAIN_SEPARATOR, "/");
+    // Each file's lines with items, and whether all of them are documented.
+    let lines = |file: &FileReport| {
+        let mut lines: Vec<(usize, bool)> = Vec::new();
+        for line in file.items.iter().map(|i| i.line) {
+            if lines.last().is_none_or(|(at, _)| *at != line) {
+                lines.push((line, file.items.iter().filter(|i| i.line == line).all(|i| i.documented)));
+            }
+        }
+        lines
+    };
+
+    let lcov = render("lcov");
+    let records: Vec<&str> = lcov.split_terminator("end_of_record\n").collect();
+    assert_eq!(records.len(), drawn.files.len());
+    for (record, file) in records.iter().zip(&drawn.files) {
+        let functions: Vec<String> = file.items.iter().map(|i| format!("FN:{},{}", i.line, i.name)).collect();
+        let hits: Vec<String> =
+            file.items.iter().map(|i| format!("FNDA:{},{}", u8::from(i.documented), i.name)).collect();
+        let records: Vec<String> =
+            lines(file).iter().map(|(line, hit)| format!("DA:{line},{}", u8::from(*hit))).collect();
+        let (totals, hit) = (file.totals(), lines(file).iter().filter(|(_, hit)| *hit).count());
+        let wanted = [
+            vec!["TN:docov".to_owned(), format!("SF:{}", file.path.display())],
+            functions,
+            hits,
+            vec![format!("FNF:{}", totals.total), format!("FNH:{}", totals.documented)],
+            records,
+            vec![format!("LH:{hit}"), format!("LF:{}", lines(file).len())],
+        ];
+        assert_eq!(record.lines().collect::<Vec<_>>(), wanted.concat(), "{lcov}");
+    }
+
+    let cobertura = render("cobertura");
+    let cobertura = roxmltree::Document::parse_with_options(
+        &cobertura,
+        roxmltree::ParsingOptions { allow_dtd: true, ..Default::default() },
+    )
+    .unwrap();
+    let coverage = cobertura.root_element();
+    let number = |node: roxmltree::Node, name| node.attribute(name).unwrap().parse::<f64>().unwrap();
+    let all: Vec<(usize, bool)> = drawn.files.iter().flat_map(lines).collect();
+    let hit = all.iter().filter(|(_, hit)| *hit).count();
+    assert_eq!((number(coverage, "lines-covered"), number(coverage, "lines-valid")), (hit as f64, all.len() as f64));
+    assert_eq!(number(coverage, "line-rate"), Totals { documented: hit, total: all.len() }.percent() / 100.0);
+    assert_eq!(number(coverage, "timestamp"), drawn.now_ms as f64);
+    let packages: Vec<_> = coverage.descendants().filter(|n| n.has_tag_name("package")).collect();
+    let names: Vec<_> = packages.iter().map(|p| p.attribute("name").unwrap()).collect();
+    assert!(names.iter().enumerate().all(|(i, name)| !names[..i].contains(name)), "{names:?}");
+    let mut classes = Vec::new();
+    for package in &packages {
+        assert!((0.0..=1.0).contains(&number(*package, "line-rate")));
+        for class in package.descendants().filter(|n| n.has_tag_name("class")) {
+            let filename = class.attribute("filename").unwrap().to_owned();
+            let folder = filename.rsplit_once('/').map_or(".", |(folder, _)| folder).to_owned();
+            assert_eq!(package.attribute("name"), Some(folder.as_str()));
+            let lines: Vec<(usize, bool)> = class
+                .descendants()
+                .filter(|n| n.has_tag_name("line"))
+                .map(|l| (number(l, "number") as usize, number(l, "hits") == 1.0))
+                .collect();
+            classes.push((filename, lines));
+        }
+    }
+    let mut wanted: Vec<(String, Vec<(usize, bool)>)> =
+        drawn.files.iter().map(|f| (slash(&f.path), lines(f))).collect();
+    classes.sort();
+    wanted.sort();
+    assert_eq!(classes, wanted);
+}
+
 /// Every format reports the same items and totals, and documenting one more item never lowers
 /// coverage.
 #[hegel::test(test_cases = 100)]
@@ -780,10 +866,12 @@ fn formats_agree_on_totals(tc: TestCase) {
     assert!((0.0..=100.0).contains(&totals.percent()));
     assert_eq!(totals.total, files.iter().map(|f| f.items.len()).sum::<usize>());
 
-    let render = |name, files: &[FileReport]| report::format(name).unwrap().render(&Context { files, failures: &[] });
+    let render = |name, files: &[FileReport]| {
+        report::format(name).unwrap().render(&Context { files, failures: &[], now: UNIX_EPOCH })
+    };
     // Every format fails when its output doesn't fit where it's going, and only then.
     for format in report::FORMATS {
-        let context = Context { files: &files, failures: &[] };
+        let context = Context { files: &files, failures: &[], now: UNIX_EPOCH };
         let length = format.render(&context).len();
         let room = tc.draw(gs::integers::<usize>().max_value(length + 1));
         let result = report::write(&[Output { format, path: None }], &context, &mut Room(room));
