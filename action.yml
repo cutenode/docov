@@ -1,0 +1,46 @@
+name: docov
+description: JSDoc coverage for JavaScript and TypeScript, with annotations, a job summary and a pull request comment
+author: cutenode
+branding:
+  icon: book-open
+  color: blue
+
+inputs:
+  version:
+    description: "The docov version to run [default: this action's own, or else the latest]"
+    default: ""
+  args:
+    description: "More arguments for docov, quoted as in a shell (paths, --threshold, --config)"
+    default: ""
+  summary:
+    description: "Add the Markdown report to the job summary"
+    default: "true"
+  comment:
+    description: "Post the Markdown report on the pull request, updating one comment (needs pull-requests write)"
+    default: "false"
+  compare:
+    description: "An earlier `--format json` report to show the change from"
+    default: ""
+  token:
+    description: "The token for the comment"
+    default: ${{ github.token }}
+
+outputs:
+  markdown:
+    description: "The Markdown report's path"
+    value: ${{ steps.docov.outputs.markdown }}
+
+runs:
+  using: composite
+  steps:
+    - id: docov
+      shell: bash
+      run: bash "$GITHUB_ACTION_PATH/action/docov.sh"
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
+        INPUT_ARGS: ${{ inputs.args }}
+        INPUT_SUMMARY: ${{ inputs.summary }}
+        INPUT_COMMENT: ${{ inputs.comment }}
+        INPUT_COMPARE: ${{ inputs.compare }}
+        INPUT_TOKEN: ${{ inputs.token }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}

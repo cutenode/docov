@@ -93,6 +93,35 @@ docov --format text --format lcov=coverage/docov.lcov
 
 Badges are red under the threshold, yellow up to 10 points over it, and green past that. With no threshold they're blue.
 
+## CI
+
+### GitHub Action
+
+```yaml
+permissions:
+  contents: read
+  pull-requests: write # for `comment`
+steps:
+  - uses: actions/checkout@v7
+  - uses: cutenode/docov@vX.Y.Z # a release tag, or its commit SHA
+    with:
+      args: src --threshold 80
+      comment: true
+```
+
+The action runs `npx @docov/cli` once (GitHub's runners have Node), with `--format github` for annotations and `--format markdown` for the report, and fails the step with docov's exit code.
+
+| Input | Default | What it does |
+| --- | --- | --- |
+| `version` | the action's own, else `latest` | The docov version to run |
+| `args` | | More docov arguments, quoted as in a shell |
+| `summary` | `true` | Adds the report to the job summary |
+| `comment` | `false` | Posts the report on the pull request and edits that comment on later runs. It needs `pull-requests: write`, and only warns without it (from a fork) |
+| `compare` | | An earlier `--format json` report to show the change from |
+| `token` | `github.token` | The token `comment` uses |
+
+The `markdown` output is the report's path.
+
 ## Working on it
 
 The toolchain is pinned in `rust-toolchain.toml`, and Node in `.node-version`. The checks need [cargo-nextest](https://nexte.st) and [cargo-llvm-cov](https://github.com/taiki-e/cargo-llvm-cov).
