@@ -3,7 +3,7 @@ use oxc_span::SourceType;
 use super::*;
 use crate::{
     Scope,
-    feature::{access::Access, inherit::Inherit},
+    feature::{access::Access, exports::Exports, inherit::Inherit},
 };
 
 /// `(name, kind, documented)` for each item `source` has, as TypeScript.
@@ -438,4 +438,30 @@ export class A extends B {
     };
     assert_eq!(documented(Inherit::Tag), [false, false, false, false, false, true]);
     assert_eq!(documented(Inherit::Override), [false, true, true, true, false, true]);
+}
+
+#[test]
+fn export_mechanisms_can_be_turned_off_and_globals_on() {
+    let source = "
+export const a = 1;
+const b = 1;
+exports.b = b;
+exports.c = 1;
+window.e = 1;
+const f = 1;
+globalThis.f = f;
+window.g.h = 1;
+self.i = 1;
+";
+    let names = |scope, exports| -> Vec<String> {
+        let rules = Rules { scope, exports, ..Rules::default() };
+        scan(source, SourceType::ts(), &rules).unwrap().into_iter().map(|i| i.name).collect()
+    };
+    let on = Exports::default();
+    assert_eq!(names(Scope::Exports, on), ["a", "b", "c"]);
+    assert_eq!(names(Scope::Exports, Exports { esm: false, ..on }), ["b", "c"]);
+    assert_eq!(names(Scope::Exports, Exports { cjs: false, ..on }), ["a"]);
+    assert_eq!(names(Scope::Exports, Exports { globals: true, ..on }), ["a", "b", "c", "e", "f"]);
+    assert_eq!(names(Scope::All, Exports { esm: false, cjs: false, ..on }), ["a", "b", "c", "f"]);
+    assert_eq!(names(Scope::All, Exports { globals: true, ..on }), ["a", "b", "c", "e", "f"]);
 }

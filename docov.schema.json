@@ -25,6 +25,28 @@
         }
       ]
     },
+    "Exports": {
+      "additionalProperties": false,
+      "description": "Which ways of exporting count.",
+      "properties": {
+        "cjs": {
+          "default": true,
+          "description": "CommonJS: `exports.a = …`, `module.exports = …` and TypeScript's `export =`.",
+          "type": "boolean"
+        },
+        "esm": {
+          "default": true,
+          "description": "ES modules: `export`, `export { a }` and `export default`.",
+          "type": "boolean"
+        },
+        "globals": {
+          "default": false,
+          "description": "Globals: `window.a = …` and `globalThis.a = …` at the top level.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
     "Ignore": {
       "additionalProperties": false,
       "description": "What to leave out.",
@@ -170,6 +192,10 @@
         "type": "string"
       },
       "type": "array"
+    },
+    "exports": {
+      "$ref": "#/$defs/Exports",
+      "description": "Which ways of exporting count under the `exports` scope. Globals are items under either scope only when on."
     },
     "ignore": {
       "$ref": "#/$defs/Ignore",

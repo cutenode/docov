@@ -3,10 +3,10 @@
 use regex::Regex;
 use rustc_hash::FxHashSet;
 
-use super::{Found, doc};
+use super::{Found, Via, doc};
 use crate::{
     Kind, Scope,
-    feature::{access::Access, inherit::Inherit},
+    feature::{access::Access, exports::Exports, inherit::Inherit},
 };
 
 /// Which items count, and when one is documented. The default is docov's out of the box.
@@ -26,6 +26,8 @@ pub struct Rules {
     pub access: Option<Vec<Access>>,
     /// What documents an item by inheriting its docs.
     pub inherit: Inherit,
+    /// Which ways of exporting count.
+    pub exports: Exports,
 }
 
 impl From<Scope> for Rules {
@@ -36,19 +38,38 @@ impl From<Scope> for Rules {
 
 impl Rules {
     /// Whether `found` counts: it's in scope (`exported` holds the names exported apart from their
-    /// declarations), and nothing leaves it out.
-    pub(super) fn counts(&self, found: &Found, exported: &FxHashSet<&str>) -> bool {
-        let in_scope =
-            self.scope == Scope::All || found.exported || found.binding.is_some_and(|b| exported.contains(b));
-        let tagged = |tag: &String| found.doc.as_ref().is_some_and(|doc| doc::has_tag(doc, tag));
-        let kind = self.kinds.as_ref().is_none_or(|kinds| kinds.contains(&found.kind));
+    /// declarations, and how), and no filter leaves it out.
+    pub(super) fn counts(&self, found: &Found, exported: &FxHashSet<(&str, Via)>) -> bool {
+        self.in_scope(found, exported) && !self.leaves_out(found)
+    }
+
+    fn in_scope(&self, found: &Found, exported: &FxHashSet<(&str, Via)>) -> bool {
+        let counts = |via: Via| match via {
+            Via::Esm => self.exports.esm,
+            Via::Cjs => self.exports.cjs,
+            Via::Global => self.exports.globals,
+        };
+        // A value assigned to a global is an item only when globals count.
+        if found.via == Some(Via::Global) && !self.exports.globals {
+            return false;
+        }
+        let apart = |binding| {
+            [Via::Esm, Via::Cjs, Via::Global].into_iter().any(|via| counts(via) && exported.contains(&(binding, via)))
+        };
+        self.scope == Scope::All || found.via.is_some_and(counts) || found.binding.is_some_and(apart)
+    }
+
+    /// Whether its kind, name, access level or tags leave `found` out.
+    fn leaves_out(&self, found: &Found) -> bool {
+        let kind = self.kinds.as_ref().is_some_and(|kinds| !kinds.contains(&found.kind));
         let member = matches!(found.kind, Kind::Method | Kind::Accessor | Kind::Property);
         let own_name = found.name.split_once('.').filter(|_| member).map(|(_, name)| name);
         let named = |re: &Regex| re.is_match(&found.name) || own_name.is_some_and(|name| re.is_match(name));
         let level = found.doc.as_ref().and_then(doc::access);
         let level = level.unwrap_or(if found.protected { Access::Protected } else { Access::Public });
-        let access = self.access.as_ref().is_none_or(|levels| levels.contains(&level));
-        in_scope && kind && access && !self.exclude_tags.iter().any(tagged) && !self.ignore_names.iter().any(named)
+        let access = self.access.as_ref().is_some_and(|levels| !levels.contains(&level));
+        let tagged = |tag: &String| found.doc.as_ref().is_some_and(|doc| doc::has_tag(doc, tag));
+        kind || access || self.exclude_tags.iter().any(tagged) || self.ignore_names.iter().any(named)
     }
 
     /// Whether `found` is documented.
