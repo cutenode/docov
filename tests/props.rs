@@ -3,9 +3,9 @@
 use std::{fs, path::Path, path::PathBuf, process::Command};
 
 use docov::feature::{
-    Feature, access::Access, add_ignore::AddIgnore, examples::Examples, exports::Exports, file_docs::FileDocs,
-    inherit::Inherit, kinds::Kinds, members::Members, report_unused_ignores::ReportUnusedIgnores, sort::Sort,
-    virtual_types::VirtualTypes,
+    Feature, access::Access, add_ignore::AddIgnore, commonjs_members::CommonjsMembers, examples::Examples,
+    exports::Exports, file_docs::FileDocs, inherit::Inherit, kinds::Kinds, members::Members,
+    report_unused_ignores::ReportUnusedIgnores, sort::Sort, virtual_types::VirtualTypes,
 };
 use docov::{
     FileReport, Format, Item, Kind, Rules, Scope, Totals, collect, collect::Facts, collect::Ignore, config, feature,
@@ -1106,6 +1106,73 @@ fn every_member_counts_when_asked(tc: TestCase) {
     }
 }
 
+/// With `"commonjsMembers": true`, `X.prototype.m = …` and `X.m = …` at the top level are members
+/// of `X` when it's a function or class declared there, counting where `X` does, and in a CommonJS
+/// file `this.a = …` exports `a`. Off, none of them are items.
+#[hegel::test(test_cases = 100)]
+fn commonjs_assignments_add_members_when_asked(tc: TestCase) {
+    let (ext, source_type) = tc.draw(gs::sampled_from(vec![
+        ("cjs", SourceType::cjs()),
+        ("js", SourceType::from_path("m.js").unwrap()),
+        ("mjs", SourceType::mjs()),
+    ]));
+    let mut module = Module::default();
+    // Each item's (name, kind, line, documented), whether it's new with the setting, and whether
+    // it's exported.
+    let mut wanted = Vec::new();
+    for i in 0..tc.draw(gs::integers::<usize>().max_value(3)) {
+        let (declaration, kind) = tc.draw(gs::sampled_from(vec![
+            ("function X() {}", Kind::Function),
+            ("class X {}", Kind::Class),
+            ("const X = {};", Kind::Variable),
+        ]));
+        let name = format!("X{i}");
+        let declaration = declaration.replace('X', &name);
+        // How it's exported: not at all, inline (only in an ES module), or with `exports.X = X`.
+        let export = tc.draw(gs::integers::<u8>().max_value(if ext == "mjs" { 2 } else { 1 }));
+        let doc = module.doc(&tc).is_some();
+        wanted.push(((name.clone(), kind, module.line(), doc), false, export > 0));
+        module.write(&format!("{}{declaration}", if export == 2 { "export " } else { "" }));
+        if export == 1 {
+            module.write(&format!("exports.{name} = {name};"));
+        }
+        for j in 0..tc.draw(gs::integers::<usize>().max_value(3)) {
+            let (text, member_kind) = tc.draw(gs::sampled_from(vec![
+                ("X.prototype.m = function (a) {};", Kind::Method),
+                ("X.m = () => {};", Kind::Method),
+                ("X.prototype.m = 1;", Kind::Property),
+                ("X.m = other;", Kind::Property),
+                ("X.prototype[k] = 1;", Kind::Property),
+                ("X.prototype.constructor.m = 1;", Kind::Property),
+                ("Y.m = 1;", Kind::Property),
+            ]));
+            let doc = module.doc(&tc).is_some();
+            let member = kind != Kind::Variable && !text.contains(['[', 'Y']) && !text.contains("constructor");
+            if member {
+                wanted.push(((format!("{name}.m{j}"), member_kind, module.line(), doc), true, export > 0));
+            }
+            module.write(&text.replace('X', &name).replace(".m ", &format!(".m{j} ")));
+        }
+        if tc.draw(gs::booleans()) {
+            let doc = module.doc(&tc).is_some();
+            if ext != "mjs" {
+                wanted.push(((format!("t{i}"), Kind::Variable, module.line(), doc), true, true));
+            }
+            module.write(&format!("this.t{i} = 1;"));
+        }
+    }
+    let source = module.source;
+    for (on, scope) in [(false, Scope::Exports), (true, Scope::Exports), (true, Scope::All)] {
+        let rules = Rules { commonjs_members: on, scope, ..Rules::default() };
+        let items = scan(&source, source_type, &rules).unwrap();
+        let found: Vec<_> = items.into_iter().map(|i| (i.name, i.kind, i.line, i.documented)).collect();
+        let counts = |new: bool, exported: bool| (on || !new) && (scope == Scope::All || exported);
+        let expected: Vec<_> =
+            wanted.iter().filter(|(_, n, e)| counts(*n, *e)).map(|(item, _, _)| item.clone()).collect();
+        assert_eq!(found, expected, "{ext} {on} {scope:?}: {source}");
+    }
+}
+
 fn render(format: Format, files: &[FileReport]) -> String {
     let mut out = Vec::new();
     report::write(format, files, &mut out).unwrap();
@@ -1681,6 +1748,7 @@ fn rules_come_from_flags_over_the_config(tc: TestCase) {
     let file_docs = run.set(&tc, "fileDocs", vec![FileDocs::Off, FileDocs::Require], |_| vec![]);
     let virtual_types = run.set(&tc, "virtual", vec![false, true], |_| vec![]);
     let members = run.set(&tc, "members", vec![Members::Classes, Members::All], |_| vec![]);
+    let commonjs_members = run.set(&tc, "commonjsMembers", vec![false, true], |_| vec![]);
 
     let settings = run.settings(dir.path());
     let rules = settings.rules();
@@ -1693,6 +1761,8 @@ fn rules_come_from_flags_over_the_config(tc: TestCase) {
     assert_eq!(*settings.get::<VirtualTypes>(), VirtualTypes(virtual_types.unwrap_or_default()));
     assert_eq!(rules.virtual_types, virtual_types.unwrap_or_default());
     assert_eq!(rules.members, members.unwrap_or_default());
+    assert_eq!(*settings.get::<CommonjsMembers>(), CommonjsMembers(commonjs_members.unwrap_or_default()));
+    assert_eq!(rules.commonjs_members, commonjs_members.unwrap_or_default());
     assert_eq!(rules.inherit, inherit.unwrap_or_default());
     assert_eq!(rules.access, access);
     let patterns: Vec<&str> = rules.ignore_names.iter().map(regex::Regex::as_str).collect();

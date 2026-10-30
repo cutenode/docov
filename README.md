@@ -57,6 +57,8 @@ Some things never count: constructors (their class's doc covers them), private m
 
 `"members": "all"` counts more members, where their parent counts: TypeScript enum members (`Color.Red`), the members of a type alias's object type (`Options.timeout`), and the properties of an object literal whose block has `@enum`, `@namespace` or `@lends X` (`Name.prop`, or `X.prop`). A matching `@property` in the parent's block documents one of these. The default, `"classes"`, counts only the members of classes and interfaces.
 
+`"commonjsMembers": true` counts `X.prototype.m = …` and `X.m = …` at the top level as members of `X` (`X.m`, a method or property by its value) when `X` is a function or class declared in the file, counting where `X` does. In a CommonJS file (`.cjs`, or a `.js` file with no `import` or `export`), `this.a = …` at the top level then exports `a` the way `exports.a = …` does.
+
 `"fileDocs": "require"` makes each file an item of its own, of kind `module`, at its first line and named by its `@module` or else its path. It's documented when the file's first JSDoc block has `@file`, `@fileoverview`, `@overview`, `@module` or `@packageDocumentation`, with text, and that block then documents nothing else. Without it, a block like that right before a declaration documents the declaration.
 
 `"virtual": true` counts a JavaScript file's `@typedef` and `@callback` blocks that name a type as items of kind `type`, at the block, documented when the block or the tag describes the type. They count as exported under the `exports` scope, since JSDoc treats them as the module's public types, and they then document nothing else. Without it, such a block right before a declaration documents the declaration.

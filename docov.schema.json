@@ -212,6 +212,11 @@
         "null"
       ]
     },
+    "commonjsMembers": {
+      "default": false,
+      "description": "Count `X.prototype.m = …` and `X.m = …` at the top level as members of X, a function or class declared there, and `this.a = …` in a CommonJS file as an export.",
+      "type": "boolean"
+    },
     "examplesThreshold": {
       "default": null,
       "description": "The lowest percentage of counted items with an @example that passes.",

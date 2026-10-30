@@ -434,3 +434,20 @@ fn every_member_counts_with_members_all() {
         (0, "  66.7%  2/3  a.ts\n         a.ts:7:3  property Color.Green\n  66.7%  2/3  total\n")
     );
 }
+
+#[test]
+fn commonjs_members_count_prototype_and_this_assignments() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = "/** A. */\nfunction A() {}\n/** Runs. */\nA.prototype.run = function () {};\nA.stop = function () {};\nmodule.exports = A;\nthis.b = 1;\n";
+    fs::write(dir.path().join("a.cjs"), source).unwrap();
+    assert_eq!(docov(dir.path(), &[]).1, " 100.0%  1/1  a.cjs\n 100.0%  1/1  total\n");
+    fs::write(dir.path().join("docov.json"), r#"{ "commonjsMembers": true }"#).unwrap();
+    let (code, out, _) = docov(dir.path(), &[]);
+    assert_eq!(
+        (code, out.as_str()),
+        (
+            0,
+            "  50.0%  2/4  a.cjs\n         a.cjs:5:1  method A.stop\n         a.cjs:7:1  variable b\n  50.0%  2/4  total\n"
+        )
+    );
+}

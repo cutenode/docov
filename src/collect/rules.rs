@@ -38,6 +38,9 @@ pub struct Rules {
     pub virtual_types: bool,
     /// Which members count.
     pub members: Members,
+    /// Whether `X.prototype.m = …` and `X.m = …` add members, and `this.a = …` in a CommonJS file
+    /// exports.
+    pub commonjs_members: bool,
 }
 
 impl From<Scope> for Rules {

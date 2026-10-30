@@ -207,8 +207,10 @@ pub fn scan(source: &str, source_type: SourceType, rules: &Rules) -> Result<Vec<
 
     let lines = Lines::new(source);
     let ignores = Ignores::find(&parsed.program, &lines);
-    let (found, exported, overload) = (Vec::new(), FxHashSet::default(), None);
-    let mut collector = Collector { source, rules, docs, found, exported, overload };
+    let (found, exported, overload, declared) = (Vec::new(), FxHashSet::default(), None, FxHashMap::default());
+    // At the top of a CommonJS file, `this` is `module.exports`.
+    let this_exports = rules.commonjs_members && !parsed.program.source_type.is_module();
+    let mut collector = Collector { source, rules, docs, found, exported, overload, declared, this_exports };
     if rules.file_docs == FileDocs::Require {
         collector.file(&parsed.program.comments);
     }
@@ -279,6 +281,11 @@ struct Collector<'s> {
     /// The name of the function the last statement declared without a body. An overload's
     /// implementation follows its signatures, and only the signatures are documented.
     overload: Option<&'s str>,
+    /// The functions and classes declared by name so far, and how each is exported where it's
+    /// declared, which `X.m = …` adds members to.
+    declared: FxHashMap<&'s str, Option<Via>>,
+    /// Whether `this.a = …` exports `a`.
+    this_exports: bool,
 }
 
 /// How a module exports something.
@@ -422,10 +429,13 @@ impl<'s> Collector<'s> {
             }
             Declaration::FunctionDeclaration(f) => {
                 let site = Site { at, binding: f.id.as_ref().map(|id| id.name.as_str()), via };
+                self.declared.extend(site.binding.map(|name| (name, via)));
                 self.function(f, site, overload);
             }
             Declaration::ClassDeclaration(c) => {
-                self.class(c, Site { at, binding: c.id.as_ref().map(|id| id.name.as_str()), via });
+                let site = Site { at, binding: c.id.as_ref().map(|id| id.name.as_str()), via };
+                self.declared.extend(site.binding.map(|name| (name, via)));
+                self.class(c, site);
             }
             Declaration::TSInterfaceDeclaration(i) => self.interface(i, site(&i.id)),
             Declaration::TSTypeAliasDeclaration(t) => {
@@ -463,12 +473,13 @@ impl<'s> Collector<'s> {
         let Some(target) = assignment.left.as_member_expression() else { return };
         let value = &assignment.right;
         let is_module_exports = target.is_specific_member_access("module", "exports");
-        let via = if is_module_exports || is_commonjs_export(target) {
+        let this = self.this_exports && matches!(target.object(), Expression::ThisExpression(_));
+        let via = if is_module_exports || this || is_commonjs_export(target) {
             Via::Cjs
         } else if target.object().is_specific_id("window") || target.object().is_specific_id("globalThis") {
             Via::Global
         } else {
-            return;
+            return self.assigned_member(target, value, at);
         };
         let site = Site { at, binding: None, via: Some(via) };
         if let Expression::Identifier(id) = value {
@@ -504,6 +515,25 @@ impl<'s> Collector<'s> {
             let key = self.key(&p.key);
             self.push(Site { at: start, ..site }, start, key, value_kind(&p.value)).params = value_params(&p.value);
         }
+    }
+
+    /// With CommonJS members on, `X.prototype.m = …` and `X.m = …`, for a function or class `X`
+    /// declared here, as `X`'s member `m`, counting where `X` does.
+    fn assigned_member(&mut self, target: &MemberExpression<'s>, value: &Expression<'s>, at: u32) {
+        if !self.rules.commonjs_members {
+            return;
+        }
+        let object = match target.object() {
+            Expression::StaticMemberExpression(m) if m.property.name == "prototype" => &m.object,
+            object => object,
+        };
+        let Expression::Identifier(owner) = object else { return };
+        let owner = owner.name.as_str();
+        let key = target.static_property_name().and_then(|name| name.as_str());
+        let (Some(&via), Some(key)) = (self.declared.get(owner), key) else { return };
+        let kind = if value.is_function() { Kind::Method } else { Kind::Property };
+        let site = Site { at, binding: Some(owner), via };
+        self.member(site, at, (owner, key), kind, None).params = value_params(value);
     }
 
     fn function(&mut self, f: &Function<'s>, site: Site<'s>, overload: Option<&'s str>) {
