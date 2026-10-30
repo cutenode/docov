@@ -3,7 +3,7 @@
 use std::{io, path::PathBuf, process::ExitCode};
 
 use clap::{CommandFactory, FromArgMatches, Parser};
-use docov::{Config, Format, Scope, Settings, feature, report, scan_file, walk};
+use docov::{Config, Format, Settings, feature, report, scan_file, walk};
 use rayon::{iter::Either, prelude::*};
 
 /// Checks how much of a JavaScript or TypeScript project's API has JSDoc.
@@ -52,20 +52,27 @@ fn run(cli: Cli, matches: &clap::ArgMatches) -> Result<bool, Vec<String>> {
     // the first (`.././src` is `../src`), which would keep the excludes from matching.
     let config_paths = config.paths.iter().map(|p| config.dir.join(p).components().collect());
     let paths = if cli.paths.is_empty() { config_paths.collect() } else { cli.paths };
-    let scope = *settings.get::<Scope>();
+    let rules = settings.rules();
 
     let files = walk::files(&paths, &config.dir, &config.exclude).map_err(|e| vec![e.to_string()])?;
-    let (reports, errors): (Vec<_>, Vec<_>) = files.par_iter().partition_map(|path| match scan_file(path, scope) {
+    let (reports, errors): (Vec<_>, Vec<_>) = files.par_iter().partition_map(|path| match scan_file(path, &rules) {
         Ok(report) => Either::Left(report),
         Err(e) => Either::Right(e.to_string()),
     });
     if !errors.is_empty() {
         return Err(errors);
     }
-    report::write(cli.format, &reports, &mut io::stdout().lock()).map_err(|e| vec![e.to_string()])?;
+    if let Some(edited) = settings.edit(&reports) {
+        eprintln!("docov: {}", edited.map_err(|e| vec![e])?);
+        return Ok(true);
+    }
+    let mut out = io::stdout().lock();
+    report::write(cli.format, &reports, &mut out)
+        .and_then(|()| settings.append(cli.format, &reports, &mut out))
+        .map_err(|e| vec![e.to_string()])?;
 
     let failures = settings.gates(&reports);
-    for failure in &failures {
+    for failure in failures.iter().flat_map(|f| f.lines()) {
         eprintln!("docov: {failure}");
     }
     Ok(failures.is_empty())

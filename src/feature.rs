@@ -1,13 +1,18 @@
 //! Features: settings from a flag, a docov.json key, or both. Each lives in its own file in
 //! src/feature/, which build.rs registers, so adding one adds a file and no line in a shared list.
 
-use std::{any::Any, fmt::Debug, sync::LazyLock};
+use std::{
+    any::Any,
+    fmt::Debug,
+    io::{self, Write},
+    sync::LazyLock,
+};
 
 use clap::{ArgMatches, Args, Command, FromArgMatches};
 use schemars::{JsonSchema, Schema};
 use serde::de::DeserializeOwned;
 
-use crate::FileReport;
+use crate::{FileReport, Format, Rules};
 
 include!(concat!(env!("OUT_DIR"), "/features.rs"));
 
@@ -26,8 +31,22 @@ pub trait Feature: Sized + Send + Sync + 'static {
     /// The setting, from its flags and keys. A flag wins over its key.
     fn new(flags: Self::Flags, keys: Self::Keys) -> Self;
 
-    /// Why the scan fails, when this setting fails it (exit 1).
+    /// Sets its part of what counts and when an item is documented.
+    fn rules(&self, _rules: &mut Rules) {}
+
+    /// Why the scan fails, when this setting fails it (exit 1). Each line is a message of its own.
     fn gate(&self, _reports: &[FileReport]) -> Option<String> {
+        None
+    }
+
+    /// Writes what it adds to the report in `format`, after the report.
+    fn append(&self, _format: Format, _reports: &[FileReport], _out: &mut dyn Write) -> io::Result<()> {
+        Ok(())
+    }
+
+    /// Edits the scanned files in place of a report, when this setting asks for that, and says
+    /// what it did, or why it couldn't (exit 2).
+    fn edit(&self, _reports: &[FileReport]) -> Option<Result<String, String>> {
         None
     }
 }
@@ -122,15 +141,27 @@ impl PartialEq for Keys {
 /// A feature, made.
 trait Loaded: Send + Sync {
     fn as_any(&self) -> &dyn Any;
+    fn rules(&self, rules: &mut Rules);
     fn gate(&self, reports: &[FileReport]) -> Option<String>;
+    fn append(&self, format: Format, reports: &[FileReport], out: &mut dyn Write) -> io::Result<()>;
+    fn edit(&self, reports: &[FileReport]) -> Option<Result<String, String>>;
 }
 
 impl<F: Feature> Loaded for F {
     fn as_any(&self) -> &dyn Any {
         self
     }
+    fn rules(&self, rules: &mut Rules) {
+        Feature::rules(self, rules);
+    }
     fn gate(&self, reports: &[FileReport]) -> Option<String> {
         Feature::gate(self, reports)
+    }
+    fn append(&self, format: Format, reports: &[FileReport], out: &mut dyn Write) -> io::Result<()> {
+        Feature::append(self, format, reports, out)
+    }
+    fn edit(&self, reports: &[FileReport]) -> Option<Result<String, String>> {
+        Feature::edit(self, reports)
     }
 }
 
@@ -146,6 +177,25 @@ impl Settings {
     /// Feature `F`'s setting.
     pub fn get<F: Feature>(&self) -> &F {
         self.0.iter().find_map(|f| f.as_any().downcast_ref()).expect("every feature is registered")
+    }
+
+    /// The scan's rules, with each feature's part set.
+    pub fn rules(&self) -> Rules {
+        let mut rules = Rules::default();
+        for feature in &self.0 {
+            feature.rules(&mut rules);
+        }
+        rules
+    }
+
+    /// Writes what each feature adds to the report in `format`, after it.
+    pub fn append(&self, format: Format, reports: &[FileReport], out: &mut dyn Write) -> io::Result<()> {
+        self.0.iter().try_for_each(|f| f.append(format, reports, out))
+    }
+
+    /// What the first feature that edits the files in place of a report did, if one does.
+    pub fn edit(&self, reports: &[FileReport]) -> Option<Result<String, String>> {
+        self.0.iter().find_map(|f| f.edit(reports))
     }
 
     /// Why the scan fails, from each feature that fails it.

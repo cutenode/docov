@@ -6,9 +6,10 @@ mod text;
 
 use std::io::{self, Write};
 
+use rustc_hash::FxHashMap;
 use serde::Serialize;
 
-use crate::FileReport;
+use crate::{FileReport, Kind};
 
 /// An output format.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
@@ -43,6 +44,19 @@ impl Totals {
             .iter()
             .map(FileReport::totals)
             .fold(Self::default(), |a, b| Self { documented: a.documented + b.documented, total: a.total + b.total })
+    }
+
+    /// The sums for each kind of item there is, in [`Kind`]'s order.
+    pub fn by_kind(files: &[FileReport]) -> Vec<(Kind, Self)> {
+        let mut kinds: FxHashMap<Kind, Self> = FxHashMap::default();
+        for item in files.iter().flat_map(FileReport::counted) {
+            let totals = kinds.entry(item.kind).or_default();
+            totals.documented += usize::from(item.documented);
+            totals.total += 1;
+        }
+        let mut kinds: Vec<_> = kinds.into_iter().collect();
+        kinds.sort_by_key(|(kind, _)| *kind);
+        kinds
     }
 }
 

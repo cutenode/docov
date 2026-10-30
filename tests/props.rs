@@ -2,7 +2,14 @@
 
 use std::{fs, path::Path, path::PathBuf, process::Command};
 
-use docov::{FileReport, Format, Item, Kind, Scope, Totals, collect, config, report, scan, scan_file};
+use docov::feature::{
+    Feature, access::Access, add_ignore::AddIgnore, exports::Exports, inherit::Inherit, kinds::Kinds,
+    report_unused_ignores::ReportUnusedIgnores,
+};
+use docov::{
+    FileReport, Format, Item, Kind, Rules, Scope, Totals, collect, collect::Ignore, config, feature, report, rewrite,
+    scan, scan_file,
+};
 use hegel::{TestCase, generators as gs};
 use oxc_span::SourceType;
 
@@ -10,10 +17,149 @@ use oxc_span::SourceType;
 #[derive(Default)]
 struct Module {
     source: String,
-    /// Each item, and whether the module exports it.
-    expected: Vec<(bool, Item)>,
+    /// Each item the module declares.
+    expected: Vec<Expected>,
     specifiers: Vec<String>,
     has_default: bool,
+    /// The `docov-ignore-next-line` just written, for the item on the line after it.
+    next_ignore: Option<Ignore>,
+    /// The module's `docov-ignore-file`.
+    file_ignore: Option<Ignore>,
+    /// Whether its first comment says it's `@generated`.
+    generated: bool,
+}
+
+/// `docov-ignore-next-line` comments and comments that aren't quite, with the reason each one
+/// gives, or `None` for those that aren't one.
+const NEXT_LINE_IGNORES: [(&str, Option<Option<&str>>); 6] = [
+    ("// docov-ignore-next-line", Some(None)),
+    ("// docov-ignore-next-line: legacy API", Some(Some("legacy API"))),
+    ("/* docov-ignore-next-line:   */", Some(None)),
+    ("//docov-ignore-next-line : later", Some(Some("later"))),
+    ("// docov-ignore-next-lines", None),
+    ("// docov-ignore-next-line legacy", None),
+];
+
+/// The same for `docov-ignore-file`, which counts only outside every statement.
+const FILE_IGNORES: [(&str, Option<Option<&str>>); 4] = [
+    ("/* docov-ignore-file */", Some(None)),
+    ("// docov-ignore-file: generated", Some(Some("generated"))),
+    ("if (x) { /* docov-ignore-file */ }", None),
+    ("/* docov-ignore-files */", None),
+];
+
+/// An item a generated module declares.
+struct Expected {
+    /// How the module exports it, if it does.
+    via: Option<Via>,
+    /// Whether its export declares it (`exports.a = 1`), rather than exporting a declaration.
+    value: bool,
+    /// The item, documented when it has a JSDoc block.
+    item: Item,
+    /// Its JSDoc block.
+    doc: Option<Block>,
+    /// Whether it's a TypeScript `protected` member.
+    protected: bool,
+    /// Whether it's a TypeScript `override` member.
+    overrides: bool,
+}
+
+impl Expected {
+    /// The item, if it counts by `rules`.
+    fn by(&self, rules: &Rules) -> Option<Item> {
+        let counts = |via| match via {
+            Via::Esm => rules.exports.esm,
+            Via::Cjs => rules.exports.cjs,
+            Via::Global => rules.exports.globals,
+        };
+        if self.value && self.via == Some(Via::Global) && !rules.exports.globals {
+            return None;
+        }
+        if rules.scope == Scope::Exports && !self.via.is_some_and(counts) {
+            return None;
+        }
+        let tags = self.doc.map_or(&[][..], |b| b.tags);
+        if rules.ignore_deprecated && tags.contains(&"deprecated") {
+            return None;
+        }
+        if tags.iter().any(|tag| rules.exclude_tags.iter().any(|t| t == tag)) {
+            return None;
+        }
+        if rules.kinds.as_ref().is_some_and(|kinds| !kinds.contains(&self.item.kind)) {
+            return None;
+        }
+        let member = matches!(self.item.kind, Kind::Method | Kind::Accessor | Kind::Property);
+        let own_name = self.item.name.split_once('.').filter(|_| member).map(|(_, name)| name);
+        let level =
+            self.doc.and_then(|b| b.access).unwrap_or(if self.protected { Access::Protected } else { Access::Public });
+        if rules.access.as_ref().is_some_and(|levels| !levels.contains(&level)) {
+            return None;
+        }
+        if rules.ignore_names.iter().any(|re| re.is_match(&self.item.name) || own_name.is_some_and(|n| re.is_match(n)))
+        {
+            return None;
+        }
+        let described = |b: Block| if self.item.kind == Kind::Class { b.class_described } else { b.described };
+        let inherits = rules.inherit == Inherit::Override && self.overrides;
+        let documented = inherits || self.doc.is_some_and(|b| !rules.require_description || described(b));
+        Some(Item { documented, ..self.item.clone() })
+    }
+}
+
+/// A JSDoc block a generated module has, and what it says.
+#[derive(Clone, Copy, Debug)]
+struct Block {
+    text: &'static str,
+    /// Whether it describes its item: text before its first tag, or a tag that stands in for it.
+    described: bool,
+    /// Whether it describes a class, which `@classdesc` does too.
+    class_described: bool,
+    /// Its tags' names.
+    tags: &'static [&'static str],
+    /// The access level its tags give.
+    access: Option<Access>,
+}
+
+const fn block(text: &'static str, described: bool, class_described: bool, tags: &'static [&'static str]) -> Block {
+    Block { text, described, class_described, tags, access: None }
+}
+
+const fn access(text: &'static str, tags: &'static [&'static str], level: Access) -> Block {
+    Block { access: Some(level), ..block(text, true, true, tags) }
+}
+
+const BLOCKS: [Block; 18] = [
+    block("/** Docs. */", true, true, &[]),
+    block("/**\n * Docs.\n * @param a The a.\n */", true, true, &["param"]),
+    block("/** Mail me@example.com. */", true, true, &[]),
+    block("/** @type {string} */", false, false, &["type"]),
+    block("/** @deprecated */", false, false, &["deprecated"]),
+    block("/** @internal */", false, false, &["internal"]),
+    block("/** @description Docs. */", true, true, &["description"]),
+    block("/**\n * @desc\n */", false, false, &["desc"]),
+    block("/** @summary Docs. */", true, true, &["summary"]),
+    block("/** @classdesc Docs. */", false, true, &["classdesc"]),
+    block("/** @inheritDoc */", true, true, &["inheritDoc"]),
+    block("/**\n * @INHERITDOC\n */", true, true, &["INHERITDOC"]),
+    block("/**\n * Hidden.\n * @hidden\n * @ignore\n */", true, true, &["hidden", "ignore"]),
+    access("/** Docs.\n * @private\n */", &["private"], Access::Private),
+    access("/**\n * Docs.\n * @access protected\n */", &["access"], Access::Protected),
+    access("/** Docs.\n * @package\n */", &["package"], Access::Package),
+    access("/** Docs.\n * @public\n * @private\n */", &["public", "private"], Access::Public),
+    block("/** Docs.\n * @access whoever\n */", true, true, &["access"]),
+];
+
+const LEVELS: [Access; 4] = [Access::Public, Access::Protected, Access::Package, Access::Private];
+
+/// Tags `excludeTags` may name.
+const TAGS: [&str; 6] = ["internal", "ignore", "hidden", "deprecated", "param", "inheritdoc"];
+
+/// How a module exports an item.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Via {
+    Esm,
+    Cjs,
+    Global,
 }
 
 /// How a generated declaration is exported.
@@ -28,6 +174,8 @@ enum Export {
     DefaultInline,
     /// `exports.name = name;` and the like.
     CommonJs,
+    /// `window.name = name;` or `globalThis.name = name;`
+    Global,
 }
 
 impl Module {
@@ -36,32 +184,53 @@ impl Module {
         self.source.push('\n');
     }
 
-    /// Writes ordinary comments and maybe a JSDoc block, and says whether it wrote the block.
-    fn doc(&mut self, tc: &TestCase) -> bool {
+    /// The line about to be written.
+    fn line(&self) -> usize {
+        self.source.matches('\n').count() + 1
+    }
+
+    /// Maybe writes a `docov-ignore-file` (or `-next-line`) comment, or one that isn't quite, and
+    /// gives the ignore it is, if it's one.
+    fn ignore(&mut self, tc: &TestCase, file: bool) -> Option<Ignore> {
+        if !tc.draw(gs::weighted_booleans(0.3)) {
+            return None;
+        }
+        let ignores = if file { FILE_IGNORES.to_vec() } else { NEXT_LINE_IGNORES.to_vec() };
+        let (text, reason) = tc.draw(gs::sampled_from(ignores));
+        let line = self.line();
+        self.write(text);
+        reason.map(|reason| Ignore { reason: reason.map(String::from), line, column: 1, file })
+    }
+
+    /// Writes ordinary comments and maybe a JSDoc block, and says which block it wrote.
+    fn doc(&mut self, tc: &TestCase) -> Option<Block> {
         let noise = ["// note", "/* note */", "/** */", "/**\n *\n */", "/** @license MIT */"];
         if tc.draw(gs::booleans()) {
             self.write(tc.draw(gs::sampled_from(noise.to_vec())));
         }
-        let documented = tc.draw(gs::booleans());
-        if documented {
-            self.write("/** Docs. */");
+        let doc = tc.draw(gs::booleans()).then(|| tc.draw(gs::sampled_from(BLOCKS.to_vec())));
+        if let Some(block) = doc {
+            self.write(block.text);
         }
         if tc.draw(gs::booleans()) {
             self.write("// after");
         }
-        documented
+        self.next_ignore = self.ignore(tc, false);
+        doc
     }
 
     /// Expects an item on the line about to be written.
-    fn expect(&mut self, exported: bool, name: String, kind: Kind, documented: bool) {
-        let line = self.source.matches('\n').count() + 1;
-        self.expected.push((exported, Item { name, kind, line, column: 1, documented }));
+    fn expect(&mut self, via: Option<Via>, name: String, kind: Kind, doc: Option<Block>) {
+        let line = self.line();
+        let ignore = self.next_ignore.take().filter(|ignore| ignore.line + 1 == line);
+        let item = Item { name, kind, line, column: 1, documented: doc.is_some(), ignore };
+        self.expected.push(Expected { via, value: false, item, doc, protected: false, overrides: false });
     }
 
     /// A statement that exports and declares nothing.
     fn nothing(&mut self, tc: &TestCase) {
         let statements = vec![
-            "window.x = 1;",
+            "window.x.y = 1;",
             "x = 1;",
             "exports[key] = 1;",
             "other.exports.y = 1;",
@@ -75,49 +244,58 @@ impl Module {
 
     /// A CommonJS export of a value rather than a declaration.
     fn commonjs(&mut self, tc: &TestCase, i: usize) {
-        let documented = self.doc(tc);
-        match tc.draw(gs::integers::<u8>().max_value(6)) {
+        let first = self.expected.len();
+        let doc = self.doc(tc);
+        match tc.draw(gs::integers::<u8>().max_value(7)) {
             6 => self.nothing(tc),
+            7 => {
+                let (global, kind, value) = tc.draw(gs::sampled_from(vec![
+                    ("window", Kind::Function, "function () {}"),
+                    ("globalThis", Kind::Variable, "1"),
+                ]));
+                self.expect(Some(Via::Global), format!("c{i}"), kind, doc);
+                self.write(&format!("{global}.c{i} = {value};"));
+            }
             0 => {
-                self.expect(true, format!("c{i}"), Kind::Function, documented);
+                self.expect(Some(Via::Cjs), format!("c{i}"), Kind::Function, doc);
                 self.write(&format!("exports.c{i} = function () {{}};"));
             }
             1 => {
-                self.expect(true, format!("c{i}"), Kind::Variable, documented);
+                self.expect(Some(Via::Cjs), format!("c{i}"), Kind::Variable, doc);
                 self.write(&format!("module.exports.c{i} = 1;"));
             }
             2 => {
-                self.expect(true, format!("f{i}"), Kind::Function, documented);
+                self.expect(Some(Via::Cjs), format!("f{i}"), Kind::Function, doc);
                 self.write(&format!("module.exports = function f{i}() {{}};"));
             }
             3 if tc.draw(gs::booleans()) => {
-                self.expect(true, format!("G{i}"), Kind::Class, documented);
+                self.expect(Some(Via::Cjs), format!("G{i}"), Kind::Class, doc);
                 self.write(&format!("module.exports = class G{i} {{}};"));
             }
             3 => {
-                self.expect(true, "default".into(), Kind::Class, documented);
+                self.expect(Some(Via::Cjs), "default".into(), Kind::Class, doc);
                 self.write("module.exports = class {};");
             }
             4 => {
-                self.expect(true, "default".into(), Kind::Default, documented);
+                self.expect(Some(Via::Cjs), "default".into(), Kind::Default, doc);
                 self.write("module.exports = 1;");
             }
             _ => {
                 self.write("module.exports = {");
                 for j in 0..tc.draw(gs::integers::<usize>().max_value(3)) {
-                    let documented = self.doc(tc);
+                    let doc = self.doc(tc);
                     match tc.draw(gs::integers::<u8>().max_value(4)) {
                         4 => self.write("...rest,"),
                         0 => {
-                            self.expect(true, format!("p{i}_{j}"), Kind::Variable, documented);
+                            self.expect(Some(Via::Cjs), format!("p{i}_{j}"), Kind::Variable, doc);
                             self.write(&format!("p{i}_{j}: 1,"));
                         }
                         1 => {
-                            self.expect(true, format!("m{i}_{j}"), Kind::Function, documented);
+                            self.expect(Some(Via::Cjs), format!("m{i}_{j}"), Kind::Function, doc);
                             self.write(&format!("m{i}_{j}() {{}},"));
                         }
                         2 => {
-                            self.expect(true, format!("a{i}_{j}"), Kind::Function, documented);
+                            self.expect(Some(Via::Cjs), format!("a{i}_{j}"), Kind::Function, doc);
                             self.write(&format!("a{i}_{j}: () => 1,"));
                         }
                         // Exports a name nothing here declares.
@@ -129,6 +307,9 @@ impl Module {
         }
         if tc.draw(gs::booleans()) {
             self.write(&format!("const r{i} = require('r{i}');"));
+        }
+        for expected in &mut self.expected[first..] {
+            expected.value = true;
         }
     }
 
@@ -148,7 +329,7 @@ impl Module {
             Kind::Default,
         ];
         let kind = tc.draw(gs::sampled_from(kinds));
-        let mut exports = vec![Export::No, Export::Inline, Export::Specifier, Export::CommonJs];
+        let mut exports = vec![Export::No, Export::Inline, Export::Specifier, Export::CommonJs, Export::Global];
         if !self.has_default {
             exports.push(Export::DefaultName);
             if matches!(kind, Kind::Function | Kind::Class | Kind::Interface) {
@@ -160,7 +341,30 @@ impl Module {
             return;
         }
         self.has_default |= matches!(export, Export::DefaultName | Export::DefaultInline);
-        let exported = export != Export::No;
+        // The statement after the declaration that exports it, if one does.
+        let after = match export {
+            Export::CommonJs => vec![
+                format!("exports.{name} = {name};"),
+                format!("module.exports.{name} = {name};"),
+                format!("module.exports = {name};"),
+                format!("module.exports = {{ {name} }};"),
+            ],
+            Export::DefaultName => vec![
+                format!("export default {name};"),
+                format!("export = {name};"),
+                format!("export {{ {name} as default }};"),
+            ],
+            Export::Global => vec![format!("window.{name} = {name};"), format!("globalThis.{name} = {name};")],
+            _ => vec![String::new()],
+        };
+        let after = tc.draw(gs::sampled_from(after));
+        let via = match export {
+            Export::No => None,
+            Export::CommonJs => Some(Via::Cjs),
+            Export::Global => Some(Via::Global),
+            Export::DefaultName if after.starts_with("export =") => Some(Via::Cjs),
+            _ => Some(Via::Esm),
+        };
         let prefix = match export {
             Export::Inline => "export ",
             Export::DefaultInline => "export default ",
@@ -170,10 +374,10 @@ impl Module {
             self.specifiers.push(name.clone());
         }
 
-        let documented = self.doc(tc);
+        let doc = self.doc(tc);
         match kind {
             Kind::Function => {
-                self.expect(exported, name.clone(), kind, documented);
+                self.expect(via, name.clone(), kind, doc);
                 if export != Export::DefaultInline && tc.draw(gs::booleans()) {
                     // Only the signature counts; the implementation after it doesn't.
                     self.write(&format!("{prefix}function {name}(a: string): void;"));
@@ -185,11 +389,11 @@ impl Module {
                 self.write(&format!("{prefix}const {{ d{i} }} = {{ d{i}: 1 }};"));
             }
             Kind::Variable => {
-                self.expect(exported, name.clone(), kind, documented);
+                self.expect(via, name.clone(), kind, doc);
                 self.write(&format!("{prefix}const {name} = 1;"));
             }
             Kind::Type | Kind::Enum | Kind::Namespace => {
-                self.expect(exported, name.clone(), kind, documented);
+                self.expect(via, name.clone(), kind, doc);
                 let body = match kind {
                     Kind::Type => format!("type {name} = string;"),
                     Kind::Enum => format!("enum {name} {{ A }}"),
@@ -198,30 +402,30 @@ impl Module {
                 self.write(&format!("{prefix}{body}"));
             }
             Kind::Default => {
-                self.expect(true, "default".into(), kind, documented);
+                self.expect(Some(Via::Esm), "default".into(), kind, doc);
                 self.write("export default { a: 1 };");
             }
             Kind::Class => {
-                self.expect(exported, name.clone(), kind, documented);
+                self.expect(via, name.clone(), kind, doc);
                 if tc.draw(gs::booleans()) {
                     self.write("@sealed");
                 }
                 self.write(&format!("{prefix}class {name} {{"));
-                self.class_members(tc, &name, exported);
+                self.class_members(tc, &name, via);
                 self.write("}");
             }
             Kind::Interface => {
-                self.expect(exported, name.clone(), kind, documented);
+                self.expect(via, name.clone(), kind, doc);
                 self.write(&format!("{prefix}interface {name} {{"));
                 for j in 0..tc.draw(gs::integers::<usize>().max_value(3)) {
-                    let documented = self.doc(tc);
+                    let doc = self.doc(tc);
                     match tc.draw(gs::integers::<u8>().max_value(2)) {
                         0 => {
-                            self.expect(exported, format!("{name}.p{j}"), Kind::Property, documented);
+                            self.expect(via, format!("{name}.p{j}"), Kind::Property, doc);
                             self.write(&format!("p{j}: 1;"));
                         }
                         1 => {
-                            self.expect(exported, format!("{name}.m{j}"), Kind::Method, documented);
+                            self.expect(via, format!("{name}.m{j}"), Kind::Method, doc);
                             self.write(&format!("m{j}(): void;"));
                         }
                         _ => self.write("[key: string]: unknown;"),
@@ -231,35 +435,20 @@ impl Module {
             }
             _ => unreachable!(),
         }
-        if export == Export::CommonJs {
-            let statements = vec![
-                format!("exports.{name} = {name};"),
-                format!("module.exports.{name} = {name};"),
-                format!("module.exports = {name};"),
-                format!("module.exports = {{ {name} }};"),
-            ];
-            self.write(&tc.draw(gs::sampled_from(statements)));
-        }
-        if export == Export::DefaultName {
-            let statements = vec![
-                format!("export default {name};"),
-                format!("export = {name};"),
-                format!("export {{ {name} as default }};"),
-            ];
-            self.write(&tc.draw(gs::sampled_from(statements)));
+        if !after.is_empty() {
+            self.write(&after);
         }
         if tc.draw(gs::weighted_booleans(0.2)) {
             self.write(&format!("declare module 'm{i}' {{ export function f(): void; }}"));
         }
     }
 
-    fn class_members(&mut self, tc: &TestCase, class: &str, exported: bool) {
+    fn class_members(&mut self, tc: &TestCase, class: &str, via: Option<Via>) {
         let mut constructed = false;
         for j in 0..tc.draw(gs::integers::<usize>().max_value(4)) {
-            let documented = self.doc(tc);
-            let item =
-                |m: &mut Self, name: String, kind| m.expect(exported, format!("{class}.{name}"), kind, documented);
-            match tc.draw(gs::integers::<u8>().max_value(9)) {
+            let doc = self.doc(tc);
+            let item = |m: &mut Self, name: String, kind| m.expect(via, format!("{class}.{name}"), kind, doc);
+            match tc.draw(gs::integers::<u8>().max_value(11)) {
                 0 => {
                     item(self, format!("m{j}"), Kind::Method);
                     if tc.draw(gs::booleans()) {
@@ -299,6 +488,16 @@ impl Module {
                     constructed = true;
                     self.write("constructor() {}");
                 }
+                9 => {
+                    item(self, format!("t{j}"), Kind::Property);
+                    self.expected.last_mut().unwrap().protected = true;
+                    self.write(&format!("protected t{j} = 1;"));
+                }
+                10 => {
+                    item(self, format!("u{j}"), Kind::Method);
+                    self.expected.last_mut().unwrap().overrides = true;
+                    self.write(&format!("override u{j}() {{}}"));
+                }
                 _ => self.write(&format!("#h{j} = 1;\nprivate q{j} = 1;\nprivate r{j}() {{}}")),
             }
         }
@@ -306,13 +505,29 @@ impl Module {
 
     fn generate(tc: &TestCase) -> Self {
         let mut module = Self::default();
+        let header = tc.draw(gs::sampled_from(vec!["", "// @generated by a tool", "// header\n// @generated"]));
+        if !header.is_empty() {
+            module.write(header);
+        }
+        module.generated = header.starts_with("// @generated");
+        let file_ignore_first = tc.draw(gs::booleans());
+        if file_ignore_first {
+            module.file_ignore = module.ignore(tc, true);
+        }
         for i in 0..tc.draw(gs::integers::<usize>().max_value(10)) {
             module.declaration(tc, i);
         }
         if tc.draw(gs::booleans()) {
             module.nothing(tc);
         }
-        module.finish()
+        let mut module = module.finish();
+        if !file_ignore_first {
+            module.file_ignore = module.ignore(tc, true);
+        }
+        for expected in &mut module.expected {
+            expected.item.ignore = expected.item.ignore.take().or_else(|| module.file_ignore.clone());
+        }
+        module
     }
 
     fn finish(mut self) -> Self {
@@ -333,15 +548,59 @@ fn scans_find_what_modules_declare(tc: TestCase) {
     let Module { source, expected, .. } = Module::generate(&tc);
 
     for scope in [Scope::Exports, Scope::All] {
-        let items = scan(&source, SourceType::ts(), scope).unwrap();
-        let wanted: Vec<&Item> =
-            expected.iter().filter(|(exported, _)| scope == Scope::All || *exported).map(|(_, item)| item).collect();
-        assert_eq!(items.iter().collect::<Vec<_>>(), wanted, "{source}");
+        let items = scan(&source, SourceType::ts(), &scope.into()).unwrap();
+        // Globals count only when asked, so by default they're nothing.
+        let wanted: Vec<Item> = expected.iter().filter_map(|e| e.by(&scope.into())).collect();
+        assert_eq!(items, wanted, "{source}");
     }
 
     let broken = format!("{source}export function (");
-    let error = scan(&broken, SourceType::ts(), Scope::All).unwrap_err();
+    let error = scan(&broken, SourceType::ts(), &Scope::All.into()).unwrap_err();
     assert!(error.offset >= source.len() && error.offset <= broken.len(), "{error:?}");
+}
+
+/// The rules decide which of a generated module's items count and which are documented, the way
+/// the model says.
+#[hegel::test(test_cases = 300)]
+fn rules_decide_what_counts_and_what_is_documented(tc: TestCase) {
+    let Module { source, expected, generated, .. } = Module::generate(&tc);
+    let rules = Rules {
+        scope: tc.draw(gs::sampled_from(vec![Scope::Exports, Scope::All])),
+        require_description: tc.draw(gs::booleans()),
+        exclude_tags: tc
+            .draw(gs::vecs(gs::sampled_from(TAGS.to_vec())).max_size(3))
+            .into_iter()
+            .map(String::from)
+            .collect(),
+        kinds: tc.draw(gs::optional(gs::vecs(gs::sampled_from(ALL_KINDS.to_vec())).max_size(4))),
+        inherit: tc.draw(gs::sampled_from(vec![Inherit::Tag, Inherit::Override])),
+        ignore_deprecated: tc.draw(gs::booleans()),
+        skip_generated: tc.draw(gs::booleans()),
+        exports: Exports {
+            esm: tc.draw(gs::booleans()),
+            cjs: tc.draw(gs::booleans()),
+            globals: tc.draw(gs::booleans()),
+        },
+        access: tc.draw(gs::optional(gs::vecs(gs::sampled_from(LEVELS.to_vec())).max_size(3))),
+        ignore_names: tc
+            .draw(
+                gs::vecs(gs::sampled_from(vec!["^n1$", "^_", "^m", "^p\\d", "0$", "^n2\\.", "^default$"])).max_size(2),
+            )
+            .into_iter()
+            .map(|re| regex::Regex::new(re).unwrap())
+            .collect(),
+    };
+    // And each rule for what's documented with nothing left out, for the filters not to hide.
+    let mut all = vec![rules];
+    for (require_description, inherit) in [(false, Inherit::Tag), (true, Inherit::Tag), (true, Inherit::Override)] {
+        all.push(Rules { scope: Scope::All, require_description, inherit, ..Rules::default() });
+    }
+    for rules in all {
+        let items = scan(&source, SourceType::ts(), &rules).unwrap();
+        let skipped = generated && rules.skip_generated;
+        let wanted: Vec<Item> = expected.iter().filter_map(|e| e.by(&rules)).filter(|_| !skipped).collect();
+        assert_eq!(items, wanted, "{source}");
+    }
 }
 
 /// A module read from a file has the items its text does. One that doesn't parse fails with its
@@ -355,10 +614,11 @@ fn files_scan_as_their_text(tc: TestCase) {
     let path = dir.path().join(format!("m.{}", tc.draw(gs::sampled_from(vec!["ts", "mts", "cts"]))));
     fs::write(&path, [source.as_bytes(), tail].concat()).unwrap();
 
-    match scan_file(&path, Scope::All) {
+    let rules = Scope::All.into();
+    match scan_file(&path, &rules) {
         Ok(report) => {
             assert!(tail.is_empty());
-            assert_eq!((report.path, report.items), (path, scan(&source, SourceType::ts(), Scope::All).unwrap()));
+            assert_eq!((report.path, report.items), (path, scan(&source, SourceType::ts(), &rules).unwrap()));
         }
         Err(collect::Error::Syntax { path: at, line, .. }) => {
             assert_eq!(tail, SYNTAX_ERROR);
@@ -386,8 +646,9 @@ const ALL_KINDS: [Kind; 11] = [
     Kind::Default,
 ];
 
-fn reports(tc: &TestCase) -> Vec<FileReport> {
-    let item = gs::vecs(gs::integers::<usize>().max_value(ALL_KINDS.len() - 1)).min_size(2).max_size(2);
+/// Generated reports, with `docov-ignore` comments over some items when `ignores` is on.
+fn reports(tc: &TestCase, ignores: bool) -> Vec<FileReport> {
+    let item = gs::vecs(gs::integers::<usize>().max_value(ALL_KINDS.len() - 1)).min_size(3).max_size(3);
     let files = tc.draw(gs::vecs(gs::vecs(item).max_size(6)).max_size(4));
     files
         .into_iter()
@@ -403,6 +664,13 @@ fn reports(tc: &TestCase) -> Vec<FileReport> {
                     line: i / 2 + 1,
                     column: 1,
                     documented: drawn[1] % 2 == 0,
+                    // The comment on the line before, the same for the items that share a line.
+                    ignore: (ignores && drawn[2] % 2 == 0).then(|| Ignore {
+                        reason: (i / 2 % 2 == 1).then(|| "why".into()),
+                        line: i / 2,
+                        column: 1,
+                        file: i / 2 % 3 == 0,
+                    }),
                 })
                 .collect(),
         })
@@ -442,16 +710,11 @@ fn thresholds_are_percentages(tc: TestCase) {
 /// coverage.
 #[hegel::test(test_cases = 100)]
 fn formats_agree_on_totals(tc: TestCase) {
-    let mut files = reports(&tc);
+    let mut files = reports(&tc, false);
     let totals = Totals::of(&files);
     assert!((0.0..=100.0).contains(&totals.percent()));
     assert_eq!(totals.total, files.iter().map(|f| f.items.len()).sum::<usize>());
 
-    let render = |format, files: &[FileReport]| {
-        let mut out = Vec::new();
-        report::write(format, files, &mut out).unwrap();
-        String::from_utf8(out).unwrap()
-    };
     // Every format fails when its output doesn't fit where it's going, and only then.
     for format in [Format::Text, Format::Json, Format::Lcov] {
         let length = render(format, &files).len();
@@ -494,6 +757,135 @@ fn formats_agree_on_totals(tc: TestCase) {
         item.documented = true;
         assert!(Totals::of(&files).percent() > totals.percent());
     }
+}
+
+fn render(format: Format, files: &[FileReport]) -> String {
+    let mut out = Vec::new();
+    report::write(format, files, &mut out).unwrap();
+    String::from_utf8(out).unwrap()
+}
+
+/// An undocumented item under a `docov-ignore` is out of every format's totals and of the text
+/// report, and the JSON report marks it, with its reason. A documented one counts as documented.
+#[hegel::test(test_cases = 100)]
+fn ignored_items_are_out_of_the_totals(tc: TestCase) {
+    let files = reports(&tc, true);
+    let counted = |f: &FileReport| f.items.iter().filter(|i| i.documented || i.ignore.is_none()).count();
+    let totals = Totals::of(&files);
+    assert_eq!(totals.total, files.iter().map(counted).sum::<usize>());
+    assert_eq!(totals.documented, files.iter().flat_map(|f| &f.items).filter(|i| i.documented).count());
+
+    let text = render(Format::Text, &files);
+    let listed = text.lines().filter(|l| l.starts_with("         ")).count();
+    let undocumented = files.iter().flat_map(|f| &f.items).filter(|i| !i.documented && i.ignore.is_none()).count();
+    assert_eq!(listed, undocumented, "{text}");
+    // A file with nothing counted has no line.
+    let headed = text.lines().filter(|l| l.ends_with(".ts") && !l.starts_with("         ")).count();
+    assert_eq!(headed, files.iter().filter(|f| counted(f) > 0).count(), "{text}");
+
+    let json: serde_json::Value = serde_json::from_str(&render(Format::Json, &files)).unwrap();
+    let marks = json["files"].as_array().unwrap().iter().flat_map(|f| f["items"].as_array().unwrap().clone());
+    let wanted = files.iter().flat_map(|f| &f.items).map(|i| {
+        let ignore = i.ignore.as_ref().filter(|_| !i.documented);
+        (ignore.map(|_| true), ignore.and_then(|i| i.reason.clone()))
+    });
+    let marks = marks.map(|m| (m["ignored"].as_bool(), m["reason"].as_str().map(String::from)));
+    assert!(marks.eq(wanted));
+
+    let lcov = render(Format::Lcov, &files);
+    let found: usize = lcov.lines().filter_map(|l| l.strip_prefix("LF:")).map(|n| n.parse::<usize>().unwrap()).sum();
+    let mut lines: Vec<(usize, usize)> = Vec::new();
+    for (f, file) in files.iter().enumerate() {
+        lines.extend(file.items.iter().filter(|i| i.documented || i.ignore.is_none()).map(|i| (f, i.line)));
+    }
+    lines.dedup();
+    assert_eq!(found, lines.len(), "{lcov}");
+}
+
+/// With `--report-unused-ignores`, each `docov-ignore-next-line` whose items are all documented
+/// fails the scan, once, at the comment. Off, or with none, nothing does.
+#[hegel::test(test_cases = 100)]
+fn unused_ignores_fail_the_scan(tc: TestCase) {
+    let files = reports(&tc, true);
+    let mut wanted = Vec::new();
+    for file in &files {
+        // Each comment's line, and whether all its items are documented.
+        let mut comments: Vec<(usize, bool)> = Vec::new();
+        for item in &file.items {
+            let Some(ignore) = item.ignore.as_ref().filter(|i| !i.file) else { continue };
+            match comments.last_mut() {
+                Some((line, all)) if *line == ignore.line => *all &= item.documented,
+                _ => comments.push((ignore.line, item.documented)),
+            }
+        }
+        let unused = comments.iter().filter(|(_, all)| *all);
+        wanted.extend(unused.map(|(line, _)| format!("{}:{line}:1: unused docov-ignore", file.path.display())));
+    }
+    assert_eq!(ReportUnusedIgnores(false).gate(&files), None);
+    let gate = ReportUnusedIgnores(true).gate(&files);
+    assert_eq!(gate, (!wanted.is_empty()).then(|| wanted.join("\n")));
+}
+
+/// The totals by kind add up to the total, one per kind there is, in order. The JSON report has
+/// them, and with `--by-kind` the text report gets a line of them.
+#[hegel::test(test_cases = 100)]
+fn totals_by_kind_add_up(tc: TestCase) {
+    let files = reports(&tc, true);
+    let kinds = Totals::by_kind(&files);
+    let sum = kinds.iter().fold(Totals::default(), |a, (_, b)| Totals {
+        documented: a.documented + b.documented,
+        total: a.total + b.total,
+    });
+    assert_eq!(sum, Totals::of(&files));
+    assert!(kinds.windows(2).all(|pair| pair[0].0 < pair[1].0));
+    assert!(kinds.iter().all(|(_, totals)| totals.total > 0));
+
+    let json: serde_json::Value = serde_json::from_str(&render(Format::Json, &files)).unwrap();
+    let by_kind = json["kinds"].as_object().unwrap();
+    assert_eq!(by_kind.len(), kinds.len());
+    for (kind, totals) in &kinds {
+        let shown = &by_kind[kind.as_str()];
+        assert_eq!(
+            (shown["documented"].as_u64(), shown["total"].as_u64()),
+            (Some(totals.documented as u64), Some(totals.total as u64))
+        );
+        assert_eq!(shown["percent"].as_f64(), Some(totals.percent()));
+    }
+
+    let append = |by_kind: bool, format| {
+        let mut out = Vec::new();
+        Kinds { only: None, by_kind }.append(format, &files, &mut out).unwrap();
+        String::from_utf8(out).unwrap()
+    };
+    let line: Vec<String> = kinds.iter().map(|(k, t)| format!("{} {}/{}", k.as_str(), t.documented, t.total)).collect();
+    assert_eq!(append(true, Format::Text), format!("by kind: {}\n", line.join(", ")));
+    assert_eq!(append(false, Format::Text), "");
+    assert_eq!(append(true, Format::Json), "");
+}
+
+/// Name patterns load as regexes, the same patterns loading the same. One that isn't a regex, or an
+/// `ignore` key docov doesn't know, fails to load, naming it.
+#[hegel::test(test_cases = 10)]
+fn name_patterns_load_as_regexes(tc: TestCase) {
+    let dir = tempfile::tempdir().unwrap();
+    let load = |names: &[&str]| {
+        let path = dir.path().join("names.json");
+        fs::write(&path, serde_json::json!({ "ignore": { "names": names } }).to_string()).unwrap();
+        config::Config::load(Some(&path)).unwrap()
+    };
+    let (a, b) = (tc.draw(gs::sampled_from(vec!["^_", "a|b"])), tc.draw(gs::sampled_from(vec!["^_", "a|b"])));
+    assert_eq!(load(&[a]) == load(&[b]), a == b);
+
+    let (keys, culprit) = tc.draw(gs::sampled_from(vec![
+        (r#"{ "ignore": { "names": ["("] } }"#, "unclosed group"),
+        (r#"{ "ignore": { "names": ["^_", "[z"] } }"#, "unclosed character class"),
+        (r#"{ "ignore": { "nmes": [] } }"#, "unknown field `nmes`"),
+        (r#"{ "ignore": { "names": "^_" } }"#, "invalid type: string"),
+    ]));
+    let path = dir.path().join("docov.json");
+    fs::write(&path, keys).unwrap();
+    let error = config::Config::load(Some(&path)).unwrap_err().to_string();
+    assert!(error.contains(culprit), "{error}");
 }
 
 fn write(dir: &Path, path: &str, text: &str) {
@@ -822,4 +1214,241 @@ fn comments_in_config_files_change_nothing(tc: TestCase) {
     let stray: Vec<_> =
         lines.iter().enumerate().map(|(i, l)| if i == at { format!("/ {l}") } else { (*l).into() }).collect();
     assert!(matches!(load(&stray.join("\n")), Err(config::Error::Slash { .. })));
+}
+
+/// The flags and docov.json keys a generated run sets.
+#[derive(Default)]
+struct Run {
+    args: Vec<String>,
+    keys: serde_json::Map<String, serde_json::Value>,
+}
+
+impl Run {
+    /// Sets a setting by its flag, its key, both or neither, and gives the value the flag or else
+    /// the key set, if either did. `flag` turns a value into the flag's arguments.
+    fn set<T: Clone + std::fmt::Debug + Send + Sync + serde::Serialize + 'static>(
+        &mut self,
+        tc: &TestCase,
+        key: &str,
+        values: Vec<T>,
+        flag: impl Fn(&T) -> Vec<String>,
+    ) -> Option<T> {
+        let from_key = tc.draw(gs::optional(gs::sampled_from(values.clone())));
+        let from_flag = tc.draw(gs::optional(gs::sampled_from(values)));
+        if let Some(value) = &from_key {
+            self.keys.insert(key.into(), serde_json::to_value(value).unwrap());
+        }
+        // A value that makes no arguments is no flag.
+        let from_flag = from_flag.filter(|value| !flag(value).is_empty());
+        if let Some(value) = &from_flag {
+            self.args.extend(flag(value));
+        }
+        from_flag.or(from_key)
+    }
+
+    /// Sets an on-or-off setting by its flag, its key, both or neither, and says whether it's on: a
+    /// flag can only turn it on.
+    fn switch(&mut self, tc: &TestCase, key: &str, flag: &str) -> bool {
+        let on = tc.draw(gs::optional(gs::booleans()));
+        if let Some(on) = on {
+            self.keys.insert(key.into(), on.into());
+        }
+        let flagged = tc.draw(gs::booleans());
+        if flagged {
+            self.args.push(flag.into());
+        }
+        on.unwrap_or_default() || flagged
+    }
+
+    /// The settings the run's flags and docov.json (in `dir`) make, loaded in-process.
+    fn settings(&self, dir: &Path) -> docov::Settings {
+        let path = dir.join("docov.json");
+        fs::write(&path, serde_json::Value::Object(self.keys.clone()).to_string()).unwrap();
+        let keys = config::Config::load(Some(&path)).unwrap().keys;
+        let args = std::iter::once("docov".to_owned()).chain(self.args.iter().cloned());
+        let matches = feature::args(clap::Command::new("docov")).try_get_matches_from(args).unwrap();
+        docov::Settings::new(&matches, keys)
+    }
+}
+
+/// Each rule comes from its flag when there is one, else its docov.json key, else its default.
+#[hegel::test(test_cases = 50)]
+fn rules_come_from_flags_over_the_config(tc: TestCase) {
+    let dir = tempfile::tempdir().unwrap();
+    let mut run = Run::default();
+    let scope = run.set(&tc, "scope", vec![Scope::Exports, Scope::All], |s| {
+        vec!["--scope".into(), serde_json::to_value(s).unwrap().as_str().unwrap().into()]
+    });
+    let require_description = run.switch(&tc, "requireDescription", "--require-description");
+    let tag_lists = vec![vec![], vec!["internal".to_owned()], vec!["ignore".into(), "hidden".into()]];
+    let exclude_tags = run.set(&tc, "excludeTags", tag_lists, |tags| {
+        tags.iter().flat_map(|tag| ["--exclude-tag".to_owned(), tag.clone()]).collect()
+    });
+
+    let kind_lists = vec![vec![Kind::Function], vec![Kind::Class, Kind::Method]];
+    let kinds = run.set(&tc, "kinds", kind_lists, |kinds| {
+        vec!["--kind".into(), kinds.iter().map(|k| k.as_str()).collect::<Vec<_>>().join(",")]
+    });
+    let by_kind = tc.draw(gs::booleans());
+    if by_kind {
+        run.args.push("--by-kind".into());
+    }
+
+    let name_lists = vec![vec!["^_".to_owned()], vec!["^a".into(), "b$".into()]];
+    let names = run.set(&tc, "ignore", name_lists, |names| {
+        names.iter().flat_map(|name| ["--ignore-name".to_owned(), name.clone()]).collect()
+    });
+    // The key is an object.
+    if let Some(names) = run.keys.get_mut("ignore") {
+        *names = serde_json::json!({ "names": names.take() });
+    }
+
+    let level_lists = vec![vec![Access::Public], vec![Access::Protected, Access::Private]];
+    let access = run.set(&tc, "access", level_lists, |levels| {
+        let names: Vec<_> =
+            levels.iter().map(|l| serde_json::to_value(l).unwrap().as_str().unwrap().to_owned()).collect();
+        vec!["--access".into(), names.join(",")]
+    });
+
+    let inherit = run.set(&tc, "inherit", vec![Inherit::Tag, Inherit::Override], |_| vec![]);
+
+    let exports = tc.draw(gs::optional(gs::sampled_from(vec![
+        (serde_json::json!({}), Exports::default()),
+        (serde_json::json!({ "esm": false }), Exports { esm: false, ..Exports::default() }),
+        (serde_json::json!({ "cjs": false, "globals": true }), Exports { esm: true, cjs: false, globals: true }),
+    ])));
+    if let Some((keys, _)) = &exports {
+        run.keys.insert("exports".into(), keys.clone());
+    }
+
+    let ignore_deprecated = run.set(&tc, "ignoreDeprecated", vec![false, true], |_| vec![]);
+    let skip_generated = run.set(&tc, "skipGenerated", vec![false, true], |_| vec![]);
+
+    let settings = run.settings(dir.path());
+    let rules = settings.rules();
+    assert_eq!(
+        (rules.ignore_deprecated, rules.skip_generated),
+        (ignore_deprecated.unwrap_or_default(), skip_generated.unwrap_or_default())
+    );
+    assert_eq!(rules.exports, exports.map_or(Exports::default(), |(_, e)| e));
+    assert_eq!(rules.inherit, inherit.unwrap_or_default());
+    assert_eq!(rules.access, access);
+    let patterns: Vec<&str> = rules.ignore_names.iter().map(regex::Regex::as_str).collect();
+    assert_eq!(patterns, names.unwrap_or_default());
+    assert_eq!(settings.get::<Kinds>().by_kind, by_kind);
+    assert_eq!(rules.kinds, kinds);
+    assert_eq!(*settings.get::<Scope>(), scope.unwrap_or_default());
+    assert_eq!(rules.scope, scope.unwrap_or_default());
+    assert_eq!(rules.require_description, require_description, "{:?}", run.args);
+    assert_eq!(rules.exclude_tags, exclude_tags.unwrap_or_default());
+}
+
+/// Lines put above others are indented and ended like them (a last line with no ending takes the
+/// file's first one), and every other line stays as it was.
+#[hegel::test(test_cases = 200)]
+fn inserted_lines_match_the_line_below(tc: TestCase) {
+    let (indents, endings) = (vec!["", "  ", "\t", " \t "], vec!["\n", "\r\n"]);
+    let count = tc.draw(gs::integers::<usize>().min_value(1).max_value(6));
+    let mut lines = Vec::new();
+    for i in 0..count {
+        let ending =
+            if i + 1 == count && tc.draw(gs::booleans()) { "" } else { tc.draw(gs::sampled_from(endings.clone())) };
+        lines.push((tc.draw(gs::sampled_from(indents.clone())), format!("x{i}"), ending));
+    }
+    let source: String = lines.iter().map(|(indent, text, ending)| format!("{indent}{text}{ending}")).collect();
+    let mut inserts = Vec::new();
+    for line in 1..=count {
+        for _ in 0..tc.draw(gs::integers::<usize>().max_value(2)) {
+            inserts.push((line, tc.draw(gs::sampled_from(vec!["// a", "/**\n * b\n */"]))));
+        }
+    }
+    let first_ending = if lines[0].2.is_empty() { "\n" } else { lines[0].2 };
+    let mut wanted = String::new();
+    for (i, (indent, text, ending)) in lines.iter().enumerate() {
+        let inserted_ending = if ending.is_empty() { first_ending } else { ending };
+        for (_, insert) in inserts.iter().filter(|(line, _)| *line == i + 1) {
+            for insert_line in insert.lines() {
+                wanted.push_str(&format!("{indent}{insert_line}{inserted_ending}"));
+            }
+        }
+        wanted.push_str(&format!("{indent}{text}{ending}"));
+    }
+    assert_eq!(rewrite::insert_above(&source, &inserts), wanted);
+}
+
+/// `--add-ignore` puts a `docov-ignore-next-line` (with the reason given) above each line with an
+/// undocumented item, after which each item is documented or ignored, and running it again adds
+/// none. A file it can't read or write fails, naming it.
+#[hegel::test(test_cases = 50)]
+fn adding_ignores_covers_every_undocumented_item(tc: TestCase) {
+    let Module { source, .. } = Module::generate(&tc);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("m.ts");
+    fs::write(&path, &source).unwrap();
+    let rules = Rules::from(tc.draw(gs::sampled_from(vec![Scope::Exports, Scope::All])));
+    let reason = tc.draw(gs::optional(gs::sampled_from(vec!["", "legacy", " later "])));
+    let mut run = Run::default();
+    run.args.push(reason.map_or("--add-ignore".into(), |r| format!("--add-ignore={r}")));
+    let settings = run.settings(dir.path());
+
+    let before = scan_file(&path, &rules).unwrap();
+    let mut lines: Vec<usize> = before.counted().filter(|i| !i.documented).map(|i| i.line).collect();
+    lines.dedup();
+    let added =
+        |n: usize| Some(Ok(format!("added {n} docov-ignore-next-line comment{}", if n == 1 { "" } else { "s" })));
+    assert_eq!(settings.edit(std::slice::from_ref(&before)), added(lines.len()));
+    let after = scan_file(&path, &rules).unwrap();
+    assert!(after.items.iter().all(|i| i.documented || i.ignored()), "{}", fs::read_to_string(&path).unwrap());
+    let summary = |r: &FileReport| r.items.iter().map(|i| (i.name.clone(), i.documented)).collect::<Vec<_>>();
+    assert_eq!(summary(&after), summary(&before));
+    let reason = reason.map(str::trim).filter(|r| !r.is_empty());
+    let newly: Vec<_> = before.items.iter().zip(&after.items).filter(|(b, _)| !b.documented && !b.ignored()).collect();
+    assert!(newly.iter().all(|(_, a)| a.ignore.as_ref().unwrap().reason.as_deref() == reason));
+    assert_eq!(settings.edit(std::slice::from_ref(&after)), added(0));
+    assert_eq!(AddIgnore(None).edit(std::slice::from_ref(&after)), None);
+
+    // An undocumented item in a file that's gone, or can't be written.
+    let item = Item { name: "a".into(), kind: Kind::Variable, line: 1, column: 1, documented: false, ignore: None };
+    let gone = FileReport { path: dir.path().join("gone.ts"), items: vec![item.clone()] };
+    let locked = FileReport { path: dir.path().join("locked.ts"), items: vec![item] };
+    fs::write(&locked.path, "export const a = 1;\n").unwrap();
+    let mut permissions = fs::metadata(&locked.path).unwrap().permissions();
+    permissions.set_readonly(true);
+    fs::set_permissions(&locked.path, permissions).unwrap();
+    for report in [gone, locked] {
+        let error = settings.edit(std::slice::from_ref(&report)).unwrap().unwrap_err();
+        assert!(error.starts_with(&format!("{}: ", report.path.display())), "{error}");
+    }
+}
+
+/// From the command line, `--add-ignore` writes the comments and reports nothing else, and a file
+/// it can't write fails the run.
+#[hegel::test(test_cases = 5)]
+fn add_ignore_runs_from_the_command_line(tc: TestCase) {
+    let dir = tempfile::tempdir().unwrap();
+    let count = tc.draw(gs::integers::<usize>().min_value(1).max_value(3));
+    for f in 0..count {
+        write(dir.path(), &format!("f{f}.ts"), "export const a = 1;\n");
+    }
+    let docov =
+        |args: &[&str]| Command::new(env!("CARGO_BIN_EXE_docov")).args(args).current_dir(dir.path()).output().unwrap();
+    let out = docov(&["--add-ignore=legacy"]);
+    let message = format!("docov: added {count} docov-ignore-next-line comment{}\n", if count == 1 { "" } else { "s" });
+    assert_eq!(
+        (out.status.code(), out.stdout.is_empty(), String::from_utf8(out.stderr).unwrap()),
+        (Some(0), true, message)
+    );
+    assert_eq!(
+        fs::read_to_string(dir.path().join("f0.ts")).unwrap(),
+        "// docov-ignore-next-line: legacy\nexport const a = 1;\n"
+    );
+
+    write(dir.path(), "locked.ts", "export const b = 1;\n");
+    let mut permissions = fs::metadata(dir.path().join("locked.ts")).unwrap().permissions();
+    permissions.set_readonly(true);
+    fs::set_permissions(dir.path().join("locked.ts"), permissions).unwrap();
+    let out = docov(&["--add-ignore"]);
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert_eq!(out.status.code(), Some(2), "{stderr}");
+    assert!(stderr.starts_with("docov: locked.ts: "), "{stderr}");
 }
