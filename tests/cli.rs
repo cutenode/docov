@@ -3,7 +3,15 @@
 use std::{fs, path::Path, process::Command};
 
 fn docov(dir: &Path, args: &[&str]) -> (i32, String, String) {
-    let out = Command::new(env!("CARGO_BIN_EXE_docov")).args(args).current_dir(dir).output().unwrap();
+    docov_in(dir, args, &[])
+}
+
+/// docov with these environment variables, and without GITHUB_ACTIONS unless they set it: CI
+/// would otherwise add annotations to the output.
+fn docov_in(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> (i32, String, String) {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_docov"));
+    command.env_remove("GITHUB_ACTIONS").envs(env.iter().copied());
+    let out = command.args(args).current_dir(dir).output().unwrap();
     let text = |b: Vec<u8>| String::from_utf8(b).unwrap();
     (out.status.code().unwrap(), text(out.stdout), text(out.stderr))
 }
@@ -190,6 +198,19 @@ fn several_formats_go_to_stdout_and_their_files_from_one_scan() {
     let (code, _, err) = docov(dir.path(), &["--format", "html"]);
     assert_eq!(code, 2);
     assert!(err.contains("unknown format `html`, expected one of: "), "{err}");
+}
+
+#[test]
+fn github_actions_get_annotations_after_the_text() {
+    let dir = project();
+    let (_, text, _) = docov(dir.path(), &["--threshold", "70"]);
+    let (code, out, _) = docov_in(dir.path(), &["--threshold", "70"], &[("GITHUB_ACTIONS", "true")]);
+    let annotations = "::warning file=src/a.ts,line=3,col=1,title=docov::variable b is undocumented\n\
+        ::error title=docov::66.7%25 documented, under the 70%25 threshold\n";
+    assert_eq!((code, out), (1, format!("{text}{annotations}")));
+    // Only without a --format.
+    let (_, json, _) = docov(dir.path(), &["--format", "json"]);
+    assert_eq!(docov_in(dir.path(), &["--format", "json"], &[("GITHUB_ACTIONS", "true")]).1, json);
 }
 
 #[test]

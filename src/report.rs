@@ -4,12 +4,12 @@
 use std::{
     fs,
     io::{self, Write},
-    path::PathBuf,
+    path::{MAIN_SEPARATOR, Path, PathBuf},
 };
 
 use serde::Serialize;
 
-use crate::FileReport;
+use crate::{FileReport, Item};
 
 include!(concat!(env!("OUT_DIR"), "/formats.rs"));
 
@@ -51,6 +51,23 @@ fn help() -> String {
 pub struct Context<'a> {
     /// Each file's items.
     pub files: &'a [FileReport],
+    /// Why the scan fails, a message for each failed gate.
+    pub failures: &'a [String],
+}
+
+/// `path` with `/` between its parts, as URLs and CI services want it, on Windows too.
+fn slash(path: &Path) -> String {
+    path.display().to_string().replace(MAIN_SEPARATOR, "/")
+}
+
+/// Each undocumented item, with its file.
+fn undocumented(files: &[FileReport]) -> impl Iterator<Item = (&FileReport, &Item)> {
+    files.iter().flat_map(|file| file.items.iter().filter(|item| !item.documented).map(move |item| (file, item)))
+}
+
+/// What a finding at an undocumented item says: `function a is undocumented`.
+fn message(item: &Item) -> String {
+    format!("{} {} is undocumented", item.kind.as_str(), item.name)
 }
 
 /// How many items are documented, out of how many.
@@ -110,9 +127,10 @@ pub struct Flags {
 }
 
 impl Flags {
-    /// Each format and where it goes: text without a `--format`, and `--output` for the one
-    /// format without a file of its own.
-    pub fn outputs(&self) -> Result<Vec<Output>, String> {
+    /// Each format and where it goes: text without a `--format`, and GitHub annotations too when
+    /// `github_actions`, which go to stdout for the runner to read. `--output` is the file for the
+    /// one format without a file of its own.
+    pub fn outputs(&self, github_actions: bool) -> Result<Vec<Output>, String> {
         let text = Output { format: format("text").expect("text is a format"), path: None };
         let mut outputs = if self.format.is_empty() { vec![text] } else { self.format.clone() };
         if let Some(file) = &self.output {
@@ -121,6 +139,9 @@ impl Flags {
                 return Err("--output needs exactly one --format without a file".into());
             };
             output.path = Some(file.clone());
+        }
+        if self.format.is_empty() && github_actions {
+            outputs.push(Output { format: format("github").expect("github is a format"), path: None });
         }
         Ok(outputs)
     }

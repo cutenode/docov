@@ -386,19 +386,29 @@ const ALL_KINDS: [Kind; 11] = [
     Kind::Default,
 ];
 
+/// Names and paths with what each format has to escape: separators, markup and quotes.
+const NAMES: [&str; 5] = ["n", "C.m", "[`k`]", "[a, b]", "p|q*_<&>%:\"'"];
+const FOLDERS: [&str; 4] = ["", "src/", "src/deep/", "a b/"];
+const FILE_NAMES: [&str; 4] = ["", ",%:", "<&>'\"", "`|`"];
+
+/// Up to four files of up to six items, two to a line, with names and paths to escape.
 fn reports(tc: &TestCase) -> Vec<FileReport> {
-    let item = gs::vecs(gs::integers::<usize>().max_value(ALL_KINDS.len() - 1)).min_size(2).max_size(2);
+    let item = gs::vecs(gs::integers::<usize>().max_value(ALL_KINDS.len() - 1)).min_size(3).max_size(3);
     let files = tc.draw(gs::vecs(gs::vecs(item).max_size(6)).max_size(4));
     files
         .into_iter()
         .enumerate()
         .map(|(f, items)| FileReport {
-            path: PathBuf::from(format!("f{f}.ts")),
+            path: PathBuf::from(format!(
+                "{}f{f}{}.ts",
+                tc.draw(gs::sampled_from(FOLDERS.to_vec())),
+                tc.draw(gs::sampled_from(FILE_NAMES.to_vec()))
+            )),
             items: items
                 .into_iter()
                 .enumerate()
                 .map(|(i, drawn)| Item {
-                    name: format!("n{i}"),
+                    name: format!("{}{i}", NAMES[drawn[2] % NAMES.len()]),
                     kind: ALL_KINDS[drawn[0]],
                     line: i / 2 + 1,
                     column: 1,
@@ -407,6 +417,31 @@ fn reports(tc: &TestCase) -> Vec<FileReport> {
                 .collect(),
         })
         .collect()
+}
+
+/// Messages from failed gates, with what formats have to escape.
+const FAILURES: [&str; 4] = [
+    "66.7% documented, under the 80% threshold",
+    "two\nlines\r\n",
+    "100%: a, b",
+    "*bold* _it_ <b> | `c` [l](u) & # ~ \\",
+];
+
+/// What a format reports from, drawn.
+struct Drawn {
+    files: Vec<FileReport>,
+    failures: Vec<String>,
+}
+
+impl Drawn {
+    fn draw(tc: &TestCase) -> Self {
+        let failures = tc.draw(gs::vecs(gs::sampled_from(FAILURES.to_vec())).max_size(2));
+        Self { files: reports(tc), failures: failures.into_iter().map(String::from).collect() }
+    }
+
+    fn context(&self) -> Context<'_> {
+        Context { files: &self.files, failures: &self.failures }
+    }
 }
 
 /// A writer with room for this many bytes, failing a write that doesn't fit.
@@ -473,12 +508,12 @@ fn format_flags_name_a_format_and_maybe_a_file(tc: TestCase) {
 
 /// Each format goes to its file, folders made, or else to stdout, one after another; `--output` is
 /// the file for the one format without its own, and an error without exactly one. With no
-/// `--format`, it's text. A file that can't be written fails, naming it.
+/// `--format`, it's text, and GitHub annotations too in GitHub Actions. A file that can't be written fails, naming it.
 #[hegel::test(test_cases = 50)]
 fn outputs_go_where_the_flags_send_them(tc: TestCase) {
     let dir = tempfile::tempdir().unwrap();
-    let files = reports(&tc);
-    let context = Context { files: &files };
+    let drawn = Drawn::draw(&tc);
+    let context = drawn.context();
     let names: Vec<&str> = report::FORMATS.iter().map(|f| f.name).collect();
     let mut format = Vec::new();
     for i in 0..tc.draw(gs::integers::<usize>().max_value(3)) {
@@ -488,8 +523,9 @@ fn outputs_go_where_the_flags_send_them(tc: TestCase) {
     }
     let output = tc.draw(gs::booleans()).then(|| dir.path().join("out/o.txt"));
     let unnamed = if format.is_empty() { 1 } else { format.iter().filter(|o| o.path.is_none()).count() };
+    let github_actions = tc.draw(gs::booleans());
     let flags = report::Flags { format: format.clone(), output: output.clone() };
-    let outputs = match flags.outputs() {
+    let outputs = match flags.outputs(github_actions) {
         Err(e) => {
             assert!(output.is_some() && unnamed != 1, "{e}");
             assert_eq!(e, "--output needs exactly one --format without a file");
@@ -500,13 +536,15 @@ fn outputs_go_where_the_flags_send_them(tc: TestCase) {
     assert!(output.is_none() || unnamed == 1);
     let named: Vec<&str> = outputs.iter().map(|o| o.format.name).collect();
     if format.is_empty() {
-        assert_eq!(named, ["text"]);
+        assert_eq!(named, if github_actions { &["text", "github"][..] } else { &["text"] });
     } else {
         assert_eq!(named, format.iter().map(|o| o.format.name).collect::<Vec<_>>());
     }
     let sent_to_output = outputs.iter().filter(|o| o.path.is_some() && o.path == output).count();
     assert_eq!(sent_to_output, usize::from(output.is_some()));
-    assert!(output.is_none() || outputs.iter().all(|o| o.path.is_some()));
+    // With `--output`, only GitHub's annotations still go to stdout, where the runner reads them.
+    let left = outputs.iter().filter(|o| o.path.is_none()).map(|o| o.format.name).collect::<Vec<_>>();
+    assert!(output.is_none() || left.is_empty() || (format.is_empty() && left == ["github"]), "{left:?}");
 
     let mut stdout = Vec::new();
     report::write(&outputs, &context, &mut stdout).unwrap();
@@ -527,6 +565,43 @@ fn outputs_go_where_the_flags_send_them(tc: TestCase) {
     }
 }
 
+/// Undoes GitHub's workflow command escaping.
+fn unescape_github(text: &str) -> String {
+    text.replace("%2C", ",").replace("%3A", ":").replace("%0A", "\n").replace("%0D", "\r").replace("%25", "%")
+}
+
+/// `github` writes one command per line: a warning at each undocumented item, then an error for
+/// each failed gate. Its properties and messages come back as they were once unescaped.
+#[hegel::test(test_cases = 100)]
+fn github_annotates_each_undocumented_item_and_failure(tc: TestCase) {
+    let drawn = Drawn::draw(&tc);
+    let out = report::format("github").unwrap().render(&drawn.context());
+    let undocumented = drawn.files.iter().flat_map(|f| f.items.iter().filter(|i| !i.documented).map(move |i| (f, i)));
+    let mut wanted: Vec<String> = undocumented
+        .map(|(f, i)| {
+            let path = f.path.display().to_string().replace(std::path::MAIN_SEPARATOR, "/");
+            format!(
+                "warning file={path} line={} col={} title=docov {} {} is undocumented",
+                i.line,
+                i.column,
+                i.kind.as_str(),
+                i.name
+            )
+        })
+        .collect();
+    wanted.extend(drawn.failures.iter().map(|f| format!("error title=docov {f}")));
+    let read: Vec<String> = out
+        .lines()
+        .map(|line| {
+            let (command, message) = line.strip_prefix("::").unwrap().split_once("::").unwrap();
+            let (name, properties) = command.split_once(' ').unwrap();
+            let properties: Vec<String> = properties.split(',').map(unescape_github).collect();
+            format!("{name} {} {}", properties.join(" "), unescape_github(message))
+        })
+        .collect();
+    assert_eq!(read, wanted, "{out}");
+}
+
 /// Every format reports the same items and totals, and documenting one more item never lowers
 /// coverage.
 #[hegel::test(test_cases = 100)]
@@ -536,12 +611,13 @@ fn formats_agree_on_totals(tc: TestCase) {
     assert!((0.0..=100.0).contains(&totals.percent()));
     assert_eq!(totals.total, files.iter().map(|f| f.items.len()).sum::<usize>());
 
-    let render = |name, files: &[FileReport]| report::format(name).unwrap().render(&Context { files });
+    let render = |name, files: &[FileReport]| report::format(name).unwrap().render(&Context { files, failures: &[] });
     // Every format fails when its output doesn't fit where it's going, and only then.
     for format in report::FORMATS {
-        let length = format.render(&Context { files: &files }).len();
+        let context = Context { files: &files, failures: &[] };
+        let length = format.render(&context).len();
         let room = tc.draw(gs::integers::<usize>().max_value(length + 1));
-        let result = report::write(&[Output { format, path: None }], &Context { files: &files }, &mut Room(room));
+        let result = report::write(&[Output { format, path: None }], &context, &mut Room(room));
         assert_eq!(result.is_err(), room < length, "{} in {room} of {length} bytes", format.name);
     }
     let json: serde_json::Value = serde_json::from_str(&render("json", &files)).unwrap();
@@ -683,8 +759,10 @@ fn the_cli_counts_the_project_and_fails_by_the_threshold(tc: TestCase) {
     let totals = Totals { documented: scanned.iter().map(|f| f.1).sum(), total: scanned.iter().map(|f| f.2).sum() };
     let threshold = tc.draw(gs::optional(gs::integers::<u8>().max_value(100))).map(f64::from);
     let threshold = threshold.map(|t| if tc.draw(gs::booleans()) { totals.percent() } else { t });
-    let format = tc.draw(gs::sampled_from(vec!["text", "json", "lcov"]));
-    let mut args = vec!["--format".to_owned(), format.into()];
+    // No `--format` is text, with GitHub annotations after it in GitHub Actions.
+    let format = tc.draw(gs::sampled_from(vec!["text", "json", "lcov", "default"]));
+    let github_actions = format == "default" && tc.draw(gs::booleans());
+    let mut args = if format == "default" { vec![] } else { vec!["--format".to_owned(), format.into()] };
     let scope_name = if scope == Scope::All { "all" } else { "exports" };
     // `paths` is the config's own folder, the project's, from wherever docov runs.
     let config =
@@ -737,6 +815,11 @@ fn the_cli_counts_the_project_and_fails_by_the_threshold(tc: TestCase) {
     fs::create_dir_all(&cwd).unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_docov"));
     command.args(&args).current_dir(cwd);
+    if github_actions {
+        command.env("GITHUB_ACTIONS", "true");
+    } else {
+        command.env_remove("GITHUB_ACTIONS");
+    }
     // A pipe whose reader has gone (`docov | head` after head exits): writes to it fail.
     let unwritable = tc.draw(gs::weighted_booleans(0.1));
     if unwritable {
@@ -777,7 +860,12 @@ fn the_cli_counts_the_project_and_fails_by_the_threshold(tc: TestCase) {
             );
         }
         "lcov" => assert_eq!(stdout.matches("SF:").count(), scanned.len()),
-        _ => assert!(stdout.ends_with(&format!("{documented}/{total}  total\n")), "{stdout}"),
+        _ => {
+            let (text, annotations) = stdout.split_at(stdout.find("::").unwrap_or(stdout.len()));
+            assert!(text.ends_with(&format!("{documented}/{total}  total\n")), "{stdout}");
+            let wanted = if github_actions { total - documented + usize::from(!passed) } else { 0 };
+            assert_eq!(annotations.lines().count(), wanted, "{stdout}");
+        }
     }
 }
 

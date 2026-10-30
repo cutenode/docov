@@ -1,6 +1,6 @@
 //! The `docov` command.
 
-use std::{io, path::PathBuf, process::ExitCode};
+use std::{env, io, path::PathBuf, process::ExitCode};
 
 use clap::{CommandFactory, FromArgMatches, Parser};
 use docov::{Config, Scope, Settings, feature, report, scan_file, walk};
@@ -45,7 +45,9 @@ fn main() -> ExitCode {
 
 /// Scans and reports, and says whether coverage met the threshold.
 fn run(cli: Cli, matches: &clap::ArgMatches) -> Result<bool, Vec<String>> {
-    let outputs = cli.report.outputs().map_err(|e| vec![e])?;
+    // GitHub Actions sets it, and reads annotations from the output.
+    let github_actions = env::var_os("GITHUB_ACTIONS").is_some_and(|value| value == "true");
+    let outputs = cli.report.outputs(github_actions).map_err(|e| vec![e])?;
     let mut config = Config::load(cli.config.as_deref()).map_err(|e| vec![e.to_string()])?;
     let settings = Settings::new(matches, std::mem::take(&mut config.keys));
     // The config's paths are relative to its folder. Collecting the components drops `.` parts after
@@ -62,9 +64,9 @@ fn run(cli: Cli, matches: &clap::ArgMatches) -> Result<bool, Vec<String>> {
     if !errors.is_empty() {
         return Err(errors);
     }
-    report::write(&outputs, &report::Context { files: &reports }, &mut io::stdout().lock()).map_err(|e| vec![e])?;
-
     let failures = settings.gates(&reports);
+    let context = report::Context { files: &reports, failures: &failures };
+    report::write(&outputs, &context, &mut io::stdout().lock()).map_err(|e| vec![e])?;
     for failure in &failures {
         eprintln!("docov: {failure}");
     }
