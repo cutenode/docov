@@ -2227,8 +2227,7 @@ fn the_public_scope_needs_a_package(tc: TestCase) {
     let root = dir.path();
     write(root, "src/index.ts", "/** A. */\nexport const a = 1;\nexport const b = 1;\n");
     write(root, "src/other.ts", "export const c = 1;\n");
-    let docov =
-        |args: &[&str]| Command::new(env!("CARGO_BIN_EXE_docov")).args(args).current_dir(root).output().unwrap();
+    let docov = |args: &[&str]| docov_command().args(args).current_dir(root).output().unwrap();
     let broken = tc.draw(gs::booleans());
     if broken {
         let errors = docov::public::Api::load(&root.join("src"), &[root.join("src")]).unwrap_err();
@@ -2317,7 +2316,7 @@ fn explain_runs_from_the_command_line(tc: TestCase) {
     let doc = if documented { "/** A. */\n" } else { "" };
     write(dir.path(), "a.ts", &format!("{doc}export const a = 1;\nexport * from './b';\n"));
     let docov = |args: &[&str]| {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_docov"));
+        let mut command = docov_command();
         command.args(args).current_dir(dir.path());
         command
     };
