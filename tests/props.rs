@@ -2,10 +2,10 @@
 
 use std::{fs, path::Path, path::PathBuf, process::Command};
 
-use docov::feature::{Feature, report_unused_ignores::ReportUnusedIgnores};
+use docov::feature::{Feature, add_ignore::AddIgnore, report_unused_ignores::ReportUnusedIgnores};
 use docov::{
-    FileReport, Format, Item, Kind, Rules, Scope, Totals, collect, collect::Ignore, config, feature, report, scan,
-    scan_file,
+    FileReport, Format, Item, Kind, Rules, Scope, Totals, collect, collect::Ignore, config, feature, report, rewrite,
+    scan, scan_file,
 };
 use hegel::{TestCase, generators as gs};
 use oxc_span::SourceType;
@@ -1107,4 +1107,114 @@ fn rules_come_from_flags_over_the_config(tc: TestCase) {
     assert_eq!(rules.scope, scope.unwrap_or_default());
     assert_eq!(rules.require_description, require_description, "{:?}", run.args);
     assert_eq!(rules.exclude_tags, exclude_tags.unwrap_or_default());
+}
+
+/// Lines put above others are indented and ended like them (a last line with no ending takes the
+/// file's first one), and every other line stays as it was.
+#[hegel::test(test_cases = 200)]
+fn inserted_lines_match_the_line_below(tc: TestCase) {
+    let (indents, endings) = (vec!["", "  ", "\t", " \t "], vec!["\n", "\r\n"]);
+    let count = tc.draw(gs::integers::<usize>().min_value(1).max_value(6));
+    let mut lines = Vec::new();
+    for i in 0..count {
+        let ending =
+            if i + 1 == count && tc.draw(gs::booleans()) { "" } else { tc.draw(gs::sampled_from(endings.clone())) };
+        lines.push((tc.draw(gs::sampled_from(indents.clone())), format!("x{i}"), ending));
+    }
+    let source: String = lines.iter().map(|(indent, text, ending)| format!("{indent}{text}{ending}")).collect();
+    let mut inserts = Vec::new();
+    for line in 1..=count {
+        for _ in 0..tc.draw(gs::integers::<usize>().max_value(2)) {
+            inserts.push((line, tc.draw(gs::sampled_from(vec!["// a", "/**\n * b\n */"]))));
+        }
+    }
+    let first_ending = if lines[0].2.is_empty() { "\n" } else { lines[0].2 };
+    let mut wanted = String::new();
+    for (i, (indent, text, ending)) in lines.iter().enumerate() {
+        let inserted_ending = if ending.is_empty() { first_ending } else { ending };
+        for (_, insert) in inserts.iter().filter(|(line, _)| *line == i + 1) {
+            for insert_line in insert.lines() {
+                wanted.push_str(&format!("{indent}{insert_line}{inserted_ending}"));
+            }
+        }
+        wanted.push_str(&format!("{indent}{text}{ending}"));
+    }
+    assert_eq!(rewrite::insert_above(&source, &inserts), wanted);
+}
+
+/// `--add-ignore` puts a `docov-ignore-next-line` (with the reason given) above each line with an
+/// undocumented item, after which each item is documented or ignored, and running it again adds
+/// none. A file it can't read or write fails, naming it.
+#[hegel::test(test_cases = 50)]
+fn adding_ignores_covers_every_undocumented_item(tc: TestCase) {
+    let Module { source, .. } = Module::generate(&tc);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("m.ts");
+    fs::write(&path, &source).unwrap();
+    let rules = Rules::from(tc.draw(gs::sampled_from(vec![Scope::Exports, Scope::All])));
+    let reason = tc.draw(gs::optional(gs::sampled_from(vec!["", "legacy", " later "])));
+    let mut run = Run::default();
+    run.args.push(reason.map_or("--add-ignore".into(), |r| format!("--add-ignore={r}")));
+    let settings = run.settings(dir.path());
+
+    let before = scan_file(&path, &rules).unwrap();
+    let mut lines: Vec<usize> = before.counted().filter(|i| !i.documented).map(|i| i.line).collect();
+    lines.dedup();
+    let added =
+        |n: usize| Some(Ok(format!("added {n} docov-ignore-next-line comment{}", if n == 1 { "" } else { "s" })));
+    assert_eq!(settings.edit(std::slice::from_ref(&before)), added(lines.len()));
+    let after = scan_file(&path, &rules).unwrap();
+    assert!(after.items.iter().all(|i| i.documented || i.ignored()), "{}", fs::read_to_string(&path).unwrap());
+    let summary = |r: &FileReport| r.items.iter().map(|i| (i.name.clone(), i.documented)).collect::<Vec<_>>();
+    assert_eq!(summary(&after), summary(&before));
+    let reason = reason.map(str::trim).filter(|r| !r.is_empty());
+    let newly: Vec<_> = before.items.iter().zip(&after.items).filter(|(b, _)| !b.documented && !b.ignored()).collect();
+    assert!(newly.iter().all(|(_, a)| a.ignore.as_ref().unwrap().reason.as_deref() == reason));
+    assert_eq!(settings.edit(std::slice::from_ref(&after)), added(0));
+    assert_eq!(AddIgnore(None).edit(std::slice::from_ref(&after)), None);
+
+    // An undocumented item in a file that's gone, or can't be written.
+    let item = Item { name: "a".into(), kind: Kind::Variable, line: 1, column: 1, documented: false, ignore: None };
+    let gone = FileReport { path: dir.path().join("gone.ts"), items: vec![item.clone()] };
+    let locked = FileReport { path: dir.path().join("locked.ts"), items: vec![item] };
+    fs::write(&locked.path, "export const a = 1;\n").unwrap();
+    let mut permissions = fs::metadata(&locked.path).unwrap().permissions();
+    permissions.set_readonly(true);
+    fs::set_permissions(&locked.path, permissions).unwrap();
+    for report in [gone, locked] {
+        let error = settings.edit(std::slice::from_ref(&report)).unwrap().unwrap_err();
+        assert!(error.starts_with(&format!("{}: ", report.path.display())), "{error}");
+    }
+}
+
+/// From the command line, `--add-ignore` writes the comments and reports nothing else, and a file
+/// it can't write fails the run.
+#[hegel::test(test_cases = 5)]
+fn add_ignore_runs_from_the_command_line(tc: TestCase) {
+    let dir = tempfile::tempdir().unwrap();
+    let count = tc.draw(gs::integers::<usize>().min_value(1).max_value(3));
+    for f in 0..count {
+        write(dir.path(), &format!("f{f}.ts"), "export const a = 1;\n");
+    }
+    let docov =
+        |args: &[&str]| Command::new(env!("CARGO_BIN_EXE_docov")).args(args).current_dir(dir.path()).output().unwrap();
+    let out = docov(&["--add-ignore=legacy"]);
+    let message = format!("docov: added {count} docov-ignore-next-line comment{}\n", if count == 1 { "" } else { "s" });
+    assert_eq!(
+        (out.status.code(), out.stdout.is_empty(), String::from_utf8(out.stderr).unwrap()),
+        (Some(0), true, message)
+    );
+    assert_eq!(
+        fs::read_to_string(dir.path().join("f0.ts")).unwrap(),
+        "// docov-ignore-next-line: legacy\nexport const a = 1;\n"
+    );
+
+    write(dir.path(), "locked.ts", "export const b = 1;\n");
+    let mut permissions = fs::metadata(dir.path().join("locked.ts")).unwrap().permissions();
+    permissions.set_readonly(true);
+    fs::set_permissions(dir.path().join("locked.ts"), permissions).unwrap();
+    let out = docov(&["--add-ignore"]);
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert_eq!(out.status.code(), Some(2), "{stderr}");
+    assert!(stderr.starts_with("docov: locked.ts: "), "{stderr}");
 }

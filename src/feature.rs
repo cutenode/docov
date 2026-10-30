@@ -33,6 +33,12 @@ pub trait Feature: Sized + Send + Sync + 'static {
     fn gate(&self, _reports: &[FileReport]) -> Option<String> {
         None
     }
+
+    /// Edits the scanned files in place of a report, when this setting asks for that, and says
+    /// what it did, or why it couldn't (exit 2).
+    fn edit(&self, _reports: &[FileReport]) -> Option<Result<String, String>> {
+        None
+    }
 }
 
 /// A feature, registered.
@@ -127,6 +133,7 @@ trait Loaded: Send + Sync {
     fn as_any(&self) -> &dyn Any;
     fn rules(&self, rules: &mut Rules);
     fn gate(&self, reports: &[FileReport]) -> Option<String>;
+    fn edit(&self, reports: &[FileReport]) -> Option<Result<String, String>>;
 }
 
 impl<F: Feature> Loaded for F {
@@ -138,6 +145,9 @@ impl<F: Feature> Loaded for F {
     }
     fn gate(&self, reports: &[FileReport]) -> Option<String> {
         Feature::gate(self, reports)
+    }
+    fn edit(&self, reports: &[FileReport]) -> Option<Result<String, String>> {
+        Feature::edit(self, reports)
     }
 }
 
@@ -162,6 +172,11 @@ impl Settings {
             feature.rules(&mut rules);
         }
         rules
+    }
+
+    /// What the first feature that edits the files in place of a report did, if one does.
+    pub fn edit(&self, reports: &[FileReport]) -> Option<Result<String, String>> {
+        self.0.iter().find_map(|f| f.edit(reports))
     }
 
     /// Why the scan fails, from each feature that fails it.

@@ -62,6 +62,10 @@ fn run(cli: Cli, matches: &clap::ArgMatches) -> Result<bool, Vec<String>> {
     if !errors.is_empty() {
         return Err(errors);
     }
+    if let Some(edited) = settings.edit(&reports) {
+        eprintln!("docov: {}", edited.map_err(|e| vec![e])?);
+        return Ok(true);
+    }
     report::write(cli.format, &reports, &mut io::stdout().lock()).map_err(|e| vec![e.to_string()])?;
 
     let failures = settings.gates(&reports);
