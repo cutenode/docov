@@ -240,6 +240,13 @@ fn benchmark_is_the_total_for_github_action_benchmark() {
 }
 
 #[test]
+fn unix_writes_a_warning_line_per_undocumented_item() {
+    let (_, out, _) = docov(project().path(), &["--format", "unix"]);
+    let a = Path::new("src").join("a.ts");
+    assert_eq!(out, format!("{}:3:1: variable b undocumented [docov]\n", a.display()));
+}
+
+#[test]
 fn the_checked_in_schema_is_current() {
     let dir = tempfile::tempdir().unwrap();
     let (code, out, _) = docov(dir.path(), &["--print-schema"]);

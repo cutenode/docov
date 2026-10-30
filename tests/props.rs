@@ -958,6 +958,19 @@ fn benchmark_is_the_total(tc: TestCase) {
     assert_eq!(benchmark, serde_json::json!([{ "name": "docov", "unit": "%", "value": percent }]));
 }
 
+/// `unix` is a line per undocumented item, the way compilers write warnings.
+#[hegel::test(test_cases = 50)]
+fn unix_is_a_line_per_undocumented_item(tc: TestCase) {
+    let drawn = Drawn::draw(&tc);
+    let undocumented = drawn.files.iter().flat_map(|f| f.items.iter().filter(|i| !i.documented).map(move |i| (f, i)));
+    let wanted: Vec<String> = undocumented
+        .map(|(f, i)| {
+            format!("{}:{}:{}: {} {} undocumented [docov]", f.path.display(), i.line, i.column, i.kind.as_str(), i.name)
+        })
+        .collect();
+    assert_eq!(report::format("unix").unwrap().render(&drawn.context()).lines().collect::<Vec<_>>(), wanted);
+}
+
 /// Every format reports the same items and totals, and documenting one more item never lowers
 /// coverage.
 #[hegel::test(test_cases = 100)]
