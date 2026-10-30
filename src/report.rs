@@ -59,6 +59,20 @@ pub struct Context<'a> {
     pub now: SystemTime,
     /// The threshold, which badges are colored by.
     pub threshold: Option<f64>,
+    /// How much `text` shows.
+    pub text: Text,
+}
+
+/// How much `text` shows.
+#[derive(Clone, Copy, Debug, Default, clap::Args)]
+#[group(skip)]
+pub struct Text {
+    /// Leave fully documented files out of the text report
+    #[arg(long)]
+    pub omit_covered: bool,
+    /// Print only the total, and why the scan fails, in the text report
+    #[arg(long)]
+    pub quiet: bool,
 }
 
 /// `path` with `/` between its parts, as URLs and CI services want it, on Windows too.
@@ -179,6 +193,9 @@ pub struct Flags {
     /// Write an SVG badge of the total to FILE, as `--format badge=FILE` does
     #[arg(long, value_name = "FILE")]
     pub badge: Option<PathBuf>,
+    #[expect(missing_docs, reason = "clap shows the fields' docs")]
+    #[command(flatten)]
+    pub text: Text,
 }
 
 impl Flags {

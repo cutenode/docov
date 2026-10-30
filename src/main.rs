@@ -66,7 +66,8 @@ fn run(cli: Cli, matches: &clap::ArgMatches) -> Result<bool, Vec<String>> {
     }
     let failures = settings.gates(&reports);
     let threshold = settings.get::<Threshold>().0;
-    let context = report::Context { files: &reports, failures: &failures, now: SystemTime::now(), threshold };
+    let (now, text) = (SystemTime::now(), cli.report.text);
+    let context = report::Context { files: &reports, failures: &failures, now, threshold, text };
     report::write(&outputs, &context, &mut io::stdout().lock()).map_err(|e| vec![e])?;
     for failure in &failures {
         eprintln!("docov: {failure}");

@@ -439,6 +439,7 @@ struct Drawn {
     /// When the scan ran, in milliseconds since 1970.
     now_ms: u64,
     threshold: Option<f64>,
+    text: report::Text,
 }
 
 impl Drawn {
@@ -446,7 +447,13 @@ impl Drawn {
         let failures = tc.draw(gs::vecs(gs::sampled_from(FAILURES.to_vec())).max_size(2));
         let now_ms = tc.draw(gs::integers::<u64>().max_value(4_000_000_000_000));
         let threshold = tc.draw(gs::optional(gs::integers::<u8>().max_value(100))).map(f64::from);
-        Self { files: reports(tc), failures: failures.into_iter().map(String::from).collect(), now_ms, threshold }
+        Self {
+            files: reports(tc),
+            failures: failures.into_iter().map(String::from).collect(),
+            now_ms,
+            threshold,
+            text: report::Text::default(),
+        }
     }
 
     fn context(&self) -> Context<'_> {
@@ -455,6 +462,7 @@ impl Drawn {
             failures: &self.failures,
             now: UNIX_EPOCH + Duration::from_millis(self.now_ms),
             threshold: self.threshold,
+            text: self.text,
         }
     }
 }
@@ -540,7 +548,8 @@ fn outputs_go_where_the_flags_send_them(tc: TestCase) {
     let unnamed = if format.is_empty() { 1 } else { format.iter().filter(|o| o.path.is_none()).count() };
     let github_actions = tc.draw(gs::booleans());
     let badge = tc.draw(gs::booleans()).then(|| dir.path().join("badge.svg"));
-    let flags = report::Flags { format: format.clone(), output: output.clone(), badge: badge.clone() };
+    let flags =
+        report::Flags { format: format.clone(), output: output.clone(), badge: badge.clone(), text: drawn.text };
     let outputs = match flags.outputs(github_actions) {
         Err(e) => {
             assert!(output.is_some() && unnamed != 1, "{e}");
@@ -905,6 +914,40 @@ fn badges_are_colored_by_the_threshold(tc: TestCase) {
     assert!(width >= 37 + 7 * message.len(), "{width}");
 }
 
+/// `text` lists each file with items and its undocumented ones; `--omit-covered` leaves out the
+/// fully documented files, and `--quiet` everything but the total.
+#[hegel::test(test_cases = 100)]
+fn text_shows_what_its_flags_ask_for(tc: TestCase) {
+    let mut drawn = Drawn::draw(&tc);
+    drawn.text = report::Text { omit_covered: tc.draw(gs::booleans()), quiet: tc.draw(gs::booleans()) };
+    let out = report::format("text").unwrap().render(&drawn.context());
+    let totals = Totals::of(&drawn.files);
+    let total = format!("{:>6.1}%  {}/{}  total", totals.percent(), totals.documented, totals.total);
+    let shown: Vec<&FileReport> = drawn
+        .files
+        .iter()
+        .filter(|f| !f.items.is_empty() && !drawn.text.quiet)
+        .filter(|f| !drawn.text.omit_covered || f.items.iter().any(|i| !i.documented))
+        .collect();
+    let headers: Vec<&str> = out.lines().filter(|l| !l.starts_with("         ") && *l != total).collect();
+    let wanted: Vec<String> = shown
+        .iter()
+        .map(|f| {
+            format!(
+                "{:>6.1}%  {}/{}  {}",
+                f.totals().percent(),
+                f.totals().documented,
+                f.totals().total,
+                f.path.display()
+            )
+        })
+        .collect();
+    assert_eq!(headers, wanted, "{out}");
+    let listed = out.lines().filter(|l| l.starts_with("         ")).count();
+    assert_eq!(listed, shown.iter().map(|f| f.items.iter().filter(|i| !i.documented).count()).sum::<usize>());
+    assert!(out.ends_with(&format!("{total}\n")), "{out}");
+}
+
 /// Every format reports the same items and totals, and documenting one more item never lowers
 /// coverage.
 #[hegel::test(test_cases = 100)]
@@ -915,11 +958,18 @@ fn formats_agree_on_totals(tc: TestCase) {
     assert_eq!(totals.total, files.iter().map(|f| f.items.len()).sum::<usize>());
 
     let render = |name, files: &[FileReport]| {
-        report::format(name).unwrap().render(&Context { files, failures: &[], now: UNIX_EPOCH, threshold: None })
+        report::format(name).unwrap().render(&Context {
+            files,
+            failures: &[],
+            now: UNIX_EPOCH,
+            threshold: None,
+            text: report::Text::default(),
+        })
     };
     // Every format fails when its output doesn't fit where it's going, and only then.
     for format in report::FORMATS {
-        let context = Context { files: &files, failures: &[], now: UNIX_EPOCH, threshold: None };
+        let context =
+            Context { files: &files, failures: &[], now: UNIX_EPOCH, threshold: None, text: report::Text::default() };
         let length = format.render(&context).len();
         let room = tc.draw(gs::integers::<usize>().max_value(length + 1));
         let result = report::write(&[Output { format, path: None }], &context, &mut Room(room));
