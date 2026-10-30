@@ -6,11 +6,14 @@ fn docov(dir: &Path, args: &[&str]) -> (i32, String, String) {
     docov_in(dir, args, &[])
 }
 
-/// docov with these environment variables, and without GITHUB_ACTIONS unless they set it: CI
-/// would otherwise add annotations to the output.
+/// docov with these environment variables, and without the ones it reads to change its output
+/// (GitHub Actions' annotations and color) unless they set them: CI would otherwise change it.
 fn docov_in(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> (i32, String, String) {
     let mut command = Command::new(env!("CARGO_BIN_EXE_docov"));
-    command.env_remove("GITHUB_ACTIONS").envs(env.iter().copied());
+    for var in ["GITHUB_ACTIONS", "NO_COLOR", "CLICOLOR", "CLICOLOR_FORCE"] {
+        command.env_remove(var);
+    }
+    command.envs(env.iter().copied());
     let out = command.args(args).current_dir(dir).output().unwrap();
     let text = |b: Vec<u8>| String::from_utf8(b).unwrap();
     (out.status.code().unwrap(), text(out.stdout), text(out.stderr))
