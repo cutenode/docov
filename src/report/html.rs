@@ -21,7 +21,7 @@ fn render(context: &Context) -> String {
     for failure in context.failures {
         out += &format!("<p class=\"failed\">Failed: {}</p>\n", escape(failure));
     }
-    let files: Vec<(usize, &FileReport)> = context.files.iter().enumerate().filter(|(_, f)| !f.items.is_empty()).collect();
+    let files: Vec<(usize, &FileReport)> = context.files.iter().enumerate().filter(|(_, f)| f.counted().next().is_some()).collect();
     out += "<table class=\"files\">\n<thead><tr><th class=\"num\">Documented</th><th class=\"num\">Items</th><th>File</th></tr></thead>\n<tbody>\n";
     for (i, file) in &files {
         let totals = file.totals();
@@ -54,8 +54,7 @@ fn source(file: &FileReport) -> String {
     for (n, line) in text.lines().enumerate().map(|(i, line)| (i + 1, line)) {
         let mark = marks.iter().find(|(at, _)| *at == n).map_or("", |(_, hit)| if *hit { " class=\"hit\"" } else { " class=\"miss\"" });
         let notes: Vec<String> = file
-            .items
-            .iter()
+            .counted()
             .filter(|i| i.line == n && !i.documented)
             .map(|i| escape(&format!("{} {}", i.kind.as_str(), i.name)))
             .collect();

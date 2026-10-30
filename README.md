@@ -43,9 +43,25 @@ With the default scope, `exports`, an item is anything a module exports:
 
 An item is documented when a `/** … */` block with something in it sits right before it, or before its `export` or decorators. Ordinary comments, an empty `/** */`, and license headers (`/** @license … */`) don't count.
 
+`--require-description` (`"requireDescription": true`) also wants the block to describe the item: text before its first tag, or a `@description`, `@desc`, `@summary`, `@classdesc` (on a class) or `@inheritdoc` tag. Without it, `/** @type {string} */` counts. A block of `@inheritdoc` alone documents its item either way, and `"inherit": "override"` counts a TypeScript class member marked `override` as documented too, since it inherits its docs.
+
+`--exclude-tag NAME` (repeatable) or `"excludeTags": ["internal", "ignore", "hidden"]` leaves out items whose JSDoc has one of those tags: they're out of the total, not documented. `--ignore-name REGEX` (repeatable) or `"ignore": { "names": ["^_"] }` does the same for items whose name matches, a member by its own name or as `Class.member`.
+
+A `// docov-ignore-next-line` comment (with an optional reason, `// docov-ignore-next-line: legacy API`) takes the items on the line after it out of the total, and `/* docov-ignore-file */` anywhere at the top level does the same for the whole file. A documented item still counts as documented, as rustdoc does. Only the JSON report lists ignored items, marked with `"ignored": true` and their `reason`; the other formats leave them out. `--report-unused-ignores` (`"reportUnusedIgnores": true`) fails the scan on a `docov-ignore-next-line` whose items are documented anyway.
+
+To adopt docov in a project that's far from documented, `--add-ignore` (or `--add-ignore=REASON`) writes a `// docov-ignore-next-line` above every undocumented item, indented like it, and reports how many it wrote instead of the coverage. It changes no other line.
+
 Some things never count: constructors (their class's doc covers them), private members (`#x` and `private x`), an overload's implementation (only its signatures), destructured variables, `require()` bindings, `declare module` and `declare global` blocks, and re-exports from another file (`export { x } from './x'`, `export * from`), whose declarations count in their own file.
 
 `--scope all` counts every module-level declaration, exported or not.
+
+`"exports": { "esm": true, "cjs": true, "globals": false }` picks which ways of exporting count under the `exports` scope (`cjs` covers TypeScript's `export =` too). With `globals` on, `window.a = …` and `globalThis.a = …` at the top level export `a` the way `exports.a = …` does, under either scope.
+
+`--kind function,class` (or `"kinds": ["function", "class"]`) counts only those kinds of item, named as the reports name them: `function`, `class`, `method`, `accessor`, `property`, `variable`, `interface`, `type`, `enum`, `namespace` and `default`. `--by-kind` adds a line of totals by kind after the text report's total, and the JSON report always has them, under `kinds`.
+
+`--access public,protected` (or `"access": ["public", "protected", "package"]`) counts only items with those access levels, like jsdoc's `--access`: an item's level is its `@public`, `@protected`, `@package` or `@private` tag (or `@access` with one of those), else `protected` for a TypeScript `protected` member, else `public`. Without it, access tags change nothing.
+
+`"ignoreDeprecated": true` leaves out items whose JSDoc has `@deprecated`, and `"skipGenerated": true` leaves out every item in a file whose first comment has `@generated`.
 
 ### docov.json
 
@@ -75,7 +91,7 @@ docov --format text --format lcov=coverage/docov.lcov
 ```
 
 - `text` (the default): each file's percentage and its undocumented items, then the total. `--omit-covered` leaves out fully documented files, and `--quiet` prints only the total (failed gates still go to stderr).
-- `json`: every item, documented or not, with its kind, line and column, and totals per file and overall.
+- `json`: every item, documented or not, with its kind, line and column, and totals per file, per kind and overall.
 - `lcov`: a line record for each line with items on it, hit when all of them are documented, and each item as a function, hit when it's documented. Coverage services and editor gutters read it.
 - `cobertura`: Cobertura XML (coverage-04.dtd) with the same line records, a package per folder and a class per file, for GitLab's merge request coverage and other CI coverage views.
 - `github`: GitHub Actions annotations, a warning on each undocumented item and an error for each failed gate. In GitHub Actions (`GITHUB_ACTIONS=true`) with no `--format`, docov writes these after the text, the way [oxlint](https://oxc.rs/docs/guide/usage/linter/output-formats.html) does.

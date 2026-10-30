@@ -9,9 +9,10 @@ use std::{
     time::SystemTime,
 };
 
+use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 
-use crate::{FileReport, Item};
+use crate::{FileReport, Item, Kind};
 
 include!(concat!(env!("OUT_DIR"), "/formats.rs"));
 
@@ -77,6 +78,9 @@ pub struct Text {
     /// Print only the total, and why the scan fails, in the text report
     #[arg(long)]
     pub quiet: bool,
+    /// After the text report's total, a line of totals by kind
+    #[arg(long)]
+    pub by_kind: bool,
 }
 
 /// `path` with `/` between its parts, as URLs and CI services want it, on Windows too.
@@ -84,9 +88,9 @@ fn slash(path: &Path) -> String {
     path.display().to_string().replace(MAIN_SEPARATOR, "/")
 }
 
-/// Each undocumented item, with its file.
+/// Each undocumented item that counts, with its file.
 fn undocumented(files: &[FileReport]) -> impl Iterator<Item = (&FileReport, &Item)> {
-    files.iter().flat_map(|file| file.items.iter().filter(|item| !item.documented).map(move |item| (file, item)))
+    files.iter().flat_map(|file| file.counted().filter(|item| !item.documented).map(move |item| (file, item)))
 }
 
 /// `text` with what XML and HTML read as markup escaped, for text and attribute values alike.
@@ -102,11 +106,11 @@ fn json(value: &impl Serialize) -> String {
     serde_json::to_string_pretty(value).expect("a report serializes") + "\n"
 }
 
-/// A line record for each line with items, hit when they're all documented. Items come in
-/// source order, so those sharing a line are next to each other.
+/// A line record for each line with counted items, hit when they're all documented. Items come
+/// in source order, so those sharing a line are next to each other.
 fn lines(file: &FileReport) -> Vec<(usize, bool)> {
     let mut lines: Vec<(usize, bool)> = Vec::new();
-    for item in &file.items {
+    for item in file.counted() {
         match lines.last_mut() {
             Some((line, documented)) if *line == item.line => *documented &= item.documented,
             _ => lines.push((item.line, item.documented)),
@@ -155,6 +159,19 @@ impl Totals {
     /// The sum over every file.
     pub fn of(files: &[FileReport]) -> Self {
         files.iter().map(FileReport::totals).sum()
+    }
+
+    /// The sums for each kind of item there is, in [`Kind`]'s order.
+    pub fn by_kind(files: &[FileReport]) -> Vec<(Kind, Self)> {
+        let mut kinds: FxHashMap<Kind, Self> = FxHashMap::default();
+        for item in files.iter().flat_map(FileReport::counted) {
+            let totals = kinds.entry(item.kind).or_default();
+            totals.documented += usize::from(item.documented);
+            totals.total += 1;
+        }
+        let mut kinds: Vec<_> = kinds.into_iter().collect();
+        kinds.sort_by_key(|(kind, _)| *kind);
+        kinds
     }
 }
 

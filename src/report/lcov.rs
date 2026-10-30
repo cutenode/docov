@@ -9,16 +9,16 @@ pub const FORMAT: Format = Format {
     render,
 };
 
-/// Each item as a function (`FN`), hit once (`FNDA`) when it's documented, and each line with
-/// items as a line record (`DA:<line>,<hits>`), hit when all of them are documented.
+/// Each counted item as a function (`FN`), hit once (`FNDA`) when it's documented, and each line
+/// with counted items as a line record (`DA:<line>,<hits>`), hit when all of them are documented.
 fn render(context: &Context) -> String {
     let mut out = String::new();
     for file in context.files {
         out += &format!("TN:docov\nSF:{}\n", file.path.display());
-        for item in &file.items {
+        for item in file.counted() {
             out += &format!("FN:{},{}\n", item.line, item.name);
         }
-        for item in &file.items {
+        for item in file.counted() {
             out += &format!("FNDA:{},{}\n", u8::from(item.documented), item.name);
         }
         let totals = file.totals();

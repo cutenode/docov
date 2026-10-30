@@ -9,22 +9,30 @@ pub const FORMAT: Format =
 
 /// One line per file with something to document, then its undocumented items as
 /// `path:line:column`, which terminals and editors open at the spot. `--omit-covered` leaves out
-/// fully documented files, and `--quiet` all of them.
+/// fully documented files, `--quiet` all of them, and `--by-kind` adds the totals by kind.
 fn render(context: &Context) -> String {
-    let Text { omit_covered, quiet } = context.text;
+    let Text { omit_covered, quiet, by_kind } = context.text;
     let shown = |file: &&FileReport| {
-        let covered = file.items.iter().all(|i| i.documented);
-        !file.items.is_empty() && !quiet && !(omit_covered && covered)
+        let covered = file.counted().all(|i| i.documented);
+        file.counted().next().is_some() && !quiet && !(omit_covered && covered)
     };
     let mut out = String::new();
     for file in context.files.iter().filter(shown) {
         let totals = file.totals();
         out += &format!("{:>6.1}%  {}/{}  {}\n", totals.percent(), totals.documented, totals.total, file.path.display());
-        for item in file.items.iter().filter(|i| !i.documented) {
+        for item in file.counted().filter(|i| !i.documented) {
             let (path, kind) = (file.path.display(), item.kind.as_str());
             out += &format!("         {path}:{}:{}  {kind} {}\n", item.line, item.column, item.name);
         }
     }
     let totals = Totals::of(context.files);
-    out + &format!("{:>6.1}%  {}/{}  total\n", totals.percent(), totals.documented, totals.total)
+    out += &format!("{:>6.1}%  {}/{}  total\n", totals.percent(), totals.documented, totals.total);
+    if !by_kind {
+        return out;
+    }
+    let kinds: Vec<String> = Totals::by_kind(context.files)
+        .into_iter()
+        .map(|(kind, totals)| format!("{} {}/{}", kind.as_str(), totals.documented, totals.total))
+        .collect();
+    out + &format!("by kind: {}\n", kinds.join(", "))
 }
