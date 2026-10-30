@@ -948,6 +948,16 @@ fn text_shows_what_its_flags_ask_for(tc: TestCase) {
     assert!(out.ends_with(&format!("{total}\n")), "{out}");
 }
 
+/// `benchmark` is the total, to a decimal place, in github-action-benchmark's shape.
+#[hegel::test(test_cases = 50)]
+fn benchmark_is_the_total(tc: TestCase) {
+    let drawn = Drawn::draw(&tc);
+    let render = |name| report::format(name).unwrap().render(&drawn.context());
+    let percent = (Totals::of(&drawn.files).percent() * 10.0).round() / 10.0;
+    let benchmark: serde_json::Value = serde_json::from_str(&render("benchmark")).unwrap();
+    assert_eq!(benchmark, serde_json::json!([{ "name": "docov", "unit": "%", "value": percent }]));
+}
+
 /// Every format reports the same items and totals, and documenting one more item never lowers
 /// coverage.
 #[hegel::test(test_cases = 100)]

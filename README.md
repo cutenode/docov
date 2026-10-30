@@ -87,6 +87,7 @@ docov --format text --format lcov=coverage/docov.lcov
 - `rdjson`: [reviewdog](https://github.com/reviewdog/reviewdog)'s diagnostic format (`reviewdog -f=rdjson`).
 - `badge`: an SVG badge of the total, drawn without a network call. `--badge FILE` is short for `--format badge=FILE`.
 - `shields`: the JSON a [shields.io endpoint badge](https://shields.io/badges/endpoint-badge) reads, for a badge from a file you publish.
+- `benchmark`: the total as `[{"name":"docov","unit":"%","value":66.7}]`, for [github-action-benchmark](https://github.com/benchmark-action/github-action-benchmark)'s `customBiggerIsBetter`, to chart it over time.
 
 Badges are red under the threshold, yellow up to 10 points over it, and green past that. With no threshold they're blue.
 

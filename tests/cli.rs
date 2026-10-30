@@ -234,6 +234,12 @@ fn badge_writes_an_svg_beside_the_report() {
 }
 
 #[test]
+fn benchmark_is_the_total_for_github_action_benchmark() {
+    let (_, out, _) = docov(project().path(), &["--format", "benchmark"]);
+    assert_eq!(out, "[{\"name\":\"docov\",\"unit\":\"%\",\"value\":66.7}]\n");
+}
+
+#[test]
 fn the_checked_in_schema_is_current() {
     let dir = tempfile::tempdir().unwrap();
     let (code, out, _) = docov(dir.path(), &["--print-schema"]);
