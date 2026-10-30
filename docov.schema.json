@@ -138,6 +138,16 @@
       },
       "type": "array"
     },
+    "maxUndocumented": {
+      "default": null,
+      "description": "The most undocumented items that pass.",
+      "format": "uint",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
     "overrides": {
       "description": "Settings for the files globs match, in place of the top-level ones. For each file and setting, the last override that matches it and has the setting wins.",
       "items": {

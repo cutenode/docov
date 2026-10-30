@@ -1046,3 +1046,25 @@ fn overrides_exclude_by_the_last_match(tc: TestCase) {
     wanted.sort();
     assert_eq!(found, wanted, "{json} {exclude:?}");
 }
+
+/// `--max-undocumented` and `maxUndocumented` fail a scan with more undocumented items than they
+/// allow, the flag winning, on a line of their own.
+#[hegel::test(test_cases = 50)]
+fn max_undocumented_caps_the_undocumented_items(tc: TestCase) {
+    let dir = tempfile::tempdir().unwrap();
+    let files = reports(&tc);
+    let key = tc.draw(gs::optional(gs::integers::<usize>().max_value(6)));
+    let flag = tc.draw(gs::optional(gs::integers::<usize>().max_value(6)));
+    let config = serde_json::json!({ "maxUndocumented": key }).to_string();
+    let args: Vec<String> = flag.map(|f| vec!["--max-undocumented".into(), f.to_string()]).unwrap_or_default();
+    let settings = settings(dir.path(), &config, &args);
+    let totals = Totals::of(&files);
+    let undocumented = totals.total - totals.documented;
+    let wanted: Vec<String> = flag
+        .or(key)
+        .filter(|most| undocumented > *most)
+        .map(|most| format!("{undocumented} undocumented, over the limit of {most}"))
+        .into_iter()
+        .collect();
+    assert_eq!(settings.gates(&files, &docov::root::Root::new(Path::new(""))), wanted);
+}

@@ -152,7 +152,7 @@ fn help_describes_docov_and_lists_every_features_flags() {
     let (code, out, _) = docov(dir.path(), &["--help"]);
     assert_eq!(code, 0);
     assert!(out.starts_with("Checks how much of a JavaScript or TypeScript project's API has JSDoc."), "{out}");
-    for flag in ["--threshold <PERCENT>", "--scope <SCOPE>"] {
+    for flag in ["--threshold <PERCENT>", "--scope <SCOPE>", "--max-undocumented <N>"] {
         assert!(out.contains(flag), "{flag}: {out}");
     }
 }
@@ -261,4 +261,16 @@ fn overrides_change_exclude_and_threshold_for_their_files() {
     let (code, _, err) = docov(dir.path(), &[]);
     assert_eq!(code, 2);
     assert!(err.contains("unknown field `scope`, expected one of `files`, `exclude`, `threshold`"), "{err}");
+}
+
+#[test]
+fn max_undocumented_is_a_gate_of_its_own() {
+    let dir = project();
+    fs::write(dir.path().join("docov.json"), r#"{ "maxUndocumented": 0, "threshold": 70 }"#).unwrap();
+    let (code, _, err) = docov(dir.path(), &[]);
+    // Gates run in their files' name order.
+    let wanted = "docov: 1 undocumented, over the limit of 0\ndocov: 66.7% documented, under the 70% threshold\n";
+    assert_eq!((code, err.as_str()), (1, wanted));
+    let (code, _, err) = docov(dir.path(), &["--max-undocumented", "1", "--threshold", "0"]);
+    assert_eq!((code, err.as_str()), (0, ""));
 }
