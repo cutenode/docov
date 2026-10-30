@@ -20,6 +20,9 @@ missing_docs = "warn"
 cargo_common_metadata = "warn"
 
 [dependencies]
+# Colors the text report, stripping the colors where they don't belong. clap uses both already.
+anstream = "1.0.0"
+anstyle = "1.0.14"
 clap = { version = "4.6.7", features = ["derive", "wrap_help"] }
 # Matches workspace globs (`packages/*`) against folders, for --by-package.
 globset = "0.4.21"

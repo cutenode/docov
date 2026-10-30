@@ -8,9 +8,10 @@ use std::{
 
 use clap::{CommandFactory, FromArgMatches, Parser};
 use docov::{
-    Config, Format, Settings, batch,
+    Config, Format, Settings, Threshold, batch,
     feature::{
         self,
+        color::{Color, Styled},
         jsdoc_config::JsdocConfig,
         list_files::{self, ListFiles},
         print_config::{self, PrintConfig},
@@ -104,7 +105,9 @@ fn run(cli: Cli, matches: &clap::ArgMatches) -> Result<bool, Vec<String>> {
         Some(_) => stdin_filename::scan(&files, &mut io::stdin().lock())?,
         None => batch::scan(&files)?,
     };
-    let out = &mut io::stdout().lock();
+    let (settings, text) = (plan.settings(), cli.format == Format::Text);
+    let stream = &mut settings.get::<Color>().stream(io::stdout().lock());
+    let out = &mut Styled::new(stream, text, settings.get::<Threshold>().0);
     packages::write(plan.settings(), &config.dir, cli.format, &reports, out).map_err(|e| vec![e])?;
 
     let failures = plan.gates(&reports);

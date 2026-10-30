@@ -10,14 +10,14 @@ use docov::{
     FileReport, Format, Item, Kind, Scope, Settings, Totals, batch, config,
     config::Config,
     feature,
-    feature::{stdin_filename, threads::Threads},
-    init, jsdoc, nested, packages, scan, walk,
+    feature::{color, stdin_filename, threads::Threads},
+    init, jsdoc, nested, packages, report, scan, walk,
     walk::Exclude,
 };
 use hegel::{TestCase, generators as gs};
 use oxc_span::SourceType;
 
-use super::{Room, write};
+use super::{Room, reports, write};
 
 /// The folders generated config files go in.
 const FOLDERS: [&str; 4] = ["", "x/", "x/y/", "z/"];
@@ -761,4 +761,91 @@ fn the_cli_reads_stdin_in_place_of_files(tc: TestCase) {
     let (code, out, err) = docov_with_stdin(dir.path(), &["--stdin-filename", "src/new.ts"], b"export function (");
     assert_eq!((code, out.as_str()), (2, ""));
     assert!(err.starts_with(&format!("docov: {path}:1:")), "{err}");
+}
+
+/// The text report's lines through [`color::Styled`]: items dim, the percentage of each line whose
+/// totals are under the threshold red, unrounded, and every other line, JSON included, as it was.
+/// What's left of an unfinished line goes out on a flush, and a write that doesn't fit fails.
+#[hegel::test(test_cases = 50)]
+fn color_marks_items_and_what_is_under_the_threshold(tc: TestCase) {
+    let files = reports(&tc);
+    let threshold = tc.draw(gs::optional(gs::integers::<u8>().max_value(100))).map(f64::from);
+    let mut text = Vec::new();
+    report::write(Format::Text, &files, &mut text).unwrap();
+    let text = String::from_utf8(text).unwrap();
+    // Lines that aren't the report's pass through too.
+    let text = format!("{text}\nx\n5%\n5% a\n5% 1/x\n5% x/1\n");
+
+    let mut out = Vec::new();
+    let mut styled = color::Styled::new(&mut out, true, threshold);
+    // In pieces, split anywhere.
+    let at = tc.draw(gs::integers::<usize>().max_value(text.len()));
+    let (head, tail) = text.as_bytes().split_at(at);
+    std::io::Write::write_all(&mut styled, head).unwrap();
+    std::io::Write::write_all(&mut styled, tail).unwrap();
+    std::io::Write::write_all(&mut styled, b"unfinished").unwrap();
+    std::io::Write::flush(&mut styled).unwrap();
+    let out = String::from_utf8(out).unwrap();
+
+    let (dim, red) = ("\x1b[2m", "\x1b[31m");
+    let mut expected = String::new();
+    for line in text.lines() {
+        let mut words = line.split_whitespace();
+        let percent = words.next().is_some_and(|word| word.ends_with('%'));
+        let totals = words.next().and_then(|word| word.split_once('/'));
+        let totals = totals.and_then(|(d, t)| Some(Totals { documented: d.parse().ok()?, total: t.parse().ok()? }));
+        let under = percent && totals.zip(threshold).is_some_and(|(totals, threshold)| totals.percent() < threshold);
+        if line.starts_with("         ") {
+            expected += &format!("{dim}{line}\x1b[0m\n");
+        } else if under {
+            let (percent, rest) = line.split_once('%').unwrap();
+            expected += &format!("{red}{percent}%\x1b[0m{rest}\n");
+        } else {
+            expected += &format!("{line}\n");
+        }
+    }
+    assert_eq!(out, expected + "unfinished");
+
+    // JSON goes through as it is.
+    let mut json = Vec::new();
+    report::write(Format::Json, &files, &mut json).unwrap();
+    let mut out = Vec::new();
+    std::io::Write::write_all(&mut color::Styled::new(&mut out, false, threshold), &json).unwrap();
+    assert_eq!(out, json);
+
+    // A writer with room for less fails.
+    let room = tc.draw(gs::integers::<usize>().max_value(text.len().saturating_sub(1)));
+    let mut room = Room(room);
+    let mut styled = color::Styled::new(&mut room, true, threshold);
+    let wrote =
+        std::io::Write::write_all(&mut styled, text.as_bytes()).and_then(|()| std::io::Write::flush(&mut styled));
+    assert!(wrote.is_err() || text.is_empty());
+    // And so does a flush with an unfinished line that doesn't fit.
+    let mut full = Room(0);
+    let mut styled = color::Styled::new(&mut full, true, threshold);
+    std::io::Write::write_all(&mut styled, b"unfinished").unwrap();
+    assert!(std::io::Write::flush(&mut styled).is_err());
+}
+
+/// `--color always` colors the text report, `--color never` and `NO_COLOR` don't, and `auto`
+/// doesn't when stdout isn't a terminal, as it isn't here.
+#[hegel::test(test_cases = 2)]
+fn the_cli_colors_only_when_asked_or_on_a_terminal(tc: TestCase) {
+    let dir = tempfile::tempdir().unwrap();
+    write(dir.path(), "a.ts", "export const a = 1;\n");
+    let threshold = tc.draw(gs::sampled_from(vec!["50", "100"]));
+    for (color, no_color, colored) in
+        [("always", false, true), ("never", false, false), ("auto", false, false), ("auto", true, false)]
+    {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_docov"));
+        command.args(["--color", color, "--threshold", threshold]).current_dir(dir.path());
+        if no_color {
+            command.env("NO_COLOR", "1");
+        } else {
+            command.env_remove("NO_COLOR");
+        }
+        let out = String::from_utf8(command.output().unwrap().stdout).unwrap();
+        assert_eq!(out.contains('\x1b'), colored, "{color} {out:?}");
+        assert!(out.ends_with("total\n") || out.ends_with("total\n\x1b[0m"), "{out:?}");
+    }
 }

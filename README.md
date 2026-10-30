@@ -84,7 +84,7 @@ With `"nested": true` in the root config, each file is scanned with the nearest 
 
 ### Formats
 
-- `text` (the default): each file's percentage and its undocumented items, then the total.
+- `text` (the default): each file's percentage and its undocumented items, then the total. On a terminal, a percentage under the threshold is red and the undocumented items are dim. `--color always` or `never` says otherwise, and `NO_COLOR` turns it off.
 - `json`: every item, documented or not, with its kind, line and column, and totals per file and overall.
 - `lcov`: a line record for each line with items on it, hit when all of them are documented. Coverage services and editor gutters read it.
 
