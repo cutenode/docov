@@ -27,7 +27,7 @@ pub struct Explain(pub Option<PathBuf>);
 #[group(skip)]
 pub struct Flags {
     /// Say why each item in FILE counts or doesn't and is documented or isn't, and what the scan passed over there, in place of a report
-    #[arg(long, value_name = "FILE")]
+    #[arg(long, value_name = "FILE", conflicts_with = "stdin_filename")]
     explain: Option<PathBuf>,
 }
 
@@ -45,14 +45,18 @@ impl Feature for Explain {
 }
 
 impl Explain {
-    /// Writes its file's explanation by `rules` to `out`, when it has a file, or says why it
-    /// couldn't (exit 2).
-    pub fn write(&self, rules: &Rules, out: &mut dyn Write) -> Option<Result<(), String>> {
-        self.0.as_deref().map(|path| explain(path, rules, out))
+    /// Writes its file's explanation to `out`, when it has a file, or says why it couldn't (exit 2).
+    /// `files` is the plan for that file alone, with the rules its config scans it with, or nothing
+    /// when the config leaves it out.
+    pub fn write(&self, files: &[(&Path, &Rules)], out: &mut dyn Write) -> Option<Result<(), String>> {
+        self.0.as_deref().map(|path| explain(path, files, out))
     }
 }
 
-fn explain(path: &Path, rules: &Rules, out: &mut dyn Write) -> Result<(), String> {
-    let lines = collect::explain(path, rules).map_err(|e| e.to_string())?;
+fn explain(path: &Path, files: &[(&Path, &Rules)], out: &mut dyn Write) -> Result<(), String> {
+    let lines = match files {
+        [(_, rules), ..] => collect::explain(path, rules).map_err(|e| e.to_string())?,
+        [] => vec![format!("{}  left out: the config excludes it", path.display())],
+    };
     lines.iter().try_for_each(|line| writeln!(out, "{line}")).map_err(|e| e.to_string())
 }

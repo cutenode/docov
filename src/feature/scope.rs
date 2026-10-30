@@ -54,4 +54,8 @@ impl Feature for Scope {
     fn rules(&self, rules: &mut Rules) {
         rules.scope = *self;
     }
+
+    fn describe(&self) -> Option<serde_json::Value> {
+        Some(serde_json::to_value(self).expect("a scope serializes"))
+    }
 }

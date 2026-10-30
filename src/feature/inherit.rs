@@ -47,4 +47,8 @@ impl Feature for Inherit {
     fn rules(&self, rules: &mut Rules) {
         rules.inherit = *self;
     }
+
+    fn describe(&self) -> Option<serde_json::Value> {
+        Some(serde_json::json!(self))
+    }
 }

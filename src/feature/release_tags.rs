@@ -2,15 +2,13 @@
 //! exported items with exactly one of `@public`, `@beta`, `@alpha` and `@internal`, which API
 //! Extractor asks for (ae-missing-release-tag). Members take their container's.
 
-use std::io::{self, Write};
-
 use schemars::JsonSchema;
 use serde::Deserialize;
 
 use crate::{
-    FileReport, Format, config,
-    feature::{Entry, Feature},
-    report::{self, metric::RELEASE_TAGS},
+    config,
+    feature::{Entry, Feature, Run},
+    metric::{RELEASE_TAGS, Metric},
 };
 
 pub(crate) fn entry() -> Entry {
@@ -57,18 +55,15 @@ impl Feature for ReleaseTags {
         Self { on: flags.release_tags || threshold.is_some(), threshold }
     }
 
-    fn report(&self, options: &mut report::Options) {
-        options.metrics.extend(self.on.then_some(RELEASE_TAGS));
+    fn metric(&self) -> Option<Metric> {
+        self.on.then_some(RELEASE_TAGS)
     }
 
-    fn gate(&self, reports: &[FileReport]) -> Option<String> {
-        RELEASE_TAGS.gate(self.threshold, reports)
+    fn gate(&self, run: &Run) -> Vec<String> {
+        RELEASE_TAGS.gate(self.threshold, run.reports).into_iter().collect()
     }
 
-    fn append(&self, format: Format, reports: &[FileReport], out: &mut dyn Write) -> io::Result<()> {
-        if !self.on || format != Format::Text {
-            return Ok(());
-        }
-        RELEASE_TAGS.line(reports, out)
+    fn describe(&self) -> Option<serde_json::Value> {
+        Some(serde_json::json!({ "on": self.on, "threshold": self.threshold }))
     }
 }

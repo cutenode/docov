@@ -1,7 +1,5 @@
 //! Metrics past coverage: of the items a metric is over, how many have what it measures.
 
-use std::io::{self, Write};
-
 use crate::{FileReport, Item, Kind, Totals};
 
 /// What share of some items have something, such as an `@example`.
@@ -53,10 +51,10 @@ impl Metric {
         files.iter().map(|f| self.file(f)).sum()
     }
 
-    /// Writes its total as a line of the text report, after the total there: `  50.0%  1/2  types`.
-    pub fn line(self, files: &[FileReport], out: &mut dyn Write) -> io::Result<()> {
+    /// Its total as a line of the text report, after the total there: `  50.0%  1/2  types`.
+    pub fn line(self, files: &[FileReport]) -> String {
         let totals = self.total(files);
-        writeln!(out, "{:>6.1}%  {}/{}  {}", totals.percent(), totals.documented, totals.total, self.name)
+        format!("{:>6.1}%  {}/{}  {}\n", totals.percent(), totals.documented, totals.total, self.name)
     }
 
     /// Why the scan fails, when its percentage is under `threshold`.

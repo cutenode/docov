@@ -4,10 +4,7 @@
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use crate::{
-    FileReport,
-    feature::{Entry, Feature},
-};
+use crate::feature::{Entry, Feature, Run};
 
 pub(crate) fn entry() -> Entry {
     Entry::of::<ReportUnusedIgnores>()
@@ -42,12 +39,12 @@ impl Feature for ReportUnusedIgnores {
         Self(flags.report_unused_ignores || keys.report_unused_ignores)
     }
 
-    fn gate(&self, reports: &[FileReport]) -> Option<String> {
+    fn gate(&self, run: &Run) -> Vec<String> {
         if !self.0 {
-            return None;
+            return Vec::new();
         }
         let mut unused = Vec::new();
-        for report in reports {
+        for report in run.reports {
             let covered: Vec<_> = report
                 .items
                 .iter()
@@ -61,6 +58,10 @@ impl Feature for ReportUnusedIgnores {
                 }
             }
         }
-        (!unused.is_empty()).then(|| unused.join("\n"))
+        unused
+    }
+
+    fn describe(&self) -> Option<serde_json::Value> {
+        Some(self.0.into())
     }
 }

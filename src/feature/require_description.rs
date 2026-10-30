@@ -46,4 +46,8 @@ impl Feature for RequireDescription {
     fn rules(&self, rules: &mut Rules) {
         rules.require_description = self.0;
     }
+
+    fn describe(&self) -> Option<serde_json::Value> {
+        Some(self.0.into())
+    }
 }

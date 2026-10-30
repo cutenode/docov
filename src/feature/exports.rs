@@ -1,7 +1,7 @@
 //! `exports`: which ways of exporting count under the `exports` scope.
 
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     Rules,
@@ -13,7 +13,7 @@ pub(crate) fn entry() -> Entry {
 }
 
 /// Which ways of exporting count.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, JsonSchema)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Exports {
     /// ES modules: `export`, `export { a }` and `export default`.
@@ -53,5 +53,9 @@ impl Feature for Exports {
 
     fn rules(&self, rules: &mut Rules) {
         rules.exports = *self;
+    }
+
+    fn describe(&self) -> Option<serde_json::Value> {
+        Some(serde_json::json!(self))
     }
 }

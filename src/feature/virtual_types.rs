@@ -41,4 +41,8 @@ impl Feature for VirtualTypes {
     fn rules(&self, rules: &mut Rules) {
         rules.virtual_types = self.0;
     }
+
+    fn describe(&self) -> Option<serde_json::Value> {
+        Some(self.0.into())
+    }
 }

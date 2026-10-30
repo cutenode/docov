@@ -1,12 +1,18 @@
-use std::io::{self, Write};
+//! `json`: every item, documented or not, with totals. `--compare` reads one back.
 
-use serde::{Serialize, Serializer};
+use std::{fs, path::Path};
 
-use super::{
-    Options,
+use serde::{Deserialize, Serialize, Serializer};
+
+use crate::report::{Context, Format};
+use crate::{
+    Item, Kind, Totals,
     metric::{EXAMPLES, Metric},
+    packages::Package,
 };
-use crate::{FileReport, Item, Kind, Totals};
+
+/// The format.
+pub const FORMAT: Format = Format { name: "json", help: "Every item, documented or not, with totals", render };
 
 #[derive(Serialize)]
 struct Report<'a> {
@@ -18,6 +24,8 @@ struct Report<'a> {
     #[serde(serialize_with = "by_kind")]
     kinds: Vec<(Kind, Totals)>,
     files: Vec<File<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    packages: Option<&'a [Package]>,
 }
 
 /// Totals with their percentage.
@@ -74,13 +82,14 @@ impl<'a> JsonItem<'a> {
     }
 }
 
-/// Every item, with totals and each metric's figures: examples, and those `options` add.
-pub fn write(files: &[FileReport], options: &Options, out: &mut impl Write) -> io::Result<()> {
-    let (totals, kinds) = (Totals::of(files), Totals::by_kind(files));
-    let metrics: Vec<Metric> = std::iter::once(EXAMPLES).chain(options.metrics.iter().copied()).collect();
+/// Every item, with totals and each metric's figures: examples, and those the features add.
+fn render(context: &Context) -> String {
+    let (totals, kinds) = (Totals::of(context.files), Totals::by_kind(context.files));
+    let metrics: Vec<Metric> = std::iter::once(EXAMPLES).chain(context.metrics.iter().copied()).collect();
     let of = |count: &dyn Fn(Metric) -> Totals| Metrics(metrics.iter().map(|&m| (m, count(m))).collect());
-    let total = of(&|m| m.total(files));
-    let files = files
+    let total = of(&|m| m.total(context.files));
+    let files = context
+        .files
         .iter()
         .map(|f| File {
             path: f.path.display().to_string(),
@@ -90,9 +99,33 @@ pub fn write(files: &[FileReport], options: &Options, out: &mut impl Write) -> i
             items: f.items.iter().map(JsonItem::of).collect(),
         })
         .collect();
-    serde_json::to_writer_pretty(
-        &mut *out,
-        &Report { totals, percent: totals.percent(), metrics: total, kinds, files },
-    )?;
-    writeln!(out)
+    let report = Report { totals, percent: totals.percent(), metrics: total, kinds, files, packages: context.packages };
+    serde_json::to_string_pretty(&report).expect("a report serializes") + "\n"
+}
+
+/// An earlier `json` report, which `--compare` reads to show what changed.
+#[derive(Debug, Deserialize)]
+pub struct Base {
+    /// The total.
+    #[serde(flatten)]
+    pub totals: Totals,
+    pub(crate) files: Vec<BaseFile>,
+}
+
+/// A file in an earlier report.
+#[derive(Debug, Deserialize)]
+pub(crate) struct BaseFile {
+    /// Its path, as `json` writes it.
+    pub(crate) path: String,
+    #[serde(flatten)]
+    pub(crate) totals: Totals,
+}
+
+impl Base {
+    /// Reads the report at `path`. An error names the file.
+    pub fn read(path: &Path) -> Result<Self, String> {
+        let failed = |e: &dyn std::fmt::Display| format!("{}: {e}", path.display());
+        let text = fs::read_to_string(path).map_err(|e| failed(&e))?;
+        serde_json::from_str(&text).map_err(|e| failed(&e))
+    }
 }
