@@ -2,7 +2,9 @@
 
 use std::{fs, path::Path, path::PathBuf, process::Command};
 
-use docov::feature::{Feature, add_ignore::AddIgnore, kinds::Kinds, report_unused_ignores::ReportUnusedIgnores};
+use docov::feature::{
+    Feature, access::Access, add_ignore::AddIgnore, kinds::Kinds, report_unused_ignores::ReportUnusedIgnores,
+};
 use docov::{
     FileReport, Format, Item, Kind, Rules, Scope, Totals, collect, collect::Ignore, config, feature, report, rewrite,
     scan, scan_file,
@@ -51,6 +53,8 @@ struct Expected {
     item: Item,
     /// Its JSDoc block.
     doc: Option<Block>,
+    /// Whether it's a TypeScript `protected` member.
+    protected: bool,
 }
 
 impl Expected {
@@ -68,6 +72,11 @@ impl Expected {
         }
         let member = matches!(self.item.kind, Kind::Method | Kind::Accessor | Kind::Property);
         let own_name = self.item.name.split_once('.').filter(|_| member).map(|(_, name)| name);
+        let level =
+            self.doc.and_then(|b| b.access).unwrap_or(if self.protected { Access::Protected } else { Access::Public });
+        if rules.access.as_ref().is_some_and(|levels| !levels.contains(&level)) {
+            return None;
+        }
         if rules.ignore_names.iter().any(|re| re.is_match(&self.item.name) || own_name.is_some_and(|n| re.is_match(n)))
         {
             return None;
@@ -88,13 +97,19 @@ struct Block {
     class_described: bool,
     /// Its tags' names.
     tags: &'static [&'static str],
+    /// The access level its tags give.
+    access: Option<Access>,
 }
 
 const fn block(text: &'static str, described: bool, class_described: bool, tags: &'static [&'static str]) -> Block {
-    Block { text, described, class_described, tags }
+    Block { text, described, class_described, tags, access: None }
 }
 
-const BLOCKS: [Block; 13] = [
+const fn access(text: &'static str, tags: &'static [&'static str], level: Access) -> Block {
+    Block { access: Some(level), ..block(text, true, true, tags) }
+}
+
+const BLOCKS: [Block; 18] = [
     block("/** Docs. */", true, true, &[]),
     block("/**\n * Docs.\n * @param a The a.\n */", true, true, &["param"]),
     block("/** Mail me@example.com. */", true, true, &[]),
@@ -108,7 +123,14 @@ const BLOCKS: [Block; 13] = [
     block("/** @inheritDoc */", true, true, &["inheritDoc"]),
     block("/**\n * @INHERITDOC\n */", true, true, &["INHERITDOC"]),
     block("/**\n * Hidden.\n * @hidden\n * @ignore\n */", true, true, &["hidden", "ignore"]),
+    access("/** Docs.\n * @private\n */", &["private"], Access::Private),
+    access("/**\n * Docs.\n * @access protected\n */", &["access"], Access::Protected),
+    access("/** Docs.\n * @package\n */", &["package"], Access::Package),
+    access("/** Docs.\n * @public\n * @private\n */", &["public", "private"], Access::Public),
+    block("/** Docs.\n * @access whoever\n */", true, true, &["access"]),
 ];
+
+const LEVELS: [Access; 4] = [Access::Public, Access::Protected, Access::Package, Access::Private];
 
 /// Tags `excludeTags` may name.
 const TAGS: [&str; 6] = ["internal", "ignore", "hidden", "deprecated", "param", "inheritdoc"];
@@ -173,7 +195,7 @@ impl Module {
         let line = self.line();
         let ignore = self.next_ignore.take().filter(|ignore| ignore.line + 1 == line);
         let item = Item { name, kind, line, column: 1, documented: doc.is_some(), ignore };
-        self.expected.push(Expected { exported, item, doc });
+        self.expected.push(Expected { exported, item, doc, protected: false });
     }
 
     /// A statement that exports and declares nothing.
@@ -376,7 +398,7 @@ impl Module {
         for j in 0..tc.draw(gs::integers::<usize>().max_value(4)) {
             let doc = self.doc(tc);
             let item = |m: &mut Self, name: String, kind| m.expect(exported, format!("{class}.{name}"), kind, doc);
-            match tc.draw(gs::integers::<u8>().max_value(9)) {
+            match tc.draw(gs::integers::<u8>().max_value(10)) {
                 0 => {
                     item(self, format!("m{j}"), Kind::Method);
                     if tc.draw(gs::booleans()) {
@@ -415,6 +437,11 @@ impl Module {
                 8 if !constructed => {
                     constructed = true;
                     self.write("constructor() {}");
+                }
+                9 => {
+                    item(self, format!("t{j}"), Kind::Property);
+                    self.expected.last_mut().unwrap().protected = true;
+                    self.write(&format!("protected t{j} = 1;"));
                 }
                 _ => self.write(&format!("#h{j} = 1;\nprivate q{j} = 1;\nprivate r{j}() {{}}")),
             }
@@ -486,6 +513,7 @@ fn rules_decide_what_counts_and_what_is_documented(tc: TestCase) {
             .map(String::from)
             .collect(),
         kinds: tc.draw(gs::optional(gs::vecs(gs::sampled_from(ALL_KINDS.to_vec())).max_size(4))),
+        access: tc.draw(gs::optional(gs::vecs(gs::sampled_from(LEVELS.to_vec())).max_size(3))),
         ignore_names: tc
             .draw(
                 gs::vecs(gs::sampled_from(vec!["^n1$", "^_", "^m", "^p\\d", "0$", "^n2\\.", "^default$"])).max_size(2),
@@ -1198,8 +1226,16 @@ fn rules_come_from_flags_over_the_config(tc: TestCase) {
         *names = serde_json::json!({ "names": names.take() });
     }
 
+    let level_lists = vec![vec![Access::Public], vec![Access::Protected, Access::Private]];
+    let access = run.set(&tc, "access", level_lists, |levels| {
+        let names: Vec<_> =
+            levels.iter().map(|l| serde_json::to_value(l).unwrap().as_str().unwrap().to_owned()).collect();
+        vec!["--access".into(), names.join(",")]
+    });
+
     let settings = run.settings(dir.path());
     let rules = settings.rules();
+    assert_eq!(rules.access, access);
     let patterns: Vec<&str> = rules.ignore_names.iter().map(regex::Regex::as_str).collect();
     assert_eq!(patterns, names.unwrap_or_default());
     assert_eq!(settings.get::<Kinds>().by_kind, by_kind);

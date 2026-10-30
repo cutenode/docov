@@ -292,3 +292,15 @@ fn name_patterns_leave_out_what_they_match() {
     assert_eq!(code, 2);
     assert!(err.starts_with("docov: docov.json: regex parse error"), "{err}");
 }
+
+#[test]
+fn access_levels_come_from_the_flag_or_the_config() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = "/** @private */\nexport const a = 1;\nexport class B { protected c = 1; }\n";
+    fs::write(dir.path().join("a.ts"), source).unwrap();
+    let total = |args: &[&str]| docov(dir.path(), args).1.lines().last().unwrap().to_owned();
+    assert_eq!(total(&[]), "  33.3%  1/3  total");
+    assert_eq!(total(&["--access", "public,protected"]), "   0.0%  0/2  total");
+    fs::write(dir.path().join("docov.json"), r#"{ "access": ["public"] }"#).unwrap();
+    assert_eq!(total(&[]), "   0.0%  0/1  total");
+}

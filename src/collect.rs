@@ -215,6 +215,8 @@ struct Found<'s> {
     /// The module-level name that exports it (a member's class), when `export { name }` can.
     binding: Option<&'s str>,
     exported: bool,
+    /// Whether it's a TypeScript `protected` member.
+    protected: bool,
 }
 
 struct Collector<'s> {
@@ -239,11 +241,13 @@ struct Site<'s> {
 }
 
 impl<'s> Collector<'s> {
-    fn push(&mut self, site: Site<'s>, start: u32, name: String, kind: Kind) {
+    fn push(&mut self, site: Site<'s>, start: u32, name: String, kind: Kind) -> &mut Found<'s> {
         let doc = self.docs.get(&site.at).or_else(|| self.docs.get(&start)).cloned();
         // A decorator before `export` starts the declaration, and is where its doc goes.
         let at = site.at.min(start);
-        self.found.push(Found { name, kind, at, doc, binding: site.binding, exported: site.exported });
+        let exported = site.exported;
+        self.found.push(Found { name, kind, at, doc, binding: site.binding, exported, protected: false });
+        self.found.last_mut().expect("just pushed")
     }
 
     fn statement(&mut self, statement: &Statement<'s>) {
@@ -263,7 +267,9 @@ impl<'s> Collector<'s> {
                     ExportDefaultDeclarationKind::Identifier(id) => {
                         self.exported.insert(id.name.as_str());
                     }
-                    expression => self.push(site, expression.span().start, "default".into(), Kind::Default),
+                    expression => {
+                        self.push(site, expression.span().start, "default".into(), Kind::Default);
+                    }
                 }
             }
             Statement::TSExportAssignment(e) => {
@@ -312,7 +318,7 @@ impl<'s> Collector<'s> {
                 self.push(site(&t.id), t.span.start, t.id.name.to_string(), Kind::Type);
             }
             Declaration::TSEnumDeclaration(e) => {
-                self.push(site(&e.id), e.span.start, e.id.name.to_string(), Kind::Enum)
+                self.push(site(&e.id), e.span.start, e.id.name.to_string(), Kind::Enum);
             }
             Declaration::TSNamespaceDeclaration(n) => {
                 self.push(site(&n.id), n.span.start, n.id.name.to_string(), Kind::Namespace);
@@ -400,7 +406,7 @@ impl<'s> Collector<'s> {
         let mut overload = None;
         for element in &class.body.body {
             let previous = overload.take();
-            let (start, key, kind) = match element {
+            let (start, key, kind, accessibility) = match element {
                 ClassElement::MethodDefinition(m) => {
                     if m.kind.is_constructor() || is_private(&m.key, m.accessibility) {
                         continue;
@@ -415,17 +421,18 @@ impl<'s> Collector<'s> {
                         continue;
                     }
                     let kind = if m.kind == MethodDefinitionKind::Method { Kind::Method } else { Kind::Accessor };
-                    (m.span.start, key, kind)
+                    (m.span.start, key, kind, m.accessibility)
                 }
                 ClassElement::PropertyDefinition(p) if !is_private(&p.key, p.accessibility) => {
-                    (p.span.start, self.key(&p.key), Kind::Property)
+                    (p.span.start, self.key(&p.key), Kind::Property, p.accessibility)
                 }
                 ClassElement::AccessorProperty(a) if !is_private(&a.key, a.accessibility) => {
-                    (a.span.start, self.key(&a.key), Kind::Accessor)
+                    (a.span.start, self.key(&a.key), Kind::Accessor, a.accessibility)
                 }
                 _ => continue,
             };
-            self.push(Site { at: start, ..site }, start, format!("{class_name}.{key}"), kind);
+            let found = self.push(Site { at: start, ..site }, start, format!("{class_name}.{key}"), kind);
+            found.protected = accessibility == Some(TSAccessibility::Protected);
         }
     }
 
