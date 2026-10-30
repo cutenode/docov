@@ -87,7 +87,8 @@ pub fn read(path: &Path) -> Result<Sources, String> {
         .exclude
         .iter()
         .filter_map(|p| {
-            let path = dir.join(p);
+            // Collected, the root shows in `--print-config` with the OS's separators.
+            let path: PathBuf = dir.join(p).components().collect();
             let name = globset::escape(&path.file_name()?.to_string_lossy());
             let root = path.parent().expect("a path with a file name is in a folder").to_owned();
             // A name can still end in a `\`, which escapes nothing.

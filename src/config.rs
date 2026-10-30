@@ -312,16 +312,23 @@ fn layer(path: &Path, chain: &mut Vec<(PathBuf, PathBuf)>) -> Result<Layer, Erro
     // would keep the excludes from matching.
     let paths = keys.remove("paths").map(|_| file.paths.iter().map(|p| dir.join(p).components().collect()).collect());
     let exclude = keys.remove("exclude").map(|_| Exclude { root: dir.clone(), globs: file.exclude });
-    let jsdoc_config = file.jsdoc_config.map(|path| dir.join(path));
+    let jsdoc_config = file.jsdoc_config.map(|path| written_in(&dir, &path));
     keys.remove("jsdocConfig");
     let dirs = keys.keys().map(|key| (key.clone(), dir.clone())).collect();
 
     chain.push((real, path.to_owned()));
     let mut merged = Layer::default();
     for base in file.extends.into_paths() {
-        merged.over(layer(&dir.join(base), chain)?);
+        merged.over(layer(&written_in(&dir, &base), chain)?);
     }
     chain.pop();
     merged.over(Layer { keys, paths, exclude, jsdoc_config, dirs, files: vec![path.to_owned()] });
     Ok(merged)
+}
+
+/// `path`, written in a file in `dir`, as a path from the current folder with the OS's separator
+/// between every part, for errors and `--print-config` to show. On Windows, `dir.join(path)` would
+/// keep the `/`s it was written with after a `\`.
+fn written_in(dir: &Path, path: &Path) -> PathBuf {
+    dir.components().chain(path.components()).collect()
 }
