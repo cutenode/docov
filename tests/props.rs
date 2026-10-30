@@ -2229,8 +2229,7 @@ fn the_public_scope_needs_a_package(tc: TestCase) {
     let root = dir.path();
     write(root, "src/index.ts", "/** A. */\nexport const a = 1;\nexport const b = 1;\n");
     write(root, "src/other.ts", "export const c = 1;\n");
-    let docov =
-        |args: &[&str]| Command::new(env!("CARGO_BIN_EXE_docov")).args(args).current_dir(root).output().unwrap();
+    let docov = |args: &[&str]| docov_command().args(args).current_dir(root).output().unwrap();
     let broken = tc.draw(gs::booleans());
     if broken {
         let errors = docov::public::Api::load(&root.join("src"), &[root.join("src")]).unwrap_err();
@@ -2319,7 +2318,7 @@ fn explain_runs_from_the_command_line(tc: TestCase) {
     let doc = if documented { "/** A. */\n" } else { "" };
     write(dir.path(), "a.ts", &format!("{doc}export const a = 1;\nexport * from './b';\n"));
     let docov = |args: &[&str]| {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_docov"));
+        let mut command = docov_command();
         command.args(args).current_dir(dir.path());
         command
     };
@@ -2826,13 +2825,11 @@ fn malformed_configs_fail_to_load_where_they_break(tc: TestCase) {
         (r#"{ "typesThreshold": true }"#, "invalid type: boolean `true`, expected f64", 24),
     ]));
     let path = dir.path().join("docov.json");
-    // A threshold's glob too big to build, like the walk's (globset fails from about 30,000
-    // alternatives).
+    // A threshold's glob that globset reads but can't build, like the walk's.
     if tc.draw(gs::weighted_booleans(0.1)) {
-        let huge = format!("{{{}}}", (0..40_000).map(|i| format!("x{i}[a-z][0-9]?")).collect::<Vec<_>>().join(","));
-        fs::write(&path, serde_json::json!({ "threshold": { huge: 1 } }).to_string()).unwrap();
+        fs::write(&path, serde_json::json!({ "threshold": { unbuildable_glob(): 1 } }).to_string()).unwrap();
         let error = config::Config::load(Some(&path)).unwrap_err().to_string();
-        assert!(error.contains("NFA"), "{error}");
+        assert!(error.contains("parsing pattern"), "{error}");
     }
     fs::write(&path, format!("{padding}{text}")).unwrap();
     let column = column + padding.len();
