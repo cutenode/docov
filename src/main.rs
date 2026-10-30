@@ -14,6 +14,7 @@ use docov::{
         jsdoc_config::JsdocConfig,
         list_files::{self, ListFiles},
         print_config::{self, PrintConfig},
+        threads::Threads,
     },
     init, nested, packages, walk,
 };
@@ -93,6 +94,7 @@ fn run(cli: Cli, matches: &clap::ArgMatches) -> Result<bool, Vec<String>> {
     if plan.settings().get::<ListFiles>().0 {
         return wrote(list_files::write(files.iter().map(|(file, _)| *file), &mut io::stdout().lock()));
     }
+    plan.settings().get::<Threads>().apply();
     let reports = batch::scan(&files)?;
     let out = &mut io::stdout().lock();
     packages::write(plan.settings(), &config.dir, cli.format, &reports, out).map_err(|e| vec![e])?;

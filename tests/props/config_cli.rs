@@ -7,8 +7,8 @@ use std::{
 };
 
 use docov::{
-    FileReport, Format, Item, Kind, Scope, Settings, Totals, batch, config, config::Config, feature, init, jsdoc,
-    nested, packages, walk, walk::Exclude,
+    FileReport, Format, Item, Kind, Scope, Settings, Totals, batch, config, config::Config, feature,
+    feature::threads::Threads, init, jsdoc, nested, packages, walk, walk::Exclude,
 };
 use hegel::{TestCase, generators as gs};
 
@@ -663,4 +663,33 @@ fn the_cli_reads_jsdoc_configs(tc: TestCase) {
     let (code, out, err) = docov(dir.path(), &["--jsdoc-config", "missing.json"], false);
     assert_eq!((code, out.as_str()), (2, ""));
     assert!(err.starts_with("docov: missing.json: "), "{err}");
+}
+
+/// `--threads` scans the same files to the same report on however many threads, and
+/// `--print-config` shows it.
+#[hegel::test(test_cases = 3)]
+fn threads_change_only_how_many_scan_at_once(tc: TestCase) {
+    let dir = tempfile::tempdir().unwrap();
+    for f in 0..tc.draw(gs::integers::<usize>().min_value(1).max_value(6)) {
+        let doc = if tc.draw(gs::booleans()) { "/** Docs. */\n" } else { "" };
+        write(dir.path(), &format!("f{f}.ts"), &format!("{doc}export const a = 1;\n"));
+    }
+    let threads = tc.draw(gs::integers::<usize>().min_value(1).max_value(4)).to_string();
+    let (code, out, err) = docov(dir.path(), &["--threads", &threads], false);
+    assert_eq!((code, out, err), docov(dir.path(), &[], false));
+    let (_, out, _) = docov(dir.path(), &["--threads", &threads, "--print-config"], false);
+    let json: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(json["features"]["threads"].to_string(), threads);
+}
+
+/// `--threads` sizes rayon's pool, which a process makes once: the first size stays, and no size
+/// changes nothing. nextest runs each test in a process of its own, so this one's first case
+/// makes the pool.
+#[hegel::test(test_cases = 5)]
+fn threads_size_the_pool_once(tc: TestCase) {
+    static FIRST: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    let threads = tc.draw(gs::integers::<usize>().min_value(1).max_value(8));
+    Threads(Some(threads)).apply();
+    Threads(None).apply();
+    assert_eq!(rayon::current_num_threads(), *FIRST.get_or_init(|| threads));
 }
