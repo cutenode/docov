@@ -62,6 +62,22 @@
       },
       "type": "object"
     },
+    "Extends": {
+      "anyOf": [
+        {
+          "description": "One file.",
+          "type": "string"
+        },
+        {
+          "description": "Files, each winning over the ones before it.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      ],
+      "description": "A config file to extend, or a list of them."
+    },
     "FileDocs": {
       "description": "Whether each file needs a JSDoc block of its own.",
       "oneOf": [
@@ -181,12 +197,12 @@
         },
         {
           "const": "warn",
-          "description": "Its findings are printed, and the scan still passes.",
+          "description": "Its findings are reported, and the scan still passes.",
           "type": "string"
         },
         {
           "const": "error",
-          "description": "Its findings are printed, and fail the scan.",
+          "description": "Its findings are reported, and fail the scan.",
           "type": "string"
         }
       ]
@@ -209,6 +225,106 @@
     "NoOptions": {
       "additionalProperties": false,
       "description": "The options of a check that has none.",
+      "type": "object"
+    },
+    "Override": {
+      "additionalProperties": false,
+      "description": "Settings for the files some globs match, in place of the top-level ones.",
+      "properties": {
+        "exclude": {
+          "description": "In place of the top-level `exclude`, for these files.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "files": {
+          "description": "Gitignore-style globs of the files it's for, relative to this file's folder.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "threshold": {
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "anyOf": [
+                    {
+                      "maximum": 100,
+                      "minimum": 0,
+                      "type": "number"
+                    },
+                    {
+                      "maximum": -1,
+                      "type": "integer"
+                    }
+                  ],
+                  "description": "A documented percentage from 0 to 100, or a negative whole number for at most that many undocumented items."
+                },
+                {
+                  "additionalProperties": {
+                    "anyOf": [
+                      {
+                        "maximum": 100,
+                        "minimum": 0,
+                        "type": "number"
+                      },
+                      {
+                        "maximum": -1,
+                        "type": "integer"
+                      }
+                    ],
+                    "description": "For the files a gitignore-style glob matches, relative to this file's folder, together."
+                  },
+                  "properties": {
+                    "global": {
+                      "anyOf": [
+                        {
+                          "maximum": 100,
+                          "minimum": 0,
+                          "type": "number"
+                        },
+                        {
+                          "maximum": -1,
+                          "type": "integer"
+                        }
+                      ],
+                      "description": "For every file together."
+                    },
+                    "perFile": {
+                      "anyOf": [
+                        {
+                          "maximum": 100,
+                          "minimum": 0,
+                          "type": "number"
+                        },
+                        {
+                          "maximum": -1,
+                          "type": "integer"
+                        }
+                      ],
+                      "description": "For each file on its own."
+                    }
+                  },
+                  "type": "object"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "In place of the top-level `threshold`, for these files."
+        }
+      },
+      "required": [
+        "files"
+      ],
       "type": "object"
     },
     "Rules": {
@@ -513,6 +629,14 @@
         "null"
       ]
     },
+    "baseline": {
+      "default": null,
+      "description": "A file of undocumented items the gates let pass, relative to this file's folder, as `docov --write-baseline` writes it.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "commonjsMembers": {
       "default": false,
       "description": "Count `X.prototype.m = …` and `X.m = …` at the top level as members of X, a function or class declared there, and `this.a = …` in a CommonJS file as an export.",
@@ -558,7 +682,16 @@
     },
     "exports": {
       "$ref": "#/$defs/Exports",
+      "default": {
+        "cjs": true,
+        "esm": true,
+        "globals": false
+      },
       "description": "Which ways of exporting count under the `exports` scope. Globals are items under either scope only when on."
+    },
+    "extends": {
+      "$ref": "#/$defs/Extends",
+      "description": "Config files this one builds on, relative to its folder. Its keys win over theirs, and a later one's over an earlier one's."
     },
     "fileDocs": {
       "$ref": "#/$defs/FileDocs",
@@ -579,6 +712,14 @@
       "default": "tag",
       "description": "What documents an item by inheriting its docs."
     },
+    "jsdocConfig": {
+      "default": null,
+      "description": "A jsdoc.json, relative to this file's folder, whose `source` picks the files: its `include` is the paths unless `paths` is set, and its `exclude`, `includePattern` and `excludePattern` leave files out.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "kinds": {
       "default": null,
       "description": "Count only these kinds of item. Every kind counts without it.",
@@ -590,10 +731,33 @@
         "null"
       ]
     },
+    "maxUndocumented": {
+      "default": null,
+      "description": "The most undocumented items that pass.",
+      "format": "uint",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
     "members": {
       "$ref": "#/$defs/Members",
       "default": "classes",
       "description": "Which members count: those of classes and interfaces, or all of them, with enum members, a type alias's object members and the properties of an object literal tagged @enum, @namespace or @lends."
+    },
+    "nested": {
+      "default": false,
+      "description": "Scan each file with the nearest docov.json, docov.jsonc or .docovrc above it, up to this file's folder, merged over this one. Only the root config's counts.",
+      "type": "boolean"
+    },
+    "overrides": {
+      "default": [],
+      "description": "Settings for the files globs match, in place of the top-level ones. For each file and setting, the last override that matches it and has the setting wins.",
+      "items": {
+        "$ref": "#/$defs/Override"
+      },
+      "type": "array"
     },
     "paths": {
       "default": [],
@@ -639,15 +803,78 @@
       "type": "boolean"
     },
     "threshold": {
+      "anyOf": [
+        {
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "maximum": 100,
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "maximum": -1,
+                  "type": "integer"
+                }
+              ],
+              "description": "A documented percentage from 0 to 100, or a negative whole number for at most that many undocumented items."
+            },
+            {
+              "additionalProperties": {
+                "anyOf": [
+                  {
+                    "maximum": 100,
+                    "minimum": 0,
+                    "type": "number"
+                  },
+                  {
+                    "maximum": -1,
+                    "type": "integer"
+                  }
+                ],
+                "description": "For the files a gitignore-style glob matches, relative to this file's folder, together."
+              },
+              "properties": {
+                "global": {
+                  "anyOf": [
+                    {
+                      "maximum": 100,
+                      "minimum": 0,
+                      "type": "number"
+                    },
+                    {
+                      "maximum": -1,
+                      "type": "integer"
+                    }
+                  ],
+                  "description": "For every file together."
+                },
+                "perFile": {
+                  "anyOf": [
+                    {
+                      "maximum": 100,
+                      "minimum": 0,
+                      "type": "number"
+                    },
+                    {
+                      "maximum": -1,
+                      "type": "integer"
+                    }
+                  ],
+                  "description": "For each file on its own."
+                }
+              },
+              "type": "object"
+            }
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ],
       "default": null,
-      "description": "The lowest documented percentage that passes.",
-      "format": "double",
-      "maximum": 100,
-      "minimum": 0,
-      "type": [
-        "number",
-        "null"
-      ]
+      "description": "The lowest documented percentage that passes, or thresholds by path: `global` for every file together, `perFile` for each file, and gitignore-style globs for the files each matches together."
     },
     "typesThreshold": {
       "default": null,

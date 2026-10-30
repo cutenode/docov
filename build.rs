@@ -1,5 +1,6 @@
-//! Registers every file in src/feature/ as a feature and every file in src/check/ as a doc check,
-//! so adding either adds a file and no line in a shared list.
+//! Registers every file in src/feature/ as a feature, every file in src/report/ as an output format
+//! and every file in src/check/ as a doc check, so adding one adds a file and no line in a shared
+//! list.
 
 use std::{env, fs, path::Path};
 
@@ -7,21 +8,28 @@ fn main() {
     register(
         "feature",
         "features.rs",
-        "/// Makes each feature's entry, in file name order.\nconst ENTRIES: &[fn() -> Entry]",
-        |name| format!("{name}::entry"),
+        "pub mod",
+        "/// Each feature's name and a maker of its entry",
+        "const ENTRIES: &[Maker]",
+        |name| format!("({name:?}, {name}::entry)"),
     );
+    register("report", "formats.rs", "mod", "/// Every output format", "pub const FORMATS: &[Format]", |name| {
+        format!("{name}::FORMAT")
+    });
     // A check's rule id is its file name in kebab case.
     register(
         "check",
         "checks.rs",
-        "/// Each check's rule id and its entry, in file name order.\nconst ENTRIES: &[Registered]",
+        "pub mod",
+        "/// Each check's rule id and a maker of its entry",
+        "const ENTRIES: &[Registered]",
         |name| format!("({:?}, {name}::entry)", name.replace('_', "-")),
     );
 }
 
-/// Writes `out` in OUT_DIR: a module for each file in src/`folder`/, then `list` holding `entry` of
-/// each.
-fn register(folder: &str, out: &str, list: &str, entry: impl Fn(&str) -> String) {
+/// Writes `out` in OUT_DIR: a `module` for each Rust file in src/`folder`/, and `list`, of the
+/// `item` for each module's name, in file name order.
+fn register(folder: &str, out: &str, module: &str, doc: &str, list: &str, item: fn(&str) -> String) {
     println!("cargo::rerun-if-changed=src/{folder}");
     let dir = Path::new(&env::var("CARGO_MANIFEST_DIR").expect("cargo sets it")).join("src").join(folder);
     let mut names: Vec<String> = fs::read_dir(&dir)
@@ -37,11 +45,11 @@ fn register(folder: &str, out: &str, list: &str, entry: impl Fn(&str) -> String)
     let mut text = String::new();
     for name in &names {
         let path = dir.join(format!("{name}.rs"));
-        text += &format!("#[path = {:?}]\npub mod {name};\n", path.display().to_string());
+        text += &format!("#[path = {:?}]\n{module} {name};\n", path.display().to_string());
     }
-    text += &format!("\n{list} = &[\n");
+    text += &format!("\n{doc}, in file name order.\n{list} = &[\n");
     for name in &names {
-        text += &format!("    {},\n", entry(name));
+        text += &format!("    {},\n", item(name));
     }
     text += "];\n";
     fs::write(Path::new(&env::var("OUT_DIR").expect("cargo sets it")).join(out), text).expect("OUT_DIR is writable");

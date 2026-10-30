@@ -1,7 +1,5 @@
 //! Runs the doc checks that are on over a file's counted items with a block.
 
-use std::path::Path;
-
 use oxc_ast::{
     CommentContent,
     ast::{BindingIdentifier, Declaration, ExportDefaultDeclarationKind, Program, Statement},
@@ -9,29 +7,29 @@ use oxc_ast::{
 use oxc_ecmascript::BoundNames;
 use rustc_hash::FxHashSet;
 
-use super::{Collected, Rules, doc, jsdoc};
-use crate::check::Subject;
+use super::{Found, Lines, Rules, doc, jsdoc};
+use crate::check::{Checks, Diagnostic, Subject};
 
-impl Collected<'_> {
-    /// Runs `rules`' checks, if it has any, over the items that count (`reached` holds the local
-    /// names the public scope's entry points reach in the file at `path`, if they reach it).
-    pub(super) fn diagnose(&self, rules: &Rules, reached: Option<&FxHashSet<String>>, path: &Path) {
-        let Some(checks) = &rules.checks else { return };
-        for found in self.found.iter().filter(|f| rules.counts(f, &self.exported, reached)) {
-            let Some(doc) = &found.doc else { continue };
-            let exported = rules.exported(found, &self.exported);
-            let subject = Subject {
-                name: &found.name,
-                exported,
-                doc,
-                params: found.params.as_deref(),
-                shape: &found.shape,
-                source: self.lines.source,
-                names: &self.names,
-            };
-            checks.run(path, &subject, |at| self.lines.position(at as usize));
-        }
-    }
+/// What `checks` find in `found`'s block, if it has one: an item that's `exported` or not, in the
+/// file whose text `lines` has, which declares or imports `names` at its top level.
+pub(super) fn diagnose<'s>(
+    checks: &Checks,
+    found: &Found<'s>,
+    exported: bool,
+    lines: &Lines<'s>,
+    names: &FxHashSet<&'s str>,
+) -> Vec<Diagnostic> {
+    let Some(doc) = &found.doc else { return Vec::new() };
+    let subject = Subject {
+        name: &found.name,
+        exported,
+        doc,
+        params: found.params.as_deref(),
+        shape: &found.shape,
+        source: lines.source,
+        names,
+    };
+    checks.run(&subject, |at| lines.position(at as usize))
 }
 
 /// The names `program`, whose text is `source`, declares or imports at its top level, and the

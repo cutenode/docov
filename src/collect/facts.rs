@@ -1,12 +1,14 @@
 //! What an item's JSDoc says past whether it documents the item: the JSON report has these, and the
 //! metrics and orders beyond coverage use them.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::{Found, doc};
+use crate::check::Diagnostic;
 
-/// What an item's JSDoc says, and what about the item the reports order by.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+/// What an item's JSDoc says, and what about the item the reports order by. The JSON report leaves
+/// out the skipped fields, which the cache keeps apart.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Facts {
     /// Whether its JSDoc describes it: text before its first tag, or a tag that stands in for that.
@@ -32,6 +34,9 @@ pub struct Facts {
     /// `@returns` one when it has one.
     #[serde(skip)]
     pub typed: Option<bool>,
+    /// What the doc checks that are on found in its JSDoc, by position. An ignored item has none.
+    #[serde(skip)]
+    pub diagnostics: Vec<Diagnostic>,
 }
 
 impl Facts {
@@ -49,6 +54,7 @@ impl Facts {
             exported,
             release_tagged: doc.is_some_and(|doc| doc::release_tags(doc) == 1),
             typed: found.params.as_ref().filter(|_| javascript).map(|_| doc.is_some_and(doc::typed)),
+            diagnostics: Vec::new(),
         }
     }
 }

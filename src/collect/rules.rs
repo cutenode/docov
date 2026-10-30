@@ -4,6 +4,7 @@ use std::{fmt, sync::Arc};
 
 use regex::Regex;
 use rustc_hash::FxHashSet;
+use serde::{Serialize, Serializer};
 
 use super::{Found, Via, doc};
 use crate::{
@@ -14,7 +15,7 @@ use crate::{
 };
 
 /// Which items count, and when one is documented. The default is docov's out of the box.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize)]
 pub struct Rules {
     /// Which declarations count.
     pub scope: Scope,
@@ -25,6 +26,7 @@ pub struct Rules {
     /// The kinds of item that count, or every kind.
     pub kinds: Option<Vec<Kind>>,
     /// Regexes that take an item out of the total when its name, or a member's own name, matches.
+    #[serde(serialize_with = "sources")]
     pub ignore_names: Vec<Regex>,
     /// The access levels that count, or `None` to look at no access tags.
     pub access: Option<Vec<Access>>,
@@ -45,10 +47,24 @@ pub struct Rules {
     /// Whether `X.prototype.m = …` and `X.m = …` add members, and `this.a = …` in a CommonJS file
     /// exports.
     pub commonjs_members: bool,
-    /// What the package's entry points reach, for the public scope.
+    /// What the package's entry points reach, for the public scope. The cache stamps a file by
+    /// what they reach in it, not by this whole.
+    #[serde(skip)]
     pub public: Option<Arc<Api>>,
-    /// The doc checks that are on, if any are, which each scanned file's items go through.
+    /// The doc checks that are on, if any are, which each scanned file's items go through. The
+    /// cache stamps a file by their levels and options.
+    #[serde(serialize_with = "checks")]
     pub checks: Option<Arc<Checks>>,
+}
+
+/// Regexes, by their sources.
+fn sources<S: Serializer>(regexes: &[Regex], serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.collect_seq(regexes.iter().map(Regex::as_str))
+}
+
+/// The checks that are on, if any are, by their levels and options.
+fn checks<S: Serializer>(checks: &Option<Arc<Checks>>, serializer: S) -> Result<S::Ok, S::Error> {
+    checks.as_deref().serialize(serializer)
 }
 
 impl From<Scope> for Rules {

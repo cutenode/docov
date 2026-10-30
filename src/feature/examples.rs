@@ -6,9 +6,9 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 
 use crate::{
-    FileReport, config,
-    feature::{Entry, Feature},
-    report::{self, metric::EXAMPLES},
+    config,
+    feature::{Entry, Feature, Run},
+    metric::EXAMPLES,
 };
 
 pub(crate) fn entry() -> Entry {
@@ -54,11 +54,11 @@ impl Feature for Examples {
         Self { text: flags.examples, threshold: flags.examples_threshold.or(keys.examples_threshold) }
     }
 
-    fn report(&self, options: &mut report::Options) {
-        options.examples = self.text;
+    fn gate(&self, run: &Run) -> Vec<String> {
+        EXAMPLES.gate(self.threshold, run.reports).into_iter().collect()
     }
 
-    fn gate(&self, reports: &[FileReport]) -> Option<String> {
-        EXAMPLES.gate(self.threshold, reports)
+    fn describe(&self) -> Option<serde_json::Value> {
+        Some(serde_json::json!({ "text": self.text, "threshold": self.threshold }))
     }
 }

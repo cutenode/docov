@@ -71,4 +71,8 @@ impl Feature for IgnoreNames {
     fn rules(&self, rules: &mut Rules) {
         rules.ignore_names.clone_from(&self.0);
     }
+
+    fn describe(&self) -> Option<serde_json::Value> {
+        Some(self.0.iter().map(Regex::as_str).collect())
+    }
 }

@@ -3,10 +3,10 @@
 use std::cmp::Reverse;
 
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{
-    Item, Kind, report,
+    Item, Kind,
     feature::{Entry, Feature},
 };
 
@@ -15,7 +15,8 @@ pub(crate) fn entry() -> Entry {
 }
 
 /// The order of each file's undocumented items in the text report.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, clap::ValueEnum)]
+#[serde(rename_all = "lowercase")]
 pub enum Sort {
     /// Where they are in the file.
     #[default]
@@ -59,7 +60,7 @@ impl Feature for Sort {
         flags.sort
     }
 
-    fn report(&self, options: &mut report::Options) {
-        options.sort = *self;
+    fn describe(&self) -> Option<serde_json::Value> {
+        Some(serde_json::json!(self))
     }
 }

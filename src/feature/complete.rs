@@ -1,28 +1,18 @@
 //! `--complete` and `completeThreshold`: the share of counted items that are complete, documented
 //! and, for a function or method, with a matching `@param` for each parameter.
 
-use std::io::{self, Write};
-
 use schemars::JsonSchema;
 use serde::Deserialize;
 
 use crate::{
-    FileReport, Format, config,
-    feature::{Entry, Feature},
-    report::{self, metric::Metric},
+    config,
+    feature::{Entry, Feature, Run},
+    metric::{COMPLETE, Metric},
 };
 
 pub(crate) fn entry() -> Entry {
     Entry::of::<Complete>()
 }
-
-/// The share of counted items that are documented, with each parameter documented.
-pub const COMPLETE: Metric = Metric {
-    name: "complete",
-    keys: ["complete", "completePercent"],
-    over: |_| true,
-    has: |i| i.documented && i.facts.params_documented != Some(false),
-};
 
 /// Whether the reports have the complete share, and the lowest that passes.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -64,18 +54,15 @@ impl Feature for Complete {
         Self { on: flags.complete || threshold.is_some(), threshold }
     }
 
-    fn report(&self, options: &mut report::Options) {
-        options.metrics.extend(self.on.then_some(COMPLETE));
+    fn metric(&self) -> Option<Metric> {
+        self.on.then_some(COMPLETE)
     }
 
-    fn gate(&self, reports: &[FileReport]) -> Option<String> {
-        COMPLETE.gate(self.threshold, reports)
+    fn gate(&self, run: &Run) -> Vec<String> {
+        COMPLETE.gate(self.threshold, run.reports).into_iter().collect()
     }
 
-    fn append(&self, format: Format, reports: &[FileReport], out: &mut dyn Write) -> io::Result<()> {
-        if !self.on || format != Format::Text {
-            return Ok(());
-        }
-        COMPLETE.line(reports, out)
+    fn describe(&self) -> Option<serde_json::Value> {
+        Some(serde_json::json!({ "on": self.on, "threshold": self.threshold }))
     }
 }

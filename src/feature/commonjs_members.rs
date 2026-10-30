@@ -41,4 +41,8 @@ impl Feature for CommonjsMembers {
     fn rules(&self, rules: &mut Rules) {
         rules.commonjs_members = self.0;
     }
+
+    fn describe(&self) -> Option<serde_json::Value> {
+        Some(self.0.into())
+    }
 }

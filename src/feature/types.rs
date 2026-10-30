@@ -2,15 +2,13 @@
 //! in `.js`, `.mjs`, `.cjs` and `.jsx` files whose JSDoc types each `@param`, and its `@returns`
 //! when it has one.
 
-use std::io::{self, Write};
-
 use schemars::JsonSchema;
 use serde::Deserialize;
 
 use crate::{
-    FileReport, Format, config,
-    feature::{Entry, Feature},
-    report::{self, metric::TYPES},
+    config,
+    feature::{Entry, Feature, Run},
+    metric::{TYPES, Metric},
 };
 
 pub(crate) fn entry() -> Entry {
@@ -57,18 +55,15 @@ impl Feature for Types {
         Self { on: flags.types || threshold.is_some(), threshold }
     }
 
-    fn report(&self, options: &mut report::Options) {
-        options.metrics.extend(self.on.then_some(TYPES));
+    fn metric(&self) -> Option<Metric> {
+        self.on.then_some(TYPES)
     }
 
-    fn gate(&self, reports: &[FileReport]) -> Option<String> {
-        TYPES.gate(self.threshold, reports)
+    fn gate(&self, run: &Run) -> Vec<String> {
+        TYPES.gate(self.threshold, run.reports).into_iter().collect()
     }
 
-    fn append(&self, format: Format, reports: &[FileReport], out: &mut dyn Write) -> io::Result<()> {
-        if !self.on || format != Format::Text {
-            return Ok(());
-        }
-        TYPES.line(reports, out)
+    fn describe(&self) -> Option<serde_json::Value> {
+        Some(serde_json::json!({ "on": self.on, "threshold": self.threshold }))
     }
 }

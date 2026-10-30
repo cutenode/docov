@@ -7,17 +7,12 @@
 //! `publish = false`, and crates.io has no `oxc_linter`), and its rules run on oxc_semantic inside
 //! the whole linter. These are written on oxc_jsdoc, the parser oxc_linter's rules use too.
 
-use std::{
-    any::Any,
-    fmt,
-    path::{Path, PathBuf},
-    sync::{LazyLock, Mutex},
-};
+use std::{any::Any, fmt, sync::LazyLock};
 
 use oxc_jsdoc::JSDoc;
 use rustc_hash::FxHashSet;
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de::DeserializeOwned};
 use serde_json::Value;
 
 use crate::collect::{Shape, doc};
@@ -40,34 +35,44 @@ pub enum Level {
     /// The check doesn't run.
     #[default]
     Off,
-    /// Its findings are printed, and the scan still passes.
+    /// Its findings are reported, and the scan still passes.
     Warn,
-    /// Its findings are printed, and fail the scan.
+    /// Its findings are reported, and fail the scan.
     Error,
 }
 
-/// A problem a check found in a file.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+/// A problem a check found in an item's block.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Diagnostic {
-    /// The file, as the walk or the command line named it.
-    pub path: PathBuf,
     /// 1-based.
     pub line: usize,
     /// 1-based, in characters.
     pub column: usize,
     /// The check's rule id.
-    pub rule: &'static str,
+    #[serde(deserialize_with = "rule")]
+    pub rule: RuleId,
     /// Its level.
     pub severity: Level,
     /// What's wrong.
     pub message: String,
 }
 
+/// Its place in the file and what it says: `3:11: param-names: …`, which goes after the file's path.
 impl fmt::Display for Diagnostic {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let Self { path, line, column, rule, message, .. } = self;
-        write!(f, "{}:{line}:{column}: {rule}: {message}", path.display())
+        let Self { line, column, rule, message, .. } = self;
+        write!(f, "{line}:{column}: {rule}: {message}")
     }
+}
+
+/// A registered rule id. Written out in a field's type, `&'static str` would have serde read the
+/// field borrowed from its input, which can't live that long, though `rule` reads it.
+pub type RuleId = &'static str;
+
+/// Reads a rule id, as the cache keeps it, as the registered one.
+fn rule<'de, D: Deserializer<'de>>(deserializer: D) -> Result<&'static str, D::Error> {
+    let id = String::deserialize(deserializer)?;
+    entry(&id).map(|(id, _)| id).map_err(serde::de::Error::custom)
 }
 
 /// An item with a JSDoc block, as a check sees it.
@@ -183,6 +188,11 @@ pub fn ids() -> impl Iterator<Item = &'static str> {
     CHECKS.iter().map(|(id, _)| *id)
 }
 
+/// Every rule id with what its check wants, in a line, in file name order.
+pub fn catalog() -> impl Iterator<Item = (&'static str, &'static str)> {
+    CHECKS.iter().map(|(id, entry)| (*id, entry.about))
+}
+
 fn entry(id: &str) -> Result<(&'static str, &'static Entry), String> {
     let known = || ids().collect::<Vec<_>>().join(", ");
     CHECKS
@@ -218,6 +228,16 @@ impl Setting {
     }
 }
 
+/// As docov.json writes it: the level, or the level and the options.
+impl Serialize for Setting {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match &self.options {
+            None => self.level.serialize(serializer),
+            Some(options) => (self.level, options).serialize(serializer),
+        }
+    }
+}
+
 /// Parses `--rule ID=LEVEL`.
 pub fn flag(value: &str) -> Result<(String, Level), String> {
     let (id, level) = value.split_once('=').ok_or("expected ID=LEVEL")?;
@@ -250,21 +270,28 @@ pub fn schema(generator: &mut SchemaGenerator) -> Schema {
 /// A check that's on.
 struct On {
     rule: &'static str,
-    level: Level,
+    /// Its level and options as docov.json gave them, which the cache stamps by.
+    setting: Setting,
     options: AnyOptions,
     run: fn(&AnyOptions, &Subject, &mut Vec<Finding>),
 }
 
-/// The checks that are on, and what they've found so far. Scans run them on each counted item with
-/// a block, in parallel, and the run reads what they found once they're done.
+/// The checks that are on, which scans run on each counted item with a block.
 pub struct Checks {
     on: Vec<On>,
-    found: Mutex<Vec<Diagnostic>>,
 }
 
 impl fmt::Debug for Checks {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_map().entries(self.levels()).finish()
+    }
+}
+
+/// Each check's setting by its rule id, as docov.json writes it. The cache stamps by it, since the
+/// levels and options change what a scan finds.
+impl Serialize for Checks {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_map(self.on.iter().map(|on| (on.rule, &on.setting)))
     }
 }
 
@@ -278,37 +305,31 @@ impl Checks {
             .map(|(id, setting)| {
                 let (rule, entry) = entry(id).expect("a parsed rule id");
                 let options = (entry.options)(setting.options.as_ref()).expect("parsed options");
-                On { rule, level: setting.level, options, run: entry.run }
+                On { rule, setting: setting.clone(), options, run: entry.run }
             })
             .collect();
-        (!on.is_empty()).then(|| Self { on, found: Mutex::default() })
+        (!on.is_empty()).then_some(Self { on })
     }
 
     /// Each check that's on, by rule id, and its level.
     pub fn levels(&self) -> impl Iterator<Item = (&'static str, Level)> {
-        self.on.iter().map(|on| (on.rule, on.level))
+        self.on.iter().map(|on| (on.rule, on.setting.level))
     }
 
-    /// Runs each check on `subject`, in the file at `path`, whose offsets `position` turns into
-    /// lines and columns.
-    pub(crate) fn run(&self, path: &Path, subject: &Subject, position: impl Fn(u32) -> (usize, usize)) {
+    /// What each check finds in `subject`, by position, whose offsets `position` turns into lines
+    /// and columns.
+    pub(crate) fn run(&self, subject: &Subject, position: impl Fn(u32) -> (usize, usize)) -> Vec<Diagnostic> {
         let mut diagnostics = Vec::new();
         for on in &self.on {
             let mut findings = Vec::new();
             (on.run)(&on.options, subject, &mut findings);
             diagnostics.extend(findings.into_iter().map(|Finding { at, message }| {
                 let (line, column) = position(at);
-                Diagnostic { path: path.to_owned(), line, column, rule: on.rule, severity: on.level, message }
+                Diagnostic { line, column, rule: on.rule, severity: on.setting.level, message }
             }));
         }
-        self.found.lock().expect("no check panics holding it").extend(diagnostics);
-    }
-
-    /// What they've found, by file and position, and forgets it.
-    pub fn take(&self) -> Vec<Diagnostic> {
-        let mut found = std::mem::take(&mut *self.found.lock().expect("no check panics holding it"));
-        found.sort();
-        found
+        diagnostics.sort();
+        diagnostics
     }
 }
 

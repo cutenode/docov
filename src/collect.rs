@@ -31,7 +31,9 @@ use crate::{
 };
 
 /// What kind of declaration an item is.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Deserialize, JsonSchema, clap::ValueEnum)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema, clap::ValueEnum,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
     /// `function f() {}`, or a function assigned to an export.
@@ -87,14 +89,8 @@ impl Kind {
     }
 }
 
-impl Serialize for Kind {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(self.as_str())
-    }
-}
-
 /// A declaration that should have JSDoc.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Item {
     /// The declared name, `Class.member` for members, `default` for an unnamed default export. A
     /// file's own item is named by its `@module`, or else its path (empty from [`scan`], which has
@@ -173,20 +169,24 @@ pub struct SyntaxError {
 
 /// Reads and scans one file.
 pub fn scan_file(path: &Path, rules: &Rules) -> Result<FileReport, Error> {
-    let (source, source_type) = read(path)?;
-    let reached = rules.public.as_ref().and_then(|api| api.reach(path));
-    let items = collect(&source, source_type, rules, Some(path), false, |c| {
-        c.diagnose(rules, reached, path);
-        c.items(rules, source_type, reached)
-    });
-    Ok(FileReport { path: path.to_owned(), items: items.map_err(|e| e.at(path, &source))? })
+    let (source, _) = read(path)?;
+    scan_source(path, &source, rules)
 }
 
-/// The text of the file at `path`, and what language it's in.
+/// The text of the file at `path`, and what language it's in. The language comes first, so a file
+/// that isn't JavaScript fails as one even if it isn't UTF-8.
 fn read(path: &Path) -> Result<(String, SourceType), Error> {
-    let source_type = SourceType::from_path(path).map_err(|_| Error::Language { path: path.to_owned() })?;
+    let source_type = language(path)?;
     let source = fs::read_to_string(path).map_err(|source| Error::Read { path: path.to_owned(), source })?;
     Ok((source, source_type))
+}
+
+/// Scans `source` as the file at `path`, whose extension picks the language.
+pub fn scan_source(path: &Path, source: &str, rules: &Rules) -> Result<FileReport, Error> {
+    let source_type = language(path)?;
+    let reached = rules.public.as_ref().and_then(|api| api.reach(path));
+    let items = collect(source, source_type, rules, Some(path), false, |c| c.items(rules, source_type, reached));
+    Ok(FileReport { path: path.to_owned(), items: items.map_err(|e| e.at(path, source))? })
 }
 
 impl SyntaxError {
@@ -195,6 +195,11 @@ impl SyntaxError {
         let (line, column) = Lines::new(source).position(self.offset);
         Error::Syntax { path: path.to_owned(), line, column, message: self.message }
     }
+}
+
+/// The language of the file at `path`, by its extension.
+fn language(path: &Path) -> Result<SourceType, Error> {
+    SourceType::from_path(path).map_err(|_| Error::Language { path: path.to_owned() })
 }
 
 /// The items in `source` that count by `rules`. Any syntax error fails the scan: a partial AST
@@ -225,17 +230,23 @@ struct Skip {
 
 impl Collected<'_> {
     /// The items that count by `rules` (`reached` holds the local names the public scope's entry
-    /// points reach in the file, if they reach it).
+    /// points reach in the file, if they reach it), each with what the doc checks found in it
+    /// unless it's [ignored](Item::ignored).
     fn items(self, rules: &Rules, source_type: SourceType, reached: Option<&FxHashSet<String>>) -> Vec<Item> {
-        let Self { found, exported, ignores, lines, .. } = self;
+        let Self { found, exported, ignores, lines, names, .. } = self;
         found
-            .into_iter()
+            .iter()
             .filter(|f| rules.counts(f, &exported, reached))
             .map(|f| {
                 let (line, column) = lines.position(f.at as usize);
-                let facts = Facts::of(&f, rules.exported(&f, &exported), source_type.is_javascript());
-                let documented = rules.documents(&f);
-                Item { name: f.name, kind: f.kind, line, column, documented, facts, ignore: ignores.covering(line) }
+                let is_exported = rules.exported(f, &exported);
+                let facts = Facts::of(f, is_exported, source_type.is_javascript());
+                let (documented, ignore) = (rules.documents(f), ignores.covering(line));
+                let mut item = Item { name: f.name.clone(), kind: f.kind, line, column, documented, facts, ignore };
+                if let Some(checks) = rules.checks.as_ref().filter(|_| !item.ignored()) {
+                    item.facts.diagnostics = diagnose::diagnose(checks, f, is_exported, &lines, &names);
+                }
+                item
             })
             .collect()
     }

@@ -1,6 +1,7 @@
 //! `--rule` and `rules`: which doc checks are on, at what level, and with what options. Every check
-//! is off unless one of them turns it on. A check's findings are printed as
-//! `docov: path:line:column: rule-id: message`, and those at `error` fail the scan.
+//! is off unless one of them turns it on. A check's findings go to stderr as
+//! `docov: path:line:column: rule-id: message` and to the formats that list problems, and those at
+//! `error` fail the scan.
 
 use std::{borrow::Cow, sync::Arc};
 
@@ -9,9 +10,10 @@ use serde::{Deserialize, Deserializer, de};
 use serde_json::Value;
 
 use crate::{
-    FileReport, Rules,
+    Rules,
     check::{self, Checks, Level, Setting},
-    feature::{Entry, Feature},
+    feature::{Entry, Feature, Run},
+    report,
 };
 
 pub(crate) fn entry() -> Entry {
@@ -80,13 +82,17 @@ impl Feature for DocChecks {
         rules.checks.clone_from(&self.0);
     }
 
-    /// Prints each warning, and fails the scan with each error.
-    fn gate(&self, _reports: &[FileReport]) -> Option<String> {
-        let (errors, warnings): (Vec<_>, Vec<_>) =
-            self.0.as_ref()?.take().into_iter().partition(|d| d.severity == Level::Error);
-        for warning in warnings {
-            eprintln!("docov: {warning}");
-        }
-        (!errors.is_empty()).then(|| errors.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n"))
+    /// Fails the scan when a counted item has a finding at `error`. The findings themselves are
+    /// reported with the items.
+    fn gate(&self, run: &Run) -> Vec<String> {
+        let errors = report::diagnostics(run.reports).filter(|(_, d)| d.severity == Level::Error).count();
+        let plural = if errors == 1 { "" } else { "s" };
+        Vec::from_iter((errors > 0).then(|| format!("the doc checks found {errors} error{plural}")))
+    }
+
+    fn describe(&self) -> Option<Value> {
+        Some(self.0.as_deref().map_or_else(|| Value::Object(serde_json::Map::new()), |checks| {
+            serde_json::to_value(checks).expect("checks serialize")
+        }))
     }
 }

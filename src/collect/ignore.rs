@@ -4,12 +4,12 @@
 use oxc_ast::ast::Program;
 use oxc_span::GetSpan;
 use rustc_hash::FxHashMap;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::Lines;
 
 /// A `docov-ignore` comment that covers an item.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Ignore {
     /// What follows the `:`, if anything does.
     pub reason: Option<String>,

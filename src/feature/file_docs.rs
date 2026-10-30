@@ -49,4 +49,8 @@ impl Feature for FileDocs {
     fn rules(&self, rules: &mut Rules) {
         rules.file_docs = *self;
     }
+
+    fn describe(&self) -> Option<serde_json::Value> {
+        Some(serde_json::json!(self))
+    }
 }
