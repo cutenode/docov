@@ -4,11 +4,12 @@ use std::{io, path::PathBuf, process::ExitCode};
 
 use clap::{CommandFactory, FromArgMatches, Parser};
 use docov::{
-    Config, Format, Scope, Settings,
+    Config, Format, Scope, Settings, Totals,
     feature::{
         self,
         baseline::{self, Baseline},
         overrides::Overrides,
+        update_threshold::UpdateThreshold,
     },
     glob::Globs,
     report,
@@ -95,6 +96,10 @@ fn run(cli: Cli, matches: &clap::ArgMatches) -> Result<bool, Vec<String>> {
         let path = baseline.save(&config.dir, &root, &reports).map_err(|e| vec![e])?;
         eprintln!("docov: wrote the undocumented items to {}", path.display());
         return Ok(true);
+    }
+    let raised = settings.get::<UpdateThreshold>().update(config.path.as_deref(), Totals::of(&reports));
+    if let Some(raised) = raised.map_err(|e| vec![e])? {
+        eprintln!("docov: {raised}");
     }
     // The gates let the baseline's items through, which the report still lists.
     let reports = match excused {

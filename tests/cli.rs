@@ -152,7 +152,13 @@ fn help_describes_docov_and_lists_every_features_flags() {
     let (code, out, _) = docov(dir.path(), &["--help"]);
     assert_eq!(code, 0);
     assert!(out.starts_with("Checks how much of a JavaScript or TypeScript project's API has JSDoc."), "{out}");
-    for flag in ["--threshold <PERCENT>", "--scope <SCOPE>", "--max-undocumented <N>"] {
+    for flag in [
+        "--threshold <PERCENT>",
+        "--scope <SCOPE>",
+        "--max-undocumented <N>",
+        "--baseline <FILE>",
+        "--update-threshold",
+    ] {
         assert!(out.contains(flag), "{flag}: {out}");
     }
 }
@@ -320,4 +326,24 @@ fn a_baseline_keys_items_by_path_kind_and_name() {
     let (code, _, err) = docov(dir.path(), &[]);
     assert_eq!(code, 2);
     assert!(err.starts_with("docov: known.json: unknown field `extra`"), "{err}");
+}
+
+#[test]
+fn update_threshold_ratchets_the_config_in_place() {
+    let dir = project();
+    let (code, _, err) = docov(dir.path(), &["--update-threshold"]);
+    assert_eq!((code, err.as_str()), (0, "docov: raised the threshold to 66.6% in docov.json\n"));
+    assert_eq!(fs::read_to_string(dir.path().join("docov.json")).unwrap(), "{\n  \"threshold\": 66.6\n}\n");
+
+    let config =
+        "// ours\n{\n  \"threshold\": { \"src/**\": 10, \"global\": 50 }, // floor\n  \"scope\": \"exports\",\n}\n";
+    fs::write(dir.path().join("docov.json"), config).unwrap();
+    assert_eq!(docov(dir.path(), &["--update-threshold"]).0, 0);
+    let raised = fs::read_to_string(dir.path().join("docov.json")).unwrap();
+    assert_eq!(raised, config.replace("\"global\": 50", "\"global\": 66.6"));
+    // Never down.
+    fs::write(dir.path().join("src/b.ts"), "export const z = 1;\n").unwrap();
+    let (code, _, err) = docov(dir.path(), &["--update-threshold"]);
+    assert_eq!((code, err.as_str()), (1, "docov: 50.0% documented, under the 66.6% threshold\n"));
+    assert_eq!(fs::read_to_string(dir.path().join("docov.json")).unwrap(), raised);
 }

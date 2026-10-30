@@ -37,6 +37,9 @@ pub struct Config {
     /// or with no file). `paths` and `exclude` are relative to it.
     #[serde(skip)]
     pub dir: PathBuf,
+    /// The file, as a path from the current folder, if there is one.
+    #[serde(skip)]
+    pub path: Option<PathBuf>,
 }
 
 /// Parses `--threshold`: a number from 0 to 100. It lives here rather than in the binary so tests
@@ -149,6 +152,7 @@ impl Config {
         let mut config: Self = serde_json::from_str(&text).map_err(parse)?;
         config.keys = feature::Keys::parse(&text).map_err(parse)?;
         config.dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
+        config.path = Some(path);
         Ok(config)
     }
 

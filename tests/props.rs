@@ -857,7 +857,12 @@ fn comments_in_config_files_change_nothing(tc: TestCase) {
 fn settings(dir: &Path, config: &str, args: &[String]) -> docov::Settings {
     let path = dir.join("docov.json");
     fs::write(&path, config).unwrap();
-    let config = config::Config::load(Some(&path)).unwrap();
+    load_settings(&path, args)
+}
+
+/// Settings from the config file at `path` and `args`, made in-process.
+fn load_settings(path: &Path, args: &[String]) -> docov::Settings {
+    let config = config::Config::load(Some(path)).unwrap();
     let matches = docov::feature::args(clap::Command::new("docov"))
         .try_get_matches_from(std::iter::once("docov".to_owned()).chain(args.iter().cloned()));
     docov::Settings::new(&matches.unwrap(), config.keys)
@@ -1198,6 +1203,15 @@ fn the_cli_writes_a_baseline_and_gates_by_it(tc: TestCase) {
     let (code, _, err) = run(named);
     assert_eq!((code, err.as_str()), (1, "docov: 1 undocumented, over the limit of 0\n"));
 
+    // --update-threshold writes the documented percentage into docov.json, or a new one.
+    let (code, _, err) = run(&[&["--update-threshold"], named].concat());
+    let tenths = 1000 / (undocumented + 2);
+    let percent = (tenths as f64 / 10.0).to_string();
+    let raised = format!("docov: raised the threshold to {percent}% in docov.json\n");
+    assert_eq!((code, err), (1, format!("{raised}docov: 1 undocumented, over the limit of 0\n")));
+    let config = fs::read_to_string(dir.path().join("docov.json")).unwrap();
+    assert!(config.contains(&format!(r#""threshold": {percent}"#)), "{config}");
+
     let (code, schema, _) = run(&["--print-schema", "baseline"]);
     let schema: serde_json::Value = serde_json::from_str(&schema).unwrap();
     assert_eq!((code, schema["title"].as_str()), (0, Some("Baseline")));
@@ -1210,4 +1224,127 @@ fn the_cli_writes_a_baseline_and_gates_by_it(tc: TestCase) {
     let (code, out, err) = run(named);
     assert_eq!((code, out.as_str()), (2, ""));
     assert!(err.starts_with("docov: known.json: "), "{err}");
+
+    // A config it can't write fails naming it.
+    let config = dir.path().join("docov.json");
+    fs::write(&config, "{}").unwrap();
+    let mut permissions = fs::metadata(&config).unwrap().permissions();
+    permissions.set_readonly(true);
+    fs::set_permissions(&config, permissions).unwrap();
+    let (code, _, err) = run(&["--update-threshold"]);
+    unlock(&config);
+    assert_eq!(code, 2);
+    assert!(err.starts_with("docov: docov.json: "), "{err}");
+}
+
+/// Makes a read-only file writable again.
+fn unlock(path: &Path) {
+    let mut permissions = fs::metadata(path).unwrap().permissions();
+    #[expect(clippy::permissions_set_readonly_false, reason = "only to delete it")]
+    permissions.set_readonly(false);
+    fs::set_permissions(path, permissions).unwrap();
+}
+
+/// A threshold already in docov.json, before --update-threshold.
+#[derive(Clone, Copy, Debug)]
+enum Current {
+    Missing,
+    Null,
+    Percent(u16),
+    Undocumented(u8),
+    /// An object of thresholds, with or without `global`.
+    Object(Option<u16>),
+}
+
+/// --update-threshold raises the global threshold, a number or an object's `global`, to the
+/// documented percentage rounded down to a tenth, only when that's higher, leaving the rest of the
+/// file as written. A count of undocumented items stays. Without a config it writes docov.json
+/// where docov runs, and a config it can't write fails naming it.
+#[hegel::test(test_cases = 100)]
+fn update_threshold_only_raises(tc: TestCase) {
+    use docov::feature::{
+        threshold::{Limit, Threshold},
+        update_threshold::UpdateThreshold,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let total = tc.draw(gs::integers::<usize>().max_value(20));
+    let totals = Totals { documented: tc.draw(gs::integers::<usize>().max_value(total)), total };
+    let tenths = (totals.documented * 1000).checked_div(total).unwrap_or(1000);
+    let percent = tenths as f64 / 10.0;
+    // In tenths of a percent, near the scan's half the time.
+    let tenth = |tc: &TestCase| {
+        if tc.draw(gs::booleans()) {
+            tc.draw(gs::integers::<u16>().max_value(1000))
+        } else {
+            tenths.saturating_sub(1).max(1) as u16 + tc.draw(gs::integers::<u16>().max_value(1))
+        }
+    };
+    let current = match tc.draw(gs::integers::<u8>().max_value(4)) {
+        0 => Current::Missing,
+        1 => Current::Null,
+        2 => Current::Percent(tenth(&tc).min(1000)),
+        3 => Current::Undocumented(tc.draw(gs::integers::<u8>().min_value(1).max_value(5))),
+        _ => Current::Object(tc.draw(gs::optional(gs::just(()))).map(|()| tenth(&tc).min(1000))),
+    };
+    let number = |t: u16| format!("{}", f64::from(t) / 10.0);
+    let threshold = match current {
+        Current::Missing => String::new(),
+        Current::Null => r#""threshold": null, "#.into(),
+        Current::Percent(t) => format!(r#""threshold": {}, "#, number(t)),
+        Current::Undocumented(n) => format!(r#""threshold": -{n}, "#),
+        Current::Object(global) => {
+            let global = global.map(|t| format!(r#""global": {}, "#, number(t))).unwrap_or_default();
+            format!(r#""threshold": {{ {global}"src/**": 50 }}, "#)
+        }
+    };
+    let text = format!("// keep\n{{\n  {threshold}/* note */ \"scope\": \"all\",\n}}\n");
+    let path = dir.path().join("docov.jsonc");
+    fs::write(&path, &text).unwrap();
+    let update = load_settings(&path, &["--update-threshold".to_owned()]);
+    let update = *update.get::<UpdateThreshold>();
+    let raised = update.update(Some(&path), totals).unwrap();
+
+    let before = match current {
+        Current::Percent(t) | Current::Object(Some(t)) => Some(f64::from(t) / 10.0),
+        Current::Undocumented(_) => Some(f64::INFINITY),
+        _ => None,
+    };
+    let raises = before.is_none_or(|before| before < percent);
+    assert_eq!(raised.is_some(), raises, "{text}");
+    let after = fs::read_to_string(&path).unwrap();
+    assert!(
+        after.contains("// keep") && after.contains("/* note */") && after.contains("\"scope\": \"all\""),
+        "{after}"
+    );
+    let global = load_settings(&path, &[]).get::<Threshold>().0.global;
+    let wanted = match current {
+        _ if raises => Some(Limit::Percent(percent)),
+        Current::Undocumented(n) => Some(Limit::Undocumented(n.into())),
+        _ => before.map(Limit::Percent),
+    };
+    assert_eq!(global, wanted, "{after}");
+    // Asking again changes nothing.
+    assert_eq!(update.update(Some(&path), totals).unwrap(), None);
+    assert_eq!(*load_settings(&path, &[]).get::<UpdateThreshold>(), UpdateThreshold(false));
+    assert_eq!(UpdateThreshold(false).update(Some(&path), Totals::default()).unwrap(), None);
+
+    // A read-only config fails naming it.
+    let locked = dir.path().join("locked.json");
+    fs::write(&locked, "{}").unwrap();
+    let mut permissions = fs::metadata(&locked).unwrap().permissions();
+    permissions.set_readonly(true);
+    fs::set_permissions(&locked, permissions).unwrap();
+    let error = update.update(Some(&locked), totals).unwrap_err();
+    assert!(error.starts_with(&format!("{}: ", locked.display())), "{error}");
+    // So Windows can delete it.
+    unlock(&locked);
+
+    // Without a config, a new docov.json where docov runs.
+    std::env::set_current_dir(dir.path()).unwrap();
+    let message = update.update(None, totals).unwrap().unwrap();
+    assert_eq!(message, format!("raised the threshold to {percent}% in docov.json"));
+    assert_eq!(
+        fs::read_to_string(dir.path().join("docov.json")).unwrap(),
+        format!("{{\n  \"threshold\": {percent}\n}}\n")
+    );
 }
