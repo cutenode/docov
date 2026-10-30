@@ -303,3 +303,10 @@ fn the_readme_points_at_this_versions_schema() {
         format!("https://raw.githubusercontent.com/cutenode/docov/v{}/docov.schema.json", env!("CARGO_PKG_VERSION"));
     assert!(readme.contains(&url), "point the README's $schema at {url}");
 }
+
+#[test]
+fn the_pre_commit_hook_installs_this_version() {
+    let hooks = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(".pre-commit-hooks.yaml")).unwrap();
+    let package = format!("\"@docov/cli@{}\"", env!("CARGO_PKG_VERSION"));
+    assert!(hooks.contains(&package), "point .pre-commit-hooks.yaml's additional_dependencies at {package}");
+}

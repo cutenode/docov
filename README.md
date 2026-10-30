@@ -129,6 +129,29 @@ With `data-branch: docov-data`, each push to the default branch commits `docov.j
 ![docs](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/OWNER/REPO/docov-data/shields.json)
 ```
 
+### pre-commit and lefthook
+
+```yaml
+# .pre-commit-config.yaml
+repos:
+  - repo: https://github.com/cutenode/docov
+    rev: vX.Y.Z
+    hooks:
+      - id: docov
+        args: [--quiet]
+```
+
+The hook installs `@docov/cli` in pre-commit's own Node environment, so it needs nothing installed and runs on pre-commit.ci. It scans the whole project when a script or docov's config is staged. With `@docov/cli` in your devDependencies, [lefthook](https://lefthook.dev) runs that one:
+
+```yaml
+# lefthook.yml
+pre-commit:
+  commands:
+    docov:
+      glob: "*.{js,mjs,cjs,jsx,ts,mts,cts,tsx}"
+      run: npx docov --quiet
+```
+
 ## Working on it
 
 The toolchain is pinned in `rust-toolchain.toml`, and Node in `.node-version`. The checks need [cargo-nextest](https://nexte.st) and [cargo-llvm-cov](https://github.com/taiki-e/cargo-llvm-cov).

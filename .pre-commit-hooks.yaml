@@ -1,0 +1,12 @@
+# docov as a pre-commit hook. `language: node` has pre-commit install the npm package, with its
+# prebuilt binary, in an environment of its own (and Node too when there isn't one), so it works
+# without docov installed and on pre-commit.ci. The version moves with Cargo.toml's (a test checks).
+- id: docov
+  name: docov
+  description: JSDoc coverage for JavaScript and TypeScript
+  entry: docov
+  language: node
+  additional_dependencies: ["@docov/cli@0.1.1"]
+  # docov scans the whole project, and runs when a script or its config changes.
+  pass_filenames: false
+  files: (\.[cm]?[jt]sx?|(^|/)(docov\.jsonc?|\.docovrc))$
