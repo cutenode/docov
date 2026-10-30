@@ -5,14 +5,19 @@ use std::{any::Any, fmt::Debug, sync::LazyLock};
 
 use clap::{ArgMatches, Args, Command, FromArgMatches};
 use schemars::{JsonSchema, Schema};
-use serde::de::DeserializeOwned;
+use serde::{Deserialize, de::DeserializeOwned};
+use serde_json::{Map, Value};
 
 use crate::FileReport;
 
 include!(concat!(env!("OUT_DIR"), "/features.rs"));
 
+/// A feature's name, its file's, and what makes its entry.
+type Maker = (&'static str, fn() -> Entry);
+
 /// Every feature, registered.
-static FEATURES: LazyLock<Vec<Entry>> = LazyLock::new(|| ENTRIES.iter().map(|entry| entry()).collect());
+static FEATURES: LazyLock<Vec<Entry>> =
+    LazyLock::new(|| ENTRIES.iter().map(|&(name, entry)| Entry { name, ..entry() }).collect());
 
 /// A setting, or a group of them, read from flags and docov.json. Register one by giving its file
 /// a `pub(crate) fn entry() -> Entry { Entry::of::<YourFeature>() }`.
@@ -30,10 +35,21 @@ pub trait Feature: Sized + Send + Sync + 'static {
     fn gate(&self, _reports: &[FileReport]) -> Option<String> {
         None
     }
+
+    /// The setting as JSON, for `--print-config`, if it has one worth printing.
+    fn describe(&self) -> Option<Value> {
+        None
+    }
 }
+
+/// The keys of a feature that only has flags.
+#[derive(Debug, Default, PartialEq, Deserialize, JsonSchema)]
+pub struct NoKeys {}
 
 /// A feature, registered.
 pub struct Entry {
+    /// Its file's name.
+    name: &'static str,
     args: fn(Command) -> Command,
     schema: fn() -> Schema,
     keys: fn(&str) -> serde_json::Result<Box<dyn AnyKeys>>,
@@ -43,7 +59,7 @@ pub struct Entry {
 impl Entry {
     /// The entry for `F`.
     pub fn of<F: Feature>() -> Self {
-        Self { args: F::Flags::augment_args, schema: schema::<F>, keys: keys::<F>, load: load::<F> }
+        Self { name: "", args: F::Flags::augment_args, schema: schema::<F>, keys: keys::<F>, load: load::<F> }
     }
 }
 
@@ -123,6 +139,7 @@ impl PartialEq for Keys {
 trait Loaded: Send + Sync {
     fn as_any(&self) -> &dyn Any;
     fn gate(&self, reports: &[FileReport]) -> Option<String>;
+    fn describe(&self) -> Option<Value>;
 }
 
 impl<F: Feature> Loaded for F {
@@ -131,6 +148,9 @@ impl<F: Feature> Loaded for F {
     }
     fn gate(&self, reports: &[FileReport]) -> Option<String> {
         Feature::gate(self, reports)
+    }
+    fn describe(&self) -> Option<Value> {
+        Feature::describe(self)
     }
 }
 
@@ -151,5 +171,10 @@ impl Settings {
     /// Why the scan fails, from each feature that fails it.
     pub fn gates(&self, reports: &[FileReport]) -> Vec<String> {
         self.0.iter().filter_map(|f| f.gate(reports)).collect()
+    }
+
+    /// Each feature's setting as JSON, by its name, leaving out those without one.
+    pub fn describe(&self) -> Map<String, Value> {
+        FEATURES.iter().zip(&self.0).filter_map(|(entry, f)| Some((entry.name.to_owned(), f.describe()?))).collect()
     }
 }

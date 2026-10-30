@@ -1,9 +1,21 @@
 //! The `docov` command.
 
-use std::{io, path::PathBuf, process::ExitCode};
+use std::{
+    io::{self, Write},
+    path::PathBuf,
+    process::ExitCode,
+};
 
 use clap::{CommandFactory, FromArgMatches, Parser};
-use docov::{Config, Format, Scope, Settings, feature, report, scan_file, walk};
+use docov::{
+    Config, Format, Scope, Settings,
+    feature::{
+        self,
+        list_files::{self, ListFiles},
+        print_config::{self, PrintConfig},
+    },
+    report, scan_file, walk,
+};
 use rayon::{iter::Either, prelude::*};
 
 /// Checks how much of a JavaScript or TypeScript project's API has JSDoc.
@@ -49,9 +61,15 @@ fn run(cli: Cli, matches: &clap::ArgMatches) -> Result<bool, Vec<String>> {
     let mut config = Config::load(cli.config.as_deref()).map_err(|e| vec![e.to_string()])?;
     let settings = Settings::new(matches, std::mem::take(&mut config.keys));
     let paths = if cli.paths.is_empty() { std::mem::take(&mut config.paths) } else { cli.paths };
+    if settings.get::<PrintConfig>().0 {
+        return wrote(writeln!(io::stdout(), "{:#}", print_config::json(&config, &paths, &settings)));
+    }
     let scope = *settings.get::<Scope>();
 
     let files = walk::files(&paths, &config.exclude).map_err(|e| vec![e.to_string()])?;
+    if settings.get::<ListFiles>().0 {
+        return wrote(list_files::write(&files, &mut io::stdout().lock()));
+    }
     let (reports, errors): (Vec<_>, Vec<_>) = files.par_iter().partition_map(|path| match scan_file(path, scope) {
         Ok(report) => Either::Left(report),
         Err(e) => Either::Right(e.to_string()),
@@ -66,4 +84,9 @@ fn run(cli: Cli, matches: &clap::ArgMatches) -> Result<bool, Vec<String>> {
         eprintln!("docov: {failure}");
     }
     Ok(failures.is_empty())
+}
+
+/// A write's result as `run`'s: passed, or why not.
+fn wrote(result: io::Result<()>) -> Result<bool, Vec<String>> {
+    result.map(|()| true).map_err(|e| vec![e.to_string()])
 }

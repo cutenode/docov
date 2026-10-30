@@ -43,6 +43,10 @@ impl Feature for Threshold {
         Self(flags.threshold.or(keys.threshold))
     }
 
+    fn describe(&self) -> Option<serde_json::Value> {
+        Some(self.0.into())
+    }
+
     fn gate(&self, reports: &[FileReport]) -> Option<String> {
         let percent = Totals::of(reports).percent();
         let threshold = self.0.filter(|&threshold| percent < threshold)?;

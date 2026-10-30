@@ -201,3 +201,18 @@ fn a_config_extends_others_relative_to_itself() {
     let chain = ["docov.json", "../base.json", "../pkg/docov.json"].map(|p| Path::new(p).display().to_string());
     assert_eq!((code, err), (2, format!("docov: config files extend each other in a cycle: {}\n", chain.join(" -> "))));
 }
+
+#[test]
+fn print_config_and_list_files_show_what_a_scan_would_use() {
+    let dir = project();
+    fs::write(dir.path().join("docov.json"), r#"{ "paths": ["src"], "threshold": 80 }"#).unwrap();
+    let (code, out, _) = docov(dir.path(), &["--print-config", "--scope", "all"]);
+    let json: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(code, 0);
+    assert_eq!(json["files"], serde_json::json!(["docov.json"]));
+    assert_eq!(json["features"], serde_json::json!({ "scope": "all", "threshold": 80.0 }));
+
+    let (code, out, _) = docov(dir.path(), &["--list-files"]);
+    let files = [Path::new("src").join("a.ts"), Path::new("src").join("c.js")].map(|p| p.display().to_string() + "\n");
+    assert_eq!((code, out), (0, files.concat()));
+}

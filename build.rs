@@ -21,9 +21,9 @@ fn main() {
         let path = dir.join(format!("{name}.rs"));
         out += &format!("#[path = {:?}]\npub mod {name};\n", path.display().to_string());
     }
-    out += "\n/// Makes each feature's entry, in file name order.\nconst ENTRIES: &[fn() -> Entry] = &[\n";
+    out += "\n/// Each feature's name and a maker of its entry, in file name order.\nconst ENTRIES: &[Maker] = &[\n";
     for name in &names {
-        out += &format!("    {name}::entry,\n");
+        out += &format!("    ({name:?}, {name}::entry),\n");
     }
     out += "];\n";
     fs::write(Path::new(&env::var("OUT_DIR").expect("cargo sets it")).join("features.rs"), out)

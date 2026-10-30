@@ -66,6 +66,8 @@ Some things never count: constructors (their class's doc covers them), private m
 
 `"extends": "../docov.json"` (or a list of paths) builds on other config files, relative to the one that names them. Its own keys win, and in a list a later file's win over an earlier one's. Each file's `paths` and `exclude` stay relative to that file. Editors don't know `.docovrc` is JSON, so tell yours (in VS Code, `"files.associations": { ".docovrc": "jsonc" }`).
 
+`--print-config` prints the settings a scan would use as JSON: the config files they came from, the paths, the excludes and each feature's setting, with the flags applied. `--list-files` prints the files it would scan. Neither scans.
+
 [`docov.schema.json`](docov.schema.json) is its JSON Schema, which editors use for completion and checking. The URL above is pinned to a release so it matches the docov you have; `docov --print-schema > docov.schema.json` writes your own copy to point at instead.
 
 ### Formats

@@ -1,6 +1,9 @@
 //! Properties of config loading and the command line's conveniences.
 
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 use docov::{config, config::Config, walk::Exclude};
 use hegel::{TestCase, generators as gs};
@@ -173,4 +176,76 @@ fn extended_configs_merge_nearest_first(tc: TestCase) {
     let flat = serde_json::json!({ "threshold": expected.threshold, "scope": expected.scope.unwrap_or("exports") });
     write(dir.path(), "flat.json", &flat.to_string());
     assert_eq!(loaded.keys, Config::load(Some(&dir.path().join("flat.json"))).unwrap().keys);
+}
+
+/// Runs the binary in `dir`, with stdout closed if `closed` (a pipe whose reader has gone, as with
+/// `docov | head` after head exits), and returns its code, stdout and stderr.
+fn docov(dir: &Path, args: &[&str], closed: bool) -> (i32, String, String) {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_docov"));
+    command.args(args).current_dir(dir);
+    if closed {
+        let (reader, writer) = std::io::pipe().unwrap();
+        drop(reader);
+        command.stdout(writer);
+    }
+    let out = command.output().unwrap();
+    let text = |bytes| String::from_utf8(bytes).unwrap();
+    (out.status.code().unwrap(), text(out.stdout), text(out.stderr))
+}
+
+/// `--print-config` prints the files the settings came from, the paths, the excludes and each
+/// feature's setting, flags over keys, and `--list-files` the files a scan would read. Neither
+/// scans, so a file that doesn't parse changes nothing, and each fails when stdout is closed.
+#[hegel::test(test_cases = 5)]
+fn the_cli_prints_its_settings_and_files(tc: TestCase) {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("lib/gen")).unwrap();
+    std::fs::create_dir(dir.path().join("src")).unwrap();
+    let mut listed = Vec::new();
+    for f in 0..tc.draw(gs::integers::<usize>().max_value(4)) {
+        let folder = tc.draw(gs::sampled_from(vec!["src", "lib", "lib/gen"]));
+        let path = format!("{folder}/f{f}.ts");
+        write(dir.path(), &path, "export function (");
+        if folder != "lib/gen" {
+            listed.push(Path::new(folder).join(format!("f{f}.ts")).display().to_string());
+        }
+    }
+    listed.sort();
+    let threshold = tc.draw(gs::optional(gs::integers::<u8>().max_value(100)));
+    let scope = tc.draw(gs::sampled_from(vec!["exports", "all"]));
+    let config =
+        serde_json::json!({ "paths": ["src", "lib"], "exclude": ["gen/"], "threshold": threshold, "scope": scope });
+    write(dir.path(), "docov.json", &config.to_string());
+    let flag = tc.draw(gs::optional(gs::sampled_from(vec!["exports", "all"])));
+    let mut args = vec!["--print-config"];
+    if let Some(flag) = flag {
+        args.extend(["--scope", flag]);
+    }
+
+    let (code, out, err) = docov(dir.path(), &args, false);
+    assert_eq!((code, err.as_str()), (0, ""));
+    let json: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let expected = serde_json::json!({
+        "files": ["docov.json"],
+        "paths": ["src", "lib"],
+        "exclude": [{ "root": "", "globs": ["gen/"] }],
+        "features": { "scope": flag.unwrap_or(scope), "threshold": threshold.map(f64::from) },
+    });
+    assert_eq!(json["features"]["scope"], expected["features"]["scope"]);
+    assert_eq!(json["features"]["threshold"], expected["features"]["threshold"]);
+    for key in ["files", "paths", "exclude"] {
+        assert_eq!(json[key], expected[key], "{key}");
+    }
+
+    let (code, out, err) = docov(dir.path(), &["--list-files"], false);
+    assert_eq!((code, err.as_str()), (0, ""));
+    assert_eq!(out.lines().collect::<Vec<_>>(), listed);
+
+    for args in [["--print-config"], ["--list-files"]] {
+        let (code, _, err) = docov(dir.path(), &args, true);
+        // With nothing to list, there's nothing to fail to write.
+        let expected = if args[0] == "--list-files" && listed.is_empty() { 0 } else { 2 };
+        assert_eq!(code, expected, "{args:?} {err}");
+        assert!(code == 0 || err.starts_with("docov: "), "{err}");
+    }
 }

@@ -44,4 +44,8 @@ impl Feature for Scope {
     fn new(flags: Flags, keys: Keys) -> Self {
         flags.scope.unwrap_or(keys.scope)
     }
+
+    fn describe(&self) -> Option<serde_json::Value> {
+        Some(serde_json::to_value(self).expect("a scope serializes"))
+    }
 }
