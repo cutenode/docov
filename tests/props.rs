@@ -2823,13 +2823,11 @@ fn malformed_configs_fail_to_load_where_they_break(tc: TestCase) {
         (r#"{ "typesThreshold": true }"#, "invalid type: boolean `true`, expected f64", 24),
     ]));
     let path = dir.path().join("docov.json");
-    // A threshold's glob too big to build, like the walk's (globset fails from about 30,000
-    // alternatives).
+    // A threshold's glob that globset reads but can't build, like the walk's.
     if tc.draw(gs::weighted_booleans(0.1)) {
-        let huge = format!("{{{}}}", (0..40_000).map(|i| format!("x{i}[a-z][0-9]?")).collect::<Vec<_>>().join(","));
-        fs::write(&path, serde_json::json!({ "threshold": { huge: 1 } }).to_string()).unwrap();
+        fs::write(&path, serde_json::json!({ "threshold": { unbuildable_glob(): 1 } }).to_string()).unwrap();
         let error = config::Config::load(Some(&path)).unwrap_err().to_string();
-        assert!(error.contains("NFA"), "{error}");
+        assert!(error.contains("parsing pattern"), "{error}");
     }
     fs::write(&path, format!("{padding}{text}")).unwrap();
     let column = column + padding.len();
