@@ -49,6 +49,8 @@ An item is documented when a `/** … */` block with something in it sits right 
 
 A `// docov-ignore-next-line` comment (with an optional reason, `// docov-ignore-next-line: legacy API`) takes the items on the line after it out of the total, and `/* docov-ignore-file */` anywhere outside a function or class does the same for the whole file. A documented item still counts as documented, as rustdoc does. The text report doesn't list ignored items, and the JSON report marks them with `"ignored": true` and their `reason`. `--report-unused-ignores` (`"reportUnusedIgnores": true`) fails the scan on a `docov-ignore-next-line` whose items are documented anyway.
 
+To adopt docov in a project that's far from documented, `--add-ignore` (or `--add-ignore=REASON`) writes a `// docov-ignore-next-line` above every undocumented item, indented like it, and reports how many it wrote instead of the coverage. It changes no other line.
+
 Some things never count: constructors (their class's doc covers them), private members (`#x` and `private x`), an overload's implementation (only its signatures), destructured variables, `require()` bindings, `declare module` and `declare global` blocks, and re-exports from another file (`export { x } from './x'`, `export * from`), whose declarations count in their own file.
 
 `--scope all` counts every module-level declaration, exported or not.

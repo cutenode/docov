@@ -241,3 +241,16 @@ fn unused_ignores_fail_when_reported() {
     fs::write(dir.path().join("docov.json"), r#"{ "reportUnusedIgnores": true }"#).unwrap();
     assert_eq!(docov(dir.path(), &[]).0, 1);
 }
+
+#[test]
+fn add_ignore_writes_a_comment_above_each_undocumented_item() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = "/** A. */\r\nexport const a = 1;\r\nexport class B {\r\n\tc() {}\r\n}";
+    fs::write(dir.path().join("a.ts"), source).unwrap();
+    let (code, out, err) = docov(dir.path(), &["--add-ignore=to do", "a.ts"]);
+    assert_eq!((code, out.as_str(), err.as_str()), (0, "", "docov: added 2 docov-ignore-next-line comments\n"));
+    let ignored = "/** A. */\r\nexport const a = 1;\r\n// docov-ignore-next-line: to do\r\nexport class B {\r\n\t// docov-ignore-next-line: to do\r\n\tc() {}\r\n}";
+    assert_eq!(fs::read_to_string(dir.path().join("a.ts")).unwrap(), ignored);
+    assert_eq!(docov(dir.path(), &[]).1, " 100.0%  1/1  a.ts\n 100.0%  1/1  total\n");
+    assert_eq!(docov(dir.path(), &["--add-ignore"]).2, "docov: added 0 docov-ignore-next-line comments\n");
+}
