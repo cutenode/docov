@@ -28,11 +28,15 @@ pub struct Facts {
     /// Whether its JSDoc has exactly one release tag: `@public`, `@beta`, `@alpha` or `@internal`.
     #[serde(skip)]
     pub release_tagged: bool,
+    /// For a function or method in JavaScript, whether its JSDoc gives each `@param` a type, and its
+    /// `@returns` one when it has one.
+    #[serde(skip)]
+    pub typed: Option<bool>,
 }
 
 impl Facts {
-    /// The facts about `found`, which is `exported` or not.
-    pub(super) fn of(found: &Found, exported: bool) -> Self {
+    /// The facts about `found`, which is `exported` or not, in JavaScript or not.
+    pub(super) fn of(found: &Found, exported: bool, javascript: bool) -> Self {
         let doc = found.doc.as_ref();
         let tagged = |name| doc.is_some_and(|doc| doc::has_tag(doc, name));
         Self {
@@ -44,6 +48,7 @@ impl Facts {
             params: found.params.as_ref().map_or(0, Vec::len),
             exported,
             release_tagged: doc.is_some_and(|doc| doc::release_tags(doc) == 1),
+            typed: found.params.as_ref().filter(|_| javascript).map(|_| doc.is_some_and(doc::typed)),
         }
     }
 }

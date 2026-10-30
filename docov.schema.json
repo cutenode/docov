@@ -333,6 +333,17 @@
         "null"
       ]
     },
+    "typesThreshold": {
+      "default": null,
+      "description": "The lowest percentage of JavaScript functions and methods with a {type} on each @param and @returns that passes.",
+      "format": "double",
+      "maximum": 100,
+      "minimum": 0,
+      "type": [
+        "number",
+        "null"
+      ]
+    },
     "virtual": {
       "default": false,
       "description": "Count a JavaScript file's named @typedef and @callback blocks as items of kind `type`, documented when they have a description. They then document nothing else.",

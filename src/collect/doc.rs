@@ -48,6 +48,16 @@ pub(super) fn release_tags(doc: &JSDoc) -> usize {
     ["public", "beta", "alpha", "internal"].iter().filter(|tag| has_tag(doc, tag)).count()
 }
 
+/// Whether each of `doc`'s `@param` tags (or `@arg`, or `@argument`) has a `{type}`, and so do
+/// its `@returns` (or `@return`).
+pub(super) fn typed(doc: &JSDoc) -> bool {
+    let typing = doc
+        .tags()
+        .iter()
+        .filter(|tag| matches!(tag.kind.parsed(), "param" | "arg" | "argument" | "returns" | "return"));
+    typing.into_iter().all(|tag| tag.r#type().is_some())
+}
+
 /// Whether `doc` has the tag `name` (without its `@`).
 pub(super) fn has_tag(doc: &JSDoc, name: &str) -> bool {
     doc.tags().iter().any(|tag| tag.kind.parsed() == name)

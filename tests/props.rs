@@ -5,7 +5,7 @@ use std::{fs, path::Path, path::PathBuf, process::Command};
 use docov::feature::{
     Feature, access::Access, add_ignore::AddIgnore, commonjs_members::CommonjsMembers, examples::Examples,
     exports::Exports, file_docs::FileDocs, inherit::Inherit, kinds::Kinds, members::Members, release_tags::ReleaseTags,
-    report_unused_ignores::ReportUnusedIgnores, sort::Sort, virtual_types::VirtualTypes,
+    report_unused_ignores::ReportUnusedIgnores, sort::Sort, types::Types, virtual_types::VirtualTypes,
 };
 use docov::{
     FileReport, Format, Item, Kind, Rules, Scope, Totals, collect, collect::Facts, collect::Ignore, config, feature,
@@ -115,6 +115,8 @@ impl Expected {
             params: self.params.map_or(0, <[_]>::len),
             exported: self.via.is_some_and(counts),
             release_tagged: ["public", "beta", "alpha", "internal"].iter().filter(|t| tags.contains(t)).count() == 1,
+            // The generated modules are TypeScript.
+            typed: None,
         };
         Some(Item { documented, facts, ..self.item.clone() })
     }
@@ -1221,6 +1223,74 @@ fn release_tags_are_a_metric_when_asked(tc: TestCase) {
     assert_eq!(feature.gate(&files), failure);
 }
 
+/// Type coverage is over JavaScript functions and methods: one is typed when its JSDoc gives each
+/// `@param` (or `@arg`, or `@argument`) a `{type}`, and its `@returns` one when it has one. Other
+/// items, and TypeScript, aren't counted for it. With `--types` (or a threshold) the JSON report
+/// has it and the text report gets a line of it, and its threshold fails the scan under it.
+#[hegel::test(test_cases = 100)]
+fn javascript_functions_are_typed_by_their_tags(tc: TestCase) {
+    let tags = tc.draw(
+        gs::vecs(gs::sampled_from(vec![
+            ("@param {string} a Docs.", true),
+            ("@param a Docs.", false),
+            ("@argument {number} b", true),
+            ("@arg b", false),
+            ("@returns {number} Docs.", true),
+            ("@return Docs.", false),
+            ("@since 1.2", true),
+        ]))
+        .max_size(3),
+    );
+    let documented = tc.draw(gs::booleans());
+    let doc: String = tags.iter().map(|(tag, _)| format!(" * {tag}\n")).collect();
+    let source = format!(
+        "{}export function f(a, b) {{}}\nexport class C {{ m() {{}} }}\nexport const v = 1;\n",
+        if documented { format!("/**\n * Docs.\n{doc} */\n") } else { String::new() }
+    );
+    let typed = documented && tags.iter().all(|(_, typed)| *typed);
+    let (name, source_type) = tc.draw(gs::sampled_from(vec![
+        ("mjs", SourceType::mjs()),
+        ("jsx", SourceType::jsx()),
+        ("cjs", SourceType::cjs()),
+        ("ts", SourceType::ts()),
+    ]));
+    let source = if name == "cjs" { source.replace("export ", "") } else { source };
+    let rules = Rules { scope: Scope::All, ..Rules::default() };
+    let items = scan(&source, source_type, &rules).unwrap();
+    let found: Vec<_> = items.iter().map(|i| i.facts.typed).collect();
+    let wanted = if name == "ts" { vec![None; 4] } else { vec![Some(typed), None, Some(false), None] };
+    assert_eq!(found, wanted, "{name}: {source}");
+
+    let files = vec![FileReport { path: PathBuf::from(format!("m.{name}")), items }];
+    let all = Totals {
+        documented: wanted.iter().filter(|t| **t == Some(true)).count(),
+        total: wanted.iter().filter(|t| t.is_some()).count(),
+    };
+    let threshold = tc.draw(gs::optional(gs::integers::<u8>().max_value(100))).map(f64::from);
+    let on = threshold.is_some() || tc.draw(gs::booleans());
+    let feature = Types { on, threshold };
+    let mut options = report::Options::default();
+    feature.report(&mut options);
+    let mut out = Vec::new();
+    report::write_with(Format::Json, &files, &options, &mut out).unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    let shown = (json["typed"].as_u64(), json["typesPercent"].as_f64());
+    assert_eq!(shown, if on { (Some(all.documented as u64), Some(all.percent())) } else { (None, None) });
+
+    let append = |format| {
+        let mut out = Vec::new();
+        feature.append(format, &files, &mut out).unwrap();
+        String::from_utf8(out).unwrap()
+    };
+    let line = format!("{:>6.1}%  {}/{}  types\n", all.percent(), all.documented, all.total);
+    assert_eq!(append(Format::Text), if on { line } else { String::new() });
+    assert_eq!(append(Format::Lcov), "");
+    let percent = all.percent();
+    let failure =
+        threshold.filter(|&t| percent < t).map(|t| format!("{percent:.1}% with types, under the {t}% types threshold"));
+    assert_eq!(feature.gate(&files), failure);
+}
+
 fn render(format: Format, files: &[FileReport]) -> String {
     let mut out = Vec::new();
     report::write(format, files, &mut out).unwrap();
@@ -1795,6 +1865,12 @@ fn rules_come_from_flags_over_the_config(tc: TestCase) {
     }
     let release_threshold = run
         .set(&tc, "releaseTagsThreshold", vec![10.0, 90.0], |t| vec!["--release-tags-threshold".into(), t.to_string()]);
+    let types = tc.draw(gs::booleans());
+    if types {
+        run.args.push("--types".into());
+    }
+    let types_threshold =
+        run.set(&tc, "typesThreshold", vec![20.0], |t| vec!["--types-threshold".into(), t.to_string()]);
     let sort = tc.draw(gs::sampled_from(vec![Sort::Position, Sort::Priority]));
     run.args.extend(["--sort".into(), if sort == Sort::Priority { "priority" } else { "position" }.into()]);
     let ignore_deprecated = run.set(&tc, "ignoreDeprecated", vec![false, true], |_| vec![]);
@@ -1826,7 +1902,9 @@ fn rules_come_from_flags_over_the_config(tc: TestCase) {
     assert_eq!(settings.report().examples, examples);
     let release_tags = ReleaseTags { on: release_tags || release_threshold.is_some(), threshold: release_threshold };
     assert_eq!(*settings.get::<ReleaseTags>(), release_tags);
-    assert_eq!(settings.report().metrics.len(), usize::from(release_tags.on));
+    let types = Types { on: types || types_threshold.is_some(), threshold: types_threshold };
+    assert_eq!(*settings.get::<Types>(), types);
+    assert_eq!(settings.report().metrics.len(), usize::from(release_tags.on) + usize::from(types.on));
     assert_eq!(*settings.get::<Examples>(), Examples { text: examples, threshold: examples_threshold });
     assert_eq!(rules.kinds, kinds);
     assert_eq!(*settings.get::<Scope>(), scope.unwrap_or_default());

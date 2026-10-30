@@ -237,7 +237,8 @@ pub fn scan(source: &str, source_type: SourceType, rules: &Rules) -> Result<Vec<
         .filter(|f| rules.counts(f, &exported))
         .map(|f| {
             let (line, column) = lines.position(f.at as usize);
-            let (documented, facts) = (rules.documents(&f), Facts::of(&f, rules.exported(&f, &exported)));
+            let facts = Facts::of(&f, rules.exported(&f, &exported), source_type.is_javascript());
+            let documented = rules.documents(&f);
             Item { name: f.name, kind: f.kind, line, column, documented, facts, ignore: ignores.covering(line) }
         })
         .collect())

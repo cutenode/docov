@@ -33,6 +33,14 @@ pub const RELEASE_TAGS: Metric = Metric {
     has: |i| i.facts.release_tagged,
 };
 
+/// The share of JavaScript functions and methods whose JSDoc types their parameters and return.
+pub const TYPES: Metric = Metric {
+    name: "types",
+    keys: ["typed", "typesPercent"],
+    over: |i| i.facts.typed.is_some(),
+    has: |i| i.facts.typed == Some(true),
+};
+
 impl Metric {
     /// How many of `file`'s items it's over have it (`documented`), out of how many (`total`).
     pub fn file(self, file: &FileReport) -> Totals {

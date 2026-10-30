@@ -467,3 +467,17 @@ fn release_tags_are_counted_over_top_level_exports() {
     assert_eq!((code, &json["releaseTagged"], &json["releaseTagsPercent"]), (1, &1.into(), &50.0.into()));
     assert_eq!(err, "docov: 50.0% with release tags, under the 60% release tags threshold\n");
 }
+
+#[test]
+fn types_are_counted_over_javascript_functions() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = "/**\n * @param {number} a\n * @returns {number}\n */\nexport function f(a) {}\n/** @param b */\nexport function g(b) {}\n";
+    fs::write(dir.path().join("a.js"), source).unwrap();
+    fs::write(dir.path().join("b.ts"), "/** @param b */\nexport function h(b: string) {}\n").unwrap();
+    let (code, out, _) = docov(dir.path(), &["--types"]);
+    assert_eq!((code, out.lines().last()), (0, Some("  50.0%  1/2  types")));
+    let (code, out, err) = docov(dir.path(), &["--format", "json", "--types-threshold", "75"]);
+    let json: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!((code, &json["typed"], &json["files"][1]["typesPercent"]), (1, &1.into(), &100.0.into()));
+    assert_eq!(err, "docov: 50.0% with types, under the 75% types threshold\n");
+}
