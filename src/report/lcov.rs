@@ -1,25 +1,34 @@
-use std::io::{self, Write};
+//! `lcov`: a line record for each line with items, for coverage services and editor gutters.
 
-use crate::FileReport;
+use crate::report::{Context, Format, lines};
 
-/// Each item as a line record (`DA:<line>,<hits>`), hit once when it's documented. Items that
-/// share a line are one record, hit only when all of them are documented. Items come in source
-/// order, so those sharing a line are next to each other.
-pub fn write(files: &[FileReport], out: &mut impl Write) -> io::Result<()> {
-    for file in files {
-        writeln!(out, "SF:{}", file.path.display())?;
-        let mut lines: Vec<(usize, bool)> = Vec::new();
-        for item in &file.items {
-            match lines.last_mut() {
-                Some((line, documented)) if *line == item.line => *documented &= item.documented,
-                _ => lines.push((item.line, item.documented)),
-            }
+/// The format.
+pub const FORMAT: Format = Format {
+    name: "lcov",
+    help: "A line record for each line with items, for coverage services and editor gutters",
+    render,
+};
+
+/// Each counted item as a function (`FN`), hit once (`FNDA`) when it's documented, and each line
+/// with counted items as a line record (`DA:<line>,<hits>`), hit when all of them are documented.
+fn render(context: &Context) -> String {
+    let mut out = String::new();
+    for file in context.files {
+        out += &format!("TN:docov\nSF:{}\n", file.path.display());
+        for item in file.counted() {
+            out += &format!("FN:{},{}\n", item.line, item.name);
         }
+        for item in file.counted() {
+            out += &format!("FNDA:{},{}\n", u8::from(item.documented), item.name);
+        }
+        let totals = file.totals();
+        out += &format!("FNF:{}\nFNH:{}\n", totals.total, totals.documented);
+        let lines = lines(file);
         for (line, documented) in &lines {
-            writeln!(out, "DA:{line},{}", u8::from(*documented))?;
+            out += &format!("DA:{line},{}\n", u8::from(*documented));
         }
         let hit = lines.iter().filter(|(_, documented)| *documented).count();
-        writeln!(out, "LH:{hit}\nLF:{}\nend_of_record", lines.len())?;
+        out += &format!("LH:{hit}\nLF:{}\nend_of_record\n", lines.len());
     }
-    Ok(())
+    out
 }

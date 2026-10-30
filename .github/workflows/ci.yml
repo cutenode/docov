@@ -83,3 +83,32 @@ jobs:
           name: coverage-${{ matrix.os }}
           path: coverage/*.lcov
           if-no-files-found: ignore
+
+  # The GitHub Action (action.yml) on a small documented module, running this commit's docov through
+  # DOCOV_BINARY, since the published one may not have the flags it passes yet. Linux only: the
+  # action's script is the same everywhere.
+  action:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: cargo build --locked
+      # The module's report, then a second export.
+      - run: |
+          mkdir fixture
+          printf '/** a */\nexport const a = 1;\n' > fixture/a.ts
+          target/debug/docov fixture --format json=base.json
+          printf '/** b */\nexport const b = 2;\n' >> fixture/a.ts
+      - id: docov
+        uses: ./
+        with:
+          args: fixture
+          compare: base.json
+        env:
+          DOCOV_BINARY: ${{ github.workspace }}/target/debug/docov
+      - run: grep -F "| 100.0% | 100.0% | +0.0 | 2/2 |" "$MARKDOWN"
+        env:
+          MARKDOWN: ${{ steps.docov.outputs.markdown }}

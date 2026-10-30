@@ -80,7 +80,8 @@ impl Excused {
     /// `reports`, with the items in the baseline counted as documented, each entry once.
     pub fn apply(mut self, root: &Root, mut reports: Vec<FileReport>) -> Vec<FileReport> {
         for report in &mut reports {
-            for item in report.items.iter_mut().filter(|i| !i.documented) {
+            // An ignored item is out of the total, and counting it as documented would bring it back.
+            for item in report.items.iter_mut().filter(|i| !i.documented && i.ignore.is_none()) {
                 if let Some(count) = self.0.get_mut(&Known::new(root, &report.path, item)).filter(|n| **n > 0) {
                     *count -= 1;
                     item.documented = true;
@@ -110,12 +111,12 @@ impl Baseline {
         Ok(Some(excused))
     }
 
-    /// Writes each undocumented item in `reports` to the baseline file, and says where.
+    /// Writes each undocumented item that counts in `reports` to the baseline file, and says where.
     pub fn save(&self, dir: &Path, root: &Root, reports: &[FileReport]) -> Result<PathBuf, String> {
         let path = self.path(dir).unwrap_or_else(|| dir.join(DEFAULT));
         let items = reports
             .iter()
-            .flat_map(|r| r.items.iter().filter(|i| !i.documented).map(|i| Known::new(root, &r.path, i)))
+            .flat_map(|r| r.counted().filter(|i| !i.documented).map(|i| Known::new(root, &r.path, i)))
             .collect();
         let schema = format!(
             "https://raw.githubusercontent.com/cutenode/docov/v{}/docov-baseline.schema.json",

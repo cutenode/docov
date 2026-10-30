@@ -45,7 +45,7 @@ impl Diff {
         let mut totals = Totals::default();
         for report in reports {
             let Some(lines) = added.0.get(&root.absolute(&report.path)) else { continue };
-            for item in &report.items {
+            for item in report.counted() {
                 if lines.as_ref().is_none_or(|lines| lines.iter().any(|l| l.contains(&item.line))) {
                     totals.total += 1;
                     totals.documented += usize::from(item.documented);
