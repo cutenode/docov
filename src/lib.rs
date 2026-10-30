@@ -3,6 +3,7 @@
 pub mod collect;
 pub mod config;
 pub mod feature;
+pub mod git;
 pub mod glob;
 pub mod report;
 pub mod root;

@@ -347,3 +347,45 @@ fn update_threshold_ratchets_the_config_in_place() {
     assert_eq!((code, err.as_str()), (1, "docov: 50.0% documented, under the 66.6% threshold\n"));
     assert_eq!(fs::read_to_string(dir.path().join("docov.json")).unwrap(), raised);
 }
+
+/// Runs git in `dir`, a throwaway test repository, with an identity and no signing.
+fn git(dir: &Path, args: &[&str]) {
+    let config =
+        ["-c", "commit.gpgsign=false", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "init.defaultBranch=main"];
+    let out = Command::new("git").args(config).args(args).current_dir(dir).output().unwrap();
+    assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+}
+
+#[test]
+fn changed_and_staged_scan_what_git_says_changed() {
+    let dir = project();
+    git(dir.path(), &["init", "-q"]);
+    git(dir.path(), &["add", "."]);
+    git(dir.path(), &["commit", "-q", "-m", "base"]);
+    git(dir.path(), &["checkout", "-q", "-b", "change"]);
+    fs::write(dir.path().join("src/c.js"), "/** c */\nexport class C {}\nexport const d = 1;\n").unwrap();
+    fs::write(dir.path().join("src/new.ts"), "export const n = 1;\n").unwrap();
+    let json = |args: &[&str]| {
+        let (code, out, err) = docov(dir.path(), &[&["--format", "json"], args].concat());
+        assert_eq!((code, err.as_str()), (0, ""));
+        let json: serde_json::Value = serde_json::from_str(&out).unwrap();
+        json["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| f["path"].as_str().unwrap().replace('\\', "/"))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(json(&["--changed"]), ["src/c.js", "src/new.ts"]);
+    assert_eq!(json(&["--changed", "--since", "HEAD", "src/new.ts"]), ["src/new.ts"]);
+    assert!(json(&["--staged"]).is_empty());
+    git(dir.path(), &["add", "src/c.js"]);
+    assert_eq!(json(&["--staged"]), ["src/c.js"]);
+
+    let (code, _, err) = docov(dir.path(), &["--changed", "--since", "nope"]);
+    assert_eq!(code, 2);
+    assert!(err.starts_with("docov: git diff --name-only -z --merge-base nope: "), "{err}");
+    // --since is for --changed, and --changed and --staged don't go together.
+    assert_eq!(docov(dir.path(), &["--since", "main"]).0, 2);
+    assert_eq!(docov(dir.path(), &["--changed", "--staged"]).0, 2);
+}

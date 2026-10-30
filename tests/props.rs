@@ -1348,3 +1348,113 @@ fn update_threshold_only_raises(tc: TestCase) {
         format!("{{\n  \"threshold\": {percent}\n}}\n")
     );
 }
+
+/// Runs git in `dir`, a throwaway test repository, with an identity and no signing.
+fn git(dir: &Path, args: &[&str]) {
+    let config =
+        ["-c", "commit.gpgsign=false", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "init.defaultBranch=main"];
+    let out = Command::new("git").args(config).args(args).current_dir(dir).output().unwrap();
+    assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+}
+
+/// What happens to a file in a generated change.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Change {
+    Untouched,
+    Committed,
+    Staged,
+    Uncommitted,
+    Untracked,
+}
+
+/// In a real repository with a branch off main: --changed scans the files the branch changed,
+/// committed or not, and untracked ones, from main or from origin/HEAD in a clone, and --staged
+/// the staged ones. Outside a repository git's error says so, and without git, that it's missing.
+#[hegel::test(test_cases = 15)]
+fn git_narrows_to_changed_files_and_lines(tc: TestCase) {
+    use docov::feature::changed::Changed;
+    let dir = tempfile::tempdir().unwrap();
+    let origin = dir.path().join("origin");
+    fs::create_dir(&origin).unwrap();
+    git(&origin, &["init", "-q"]);
+    let changes: Vec<Change> = (0..tc.draw(gs::integers::<usize>().min_value(1).max_value(4)))
+        .map(|_| {
+            tc.draw(gs::sampled_from(vec![
+                Change::Untouched,
+                Change::Committed,
+                Change::Staged,
+                Change::Uncommitted,
+                Change::Untracked,
+            ]))
+        })
+        .collect();
+    // Each file starts with a documented function, and the change adds one, documented or not, a
+    // line after it.
+    let base = |f: usize| format!("/** Docs. */\nexport function a{f}() {{}}\n");
+    for (f, change) in changes.iter().enumerate() {
+        if *change != Change::Untracked {
+            write(&origin, &format!("src/f{f}.ts"), &base(f));
+        }
+    }
+    write(&origin, "README.md", "readme");
+    git(&origin, &["add", "."]);
+    git(&origin, &["commit", "-q", "-m", "base"]);
+    let cloned = tc.draw(gs::booleans());
+    let repo = if cloned {
+        git(dir.path(), &["clone", "-q", "origin", "clone"]);
+        dir.path().join("clone")
+    } else {
+        origin.clone()
+    };
+    git(&repo, &["checkout", "-q", "-b", "change"]);
+    let documented: Vec<bool> = changes.iter().map(|_| tc.draw(gs::booleans())).collect();
+    let edit = |f: usize| {
+        let doc = if documented[f] { "/** Docs. */\n" } else { "" };
+        write(&repo, &format!("src/f{f}.ts"), &format!("{}// changed\n{doc}export function b{f}() {{}}\n", base(f)));
+    };
+    for (f, change) in changes.iter().enumerate() {
+        if *change == Change::Committed {
+            edit(f);
+        }
+    }
+    git(&repo, &["commit", "-q", "--allow-empty", "-am", "change"]);
+    for (f, change) in changes.iter().enumerate() {
+        match change {
+            Change::Staged => {
+                edit(f);
+                git(&repo, &["add", &format!("src/f{f}.ts")]);
+            }
+            Change::Uncommitted | Change::Untracked => edit(f),
+            _ => {}
+        }
+    }
+
+    // From the repository's src/, so git's paths from the top don't match the scan's by accident.
+    std::env::set_current_dir(repo.join("src")).unwrap();
+    let root = docov::root::Root::new(Path::new(".."));
+    let files: Vec<PathBuf> = (0..changes.len()).map(|f| PathBuf::from(format!("f{f}.ts"))).collect();
+    // Without --since, the default branch is origin/HEAD's in the clone, and main otherwise.
+    let since = if tc.draw(gs::booleans()) { vec![] } else { vec!["--since".to_owned(), "main".to_owned()] };
+    let changed = settings(&repo, "{}", &[vec!["--changed".to_owned()], since.clone()].concat());
+    let staged = settings(&repo, "{}", &["--staged".to_owned()]);
+    let all = settings(&repo, "{}", &[]);
+    let pick = |wanted: &[Change]| -> Vec<PathBuf> {
+        files.iter().zip(&changes).filter(|(_, c)| wanted.contains(c)).map(|(f, _)| f.clone()).collect()
+    };
+    assert_eq!(all.get::<Changed>().filter(files.clone(), &root).unwrap(), files);
+    let since_main = pick(&[Change::Committed, Change::Staged, Change::Uncommitted, Change::Untracked]);
+    assert_eq!(changed.get::<Changed>().filter(files.clone(), &root).unwrap(), since_main);
+    assert_eq!(staged.get::<Changed>().filter(files.clone(), &root).unwrap(), pick(&[Change::Staged]));
+
+    // Outside a repository, git's error says so.
+    std::env::set_current_dir(dir.path()).unwrap();
+    for settings in [&changed, &staged] {
+        let error = settings.get::<Changed>().filter(files.clone(), &root).unwrap_err();
+        assert!(error.starts_with("git rev-parse --show-cdup: ") && error.contains("not a git repository"), "{error}");
+    }
+    let out =
+        Command::new(env!("CARGO_BIN_EXE_docov")).arg("--staged").env("PATH", "").current_dir(&repo).output().unwrap();
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert_eq!(out.status.code(), Some(2), "{stderr}");
+    assert!(stderr.starts_with("docov: git rev-parse --show-cdup: "), "{stderr}");
+}

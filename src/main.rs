@@ -8,6 +8,7 @@ use docov::{
     feature::{
         self,
         baseline::{self, Baseline},
+        changed::Changed,
         overrides::Overrides,
         update_threshold::UpdateThreshold,
     },
@@ -84,6 +85,7 @@ fn run(cli: Cli, matches: &clap::ArgMatches) -> Result<bool, Vec<String>> {
     let exclude = Globs::new(std::mem::take(&mut config.exclude)).map_err(|e| vec![e.to_string()])?;
     let excluded = settings.get::<Overrides>().clone().excluder(exclude, root.clone());
     let files = walk::files(&paths, excluded).map_err(|e| vec![e.to_string()])?;
+    let files = settings.get::<Changed>().filter(files, &root).map_err(|e| vec![e])?;
     let (reports, errors): (Vec<_>, Vec<_>) = files.par_iter().partition_map(|path| match scan_file(path, scope) {
         Ok(report) => Either::Left(report),
         Err(e) => Either::Right(e.to_string()),

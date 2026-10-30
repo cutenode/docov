@@ -32,6 +32,8 @@ With no paths it scans the current folder: every `.js`, `.mjs`, `.cjs`, `.jsx`, 
 
 It exits 0 when coverage meets every threshold (or there isn't one), 1 when it's under one, and 2 when a file doesn't parse or the config or a path can't be read. Every file has to parse, since a partial one would undercount.
 
+`--changed` scans only the files that differ from where HEAD branched off the default branch (`origin/HEAD`, or `main` without one), committed or not, and untracked ones. `--since REF` compares with another branch or commit instead. `--staged` scans only the staged files, for a pre-commit hook. Paths given on the command line still narrow the scan. These run `git` (2.30 or later).
+
 ### What counts
 
 With the default scope, `exports`, an item is anything a module exports:
