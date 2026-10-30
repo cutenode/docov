@@ -4,13 +4,14 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::Command,
+    time::Duration,
 };
 
 use docov::{
     FileReport, Format, Item, Kind, Scope, Settings, Totals, batch, config,
     config::Config,
     feature,
-    feature::{color, stdin_filename, threads::Threads},
+    feature::{color, stdin_filename, threads::Threads, watch},
     init, jsdoc, nested, packages, report, scan, walk,
     walk::Exclude,
 };
@@ -848,4 +849,57 @@ fn the_cli_colors_only_when_asked_or_on_a_terminal(tc: TestCase) {
         assert_eq!(out.contains('\x1b'), colored, "{color} {out:?}");
         assert!(out.ends_with("total\n") || out.ends_with("total\n\x1b[0m"), "{out:?}");
     }
+}
+
+/// Without `--watch`, one scan and its code. With it, a scan again after each change to a config,
+/// JavaScript or TypeScript file under the paths the last scan named, following them when they
+/// change, and an end with 2 for paths that can't be watched. A watch never returns otherwise, so
+/// it runs on a thread of its own, left to end with the test.
+#[hegel::test(test_cases = 3)]
+fn watch_scans_again_after_changes(tc: TestCase) {
+    let code = tc.draw(gs::integers::<u8>().max_value(2));
+    let mut runs = 0;
+    assert_eq!(
+        watch::run(false, &mut |_| {
+            runs += 1;
+            code
+        }),
+        code
+    );
+    assert_eq!(runs, 1);
+    let gone = tempfile::tempdir().unwrap().path().join("gone");
+    assert_eq!(
+        watch::run(true, &mut |paths| {
+            *paths = vec![gone.clone()];
+            0
+        }),
+        2
+    );
+
+    let (first, second) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let folders = [first.path().to_owned(), second.path().to_owned()];
+    let (send, scans) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut count = 0;
+        watch::run(true, &mut |paths| {
+            // The first scan names the first folder, the rest the second.
+            *paths = vec![folders[usize::from(count > 0)].clone()];
+            count += 1;
+            // The test may be done, and the receiver gone.
+            let _ = send.send(count);
+            code
+        })
+    });
+    assert_eq!(scans.recv_timeout(Duration::from_secs(30)), Ok(1));
+    // Writes until a scan follows, as the watch starts after the first scan, and may miss one
+    // write before it's ready. Each wait is bounded.
+    let scanned_after = |dir: &Path, name: &str| {
+        (0..30).find_map(|i| {
+            write(dir, name, &format!("// {i}\n"));
+            scans.recv_timeout(Duration::from_secs(1)).ok()
+        })
+    };
+    let after_config = scanned_after(first.path(), "docov.json").expect("a scan after a config change");
+    let after_source = scanned_after(second.path(), "a.ts").expect("a scan after a source change");
+    assert!(after_config >= 2 && after_source > after_config, "{after_config} {after_source}");
 }

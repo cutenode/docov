@@ -17,6 +17,7 @@ use docov::{
         print_config::{self, PrintConfig},
         stdin_filename::{self, StdinFilename},
         threads::Threads,
+        watch,
     },
     init, nested, packages, walk,
 };
@@ -59,34 +60,41 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     if let Some(Command::Init) = cli.command {
-        return exit(init::init(Path::new(".")).map(|threshold| {
+        return ExitCode::from(exit(init::init(Path::new(".")).map(|threshold| {
             eprintln!("docov: wrote docov.json, with a {threshold}% threshold");
             true
-        }));
+        })));
     }
-    exit(run(cli, &matches))
+    ExitCode::from(watch::run(watch::enabled(&matches), &mut |watched| exit(run(&cli, &matches, watched))))
 }
 
 /// Prints `result`'s errors, and exits by it: 0 when coverage passed, 1 when it didn't, and 2 on
 /// an error.
-fn exit(result: Result<bool, Vec<String>>) -> ExitCode {
+fn exit(result: Result<bool, Vec<String>>) -> u8 {
     match result {
-        Ok(passed) => ExitCode::from(u8::from(!passed)),
+        Ok(passed) => u8::from(!passed),
         Err(errors) => {
             for error in errors {
                 eprintln!("docov: {error}");
             }
-            ExitCode::from(2)
+            2
         }
     }
 }
 
-/// Scans and reports, and says whether coverage met the threshold.
-fn run(cli: Cli, matches: &clap::ArgMatches) -> Result<bool, Vec<String>> {
+/// Scans and reports, and says whether coverage met the threshold. `watched` gets the paths it
+/// scans, for `--watch`.
+fn run(cli: &Cli, matches: &clap::ArgMatches, watched: &mut Vec<PathBuf>) -> Result<bool, Vec<String>> {
+    // The current folder, unless there are paths: no paths scan it, and a config that doesn't load
+    // has none.
+    *watched = vec![PathBuf::from(".")];
     let mut config = Config::load(cli.config.as_deref()).map_err(|e| vec![e.to_string()])?;
     let settings = Settings::new(matches, std::mem::take(&mut config.keys));
     config.read_jsdoc(settings.get::<JsdocConfig>().0.as_deref()).map_err(|e| vec![e])?;
-    let paths = if cli.paths.is_empty() { std::mem::take(&mut config.paths) } else { cli.paths };
+    let paths = if cli.paths.is_empty() { std::mem::take(&mut config.paths) } else { cli.paths.clone() };
+    if !paths.is_empty() {
+        watched.clone_from(&paths);
+    }
     if settings.get::<PrintConfig>().0 {
         return wrote(writeln!(io::stdout(), "{:#}", print_config::json(&config, &paths, &settings)));
     }
@@ -108,7 +116,7 @@ fn run(cli: Cli, matches: &clap::ArgMatches) -> Result<bool, Vec<String>> {
     let (settings, text) = (plan.settings(), cli.format == Format::Text);
     let stream = &mut settings.get::<Color>().stream(io::stdout().lock());
     let out = &mut Styled::new(stream, text, settings.get::<Threshold>().0);
-    packages::write(plan.settings(), &config.dir, cli.format, &reports, out).map_err(|e| vec![e])?;
+    packages::write(settings, &config.dir, cli.format, &reports, out).map_err(|e| vec![e])?;
 
     let failures = plan.gates(&reports);
     for failure in &failures {

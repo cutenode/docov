@@ -32,6 +32,8 @@ With no paths it scans the current folder: every `.js`, `.mjs`, `.cjs`, `.jsx`, 
 
 `docov init` writes a docov.json in the current folder with the `$schema` for this version and a `threshold` of its coverage now, rounded down, and won't write over a config file that's there. (To scan a folder named `init`, use `docov ./init`.)
 
+`--watch` scans again whenever a JavaScript, TypeScript or config file under the paths changes, with a line between reports, until Ctrl-C.
+
 `--stdin-filename PATH` scans stdin in place of the paths, as the file at PATH, whose extension picks the language, for editors to check a buffer before it's saved.
 
 `--threads N` scans N files at once, one per CPU by default. `RAYON_NUM_THREADS` sets the same.

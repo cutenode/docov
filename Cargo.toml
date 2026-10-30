@@ -31,6 +31,9 @@ ignore = "0.4.34"
 # Blanks docov.json's comments and trailing commas, so serde_json reads it with its error positions
 # unchanged. oxc's own config loading does the same.
 json-strip-comments = "3.1.2"
+# --watch.
+notify = "8.2.1"
+notify-debouncer-mini = "0.7.0"
 # The parser and its AST. oxc is 0.x and breaks its API between minor versions, so these move
 # together and on purpose.
 oxc_allocator = "0.156.0"
