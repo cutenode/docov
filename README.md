@@ -32,6 +32,8 @@ With no paths it scans the current folder: every `.js`, `.mjs`, `.cjs`, `.jsx`, 
 
 `docov init` writes a docov.json in the current folder with the `$schema` for this version and a `threshold` of its coverage now, rounded down, and won't write over a config file that's there. (To scan a folder named `init`, use `docov ./init`.)
 
+`--stdin-filename PATH` scans stdin in place of the paths, as the file at PATH, whose extension picks the language, for editors to check a buffer before it's saved.
+
 `--threads N` scans N files at once, one per CPU by default. `RAYON_NUM_THREADS` sets the same.
 
 It exits 0 when coverage meets the threshold (or there isn't one), 1 when it's under, and 2 when a file doesn't parse or the config or a path can't be read. Every file has to parse, since a partial one would undercount.

@@ -14,6 +14,7 @@ use docov::{
         jsdoc_config::JsdocConfig,
         list_files::{self, ListFiles},
         print_config::{self, PrintConfig},
+        stdin_filename::{self, StdinFilename},
         threads::Threads,
     },
     init, nested, packages, walk,
@@ -88,14 +89,21 @@ fn run(cli: Cli, matches: &clap::ArgMatches) -> Result<bool, Vec<String>> {
     if settings.get::<PrintConfig>().0 {
         return wrote(writeln!(io::stdout(), "{:#}", print_config::json(&config, &paths, &settings)));
     }
-    let files = walk::files(&paths, &config.exclude).map_err(|e| vec![e.to_string()])?;
+    let stdin = settings.get::<StdinFilename>().0.clone();
+    let files = match &stdin {
+        Some(path) => vec![path.clone()],
+        None => walk::files(&paths, &config.exclude).map_err(|e| vec![e.to_string()])?,
+    };
     let plan = nested::Plan::new(&config, settings, matches, files).map_err(|e| vec![e])?;
     let files = plan.files();
     if plan.settings().get::<ListFiles>().0 {
         return wrote(list_files::write(files.iter().map(|(file, _)| *file), &mut io::stdout().lock()));
     }
     plan.settings().get::<Threads>().apply();
-    let reports = batch::scan(&files)?;
+    let reports = match stdin {
+        Some(_) => stdin_filename::scan(&files, &mut io::stdin().lock())?,
+        None => batch::scan(&files)?,
+    };
     let out = &mut io::stdout().lock();
     packages::write(plan.settings(), &config.dir, cli.format, &reports, out).map_err(|e| vec![e])?;
 

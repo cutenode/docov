@@ -125,15 +125,26 @@ pub struct SyntaxError {
 
 /// Reads and scans one file.
 pub fn scan_file(path: &Path, scope: Scope) -> Result<FileReport, Error> {
-    let source_type = SourceType::from_path(path).map_err(|_| Error::Language { path: path.to_owned() })?;
+    // The language comes first, so a file that isn't JavaScript fails as one even if it isn't UTF-8.
+    language(path)?;
     let source = fs::read_to_string(path).map_err(|source| Error::Read { path: path.to_owned(), source })?;
-    match scan(&source, source_type, scope) {
+    scan_source(path, &source, scope)
+}
+
+/// Scans `source` as the file at `path`, whose extension picks the language.
+pub fn scan_source(path: &Path, source: &str, scope: Scope) -> Result<FileReport, Error> {
+    match scan(source, language(path)?, scope) {
         Ok(items) => Ok(FileReport { path: path.to_owned(), items }),
         Err(e) => {
-            let (line, column) = Lines::new(&source).position(e.offset);
+            let (line, column) = Lines::new(source).position(e.offset);
             Err(Error::Syntax { path: path.to_owned(), line, column, message: e.message })
         }
     }
+}
+
+/// The language of the file at `path`, by its extension.
+fn language(path: &Path) -> Result<SourceType, Error> {
+    SourceType::from_path(path).map_err(|_| Error::Language { path: path.to_owned() })
 }
 
 /// The items in `source`. Any syntax error fails the scan: a partial AST would undercount.

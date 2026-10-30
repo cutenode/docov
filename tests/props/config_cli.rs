@@ -7,10 +7,15 @@ use std::{
 };
 
 use docov::{
-    FileReport, Format, Item, Kind, Scope, Settings, Totals, batch, config, config::Config, feature,
-    feature::threads::Threads, init, jsdoc, nested, packages, walk, walk::Exclude,
+    FileReport, Format, Item, Kind, Scope, Settings, Totals, batch, config,
+    config::Config,
+    feature,
+    feature::{stdin_filename, threads::Threads},
+    init, jsdoc, nested, packages, scan, walk,
+    walk::Exclude,
 };
 use hegel::{TestCase, generators as gs};
+use oxc_span::SourceType;
 
 use super::{Room, write};
 
@@ -692,4 +697,68 @@ fn threads_size_the_pool_once(tc: TestCase) {
     Threads(Some(threads)).apply();
     Threads(None).apply();
     assert_eq!(rayon::current_num_threads(), *FIRST.get_or_init(|| threads));
+}
+
+/// Runs the binary in `dir` with `stdin` as its standard input.
+fn docov_with_stdin(dir: &Path, args: &[&str], stdin: &[u8]) -> (i32, String, String) {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_docov"))
+        .args(args)
+        .current_dir(dir)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::io::Write::write_all(&mut child.stdin.take().unwrap(), stdin).unwrap();
+    let out = child.wait_with_output().unwrap();
+    let text = |bytes| String::from_utf8(bytes).unwrap();
+    (out.status.code().unwrap(), text(out.stdout), text(out.stderr))
+}
+
+/// `--stdin-filename` scans stdin as the file it names, whose extension picks the language, which
+/// needn't exist: the items are those of the same text in a file. Text that isn't UTF-8, doesn't
+/// parse, or names a file that isn't JavaScript fails naming the path.
+#[hegel::test(test_cases = 20)]
+fn stdin_scans_as_the_file_it_names(tc: TestCase) {
+    let mut source = String::new();
+    for i in 0..tc.draw(gs::integers::<usize>().max_value(4)) {
+        let doc = if tc.draw(gs::booleans()) { "/** Docs. */\n" } else { "" };
+        source.push_str(&format!("{doc}export function f{i}(): void {{}}\n"));
+    }
+    let name = tc.draw(gs::sampled_from(vec!["src/buffer.ts", "buffer.tsx", "unsaved.mts"]));
+    let path = Path::new(name);
+    let scanned = stdin_filename::scan(&[(path, Scope::Exports)], &mut source.as_bytes()).unwrap();
+    let expected = scan(&source, SourceType::from_path(path).unwrap(), Scope::Exports).unwrap();
+    assert_eq!(scanned, vec![FileReport { path: path.to_owned(), items: expected }]);
+    // With nothing to scan, stdin isn't read.
+    assert_eq!(stdin_filename::scan(&[], &mut &b"\xff"[..]), Ok(Vec::new()));
+
+    let (bytes, culprit): (&[u8], _) = tc.draw(gs::sampled_from(vec![
+        (&b"// caf\xe9"[..], "stream did not contain valid UTF-8"),
+        (b"export function (", ":1:"),
+    ]));
+    let error = stdin_filename::scan(&[(path, Scope::Exports)], &mut &bytes[..]).unwrap_err();
+    assert!(error[0].starts_with(&path.display().to_string()) && error[0].contains(culprit), "{error:?}");
+    let error = stdin_filename::scan(&[(Path::new("notes.md"), Scope::Exports)], &mut source.as_bytes()).unwrap_err();
+    assert_eq!(error, vec!["notes.md: not a JavaScript or TypeScript file".to_owned()]);
+}
+
+/// The binary reads stdin as the file `--stdin-filename` names, in place of the paths.
+#[hegel::test(test_cases = 2)]
+fn the_cli_reads_stdin_in_place_of_files(tc: TestCase) {
+    let dir = tempfile::tempdir().unwrap();
+    write(dir.path(), "other.ts", "export const other = 1;\n");
+    let documented = tc.draw(gs::booleans());
+    let source = format!("{}export const a = 1;\n", if documented { "/** Docs. */\n" } else { "" });
+    let (code, out, err) =
+        docov_with_stdin(dir.path(), &["--stdin-filename", "src/new.ts", "--threshold", "100"], source.as_bytes());
+    let path = Path::new("src").join("new.ts").display().to_string();
+    let percent = if documented { "100.0%  1/1" } else { "  0.0%  0/1" };
+    let line = |label: &str| format!(" {percent}  {label}\n");
+    let item = if documented { String::new() } else { format!("         {path}:1:1  variable a\n") };
+    assert_eq!(out, format!("{}{item}{}", line(&path), line("total")));
+    assert_eq!(code, i32::from(!documented), "{err}");
+    let (code, out, err) = docov_with_stdin(dir.path(), &["--stdin-filename", "src/new.ts"], b"export function (");
+    assert_eq!((code, out.as_str()), (2, ""));
+    assert!(err.starts_with(&format!("docov: {path}:1:")), "{err}");
 }
