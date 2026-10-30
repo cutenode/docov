@@ -55,9 +55,11 @@ Some things never count: constructors (their class's doc covers them), private m
 
 `--scope all` counts every module-level declaration, exported or not.
 
+`"fileDocs": "require"` makes each file an item of its own, of kind `module`, at its first line and named by its `@module` or else its path. It's documented when the file's first JSDoc block has `@file`, `@fileoverview`, `@overview`, `@module` or `@packageDocumentation`, with text, and that block then documents nothing else. Without it, a block like that right before a declaration documents the declaration.
+
 `"exports": { "esm": true, "cjs": true, "globals": false }` picks which ways of exporting count under the `exports` scope (`cjs` covers TypeScript's `export =` too). With `globals` on, `window.a = …` and `globalThis.a = …` at the top level export `a` the way `exports.a = …` does, under either scope.
 
-`--kind function,class` (or `"kinds": ["function", "class"]`) counts only those kinds of item, named as the reports name them: `function`, `class`, `method`, `accessor`, `property`, `variable`, `interface`, `type`, `enum`, `namespace` and `default`. `--by-kind` adds a line of totals by kind after the text report's total, and the JSON report always has them, under `kinds`.
+`--kind function,class` (or `"kinds": ["function", "class"]`) counts only those kinds of item, named as the reports name them: `function`, `class`, `method`, `accessor`, `property`, `variable`, `interface`, `type`, `enum`, `namespace`, `default` and `module`. `--by-kind` adds a line of totals by kind after the text report's total, and the JSON report always has them, under `kinds`.
 
 `--access public,protected` (or `"access": ["public", "protected", "package"]`) counts only items with those access levels, like jsdoc's `--access`: an item's level is its `@public`, `@protected`, `@package` or `@private` tag (or `@access` with one of those), else `protected` for a TypeScript `protected` member, else `public`. Without it, access tags change nothing.
 

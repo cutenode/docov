@@ -9,9 +9,9 @@ mod rules;
 
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
-    AssignmentExpression, Class, ClassElement, CommentContent, Declaration, ExportDefaultDeclarationKind, Expression,
-    FormalParameters, Function, MemberExpression, MethodDefinitionKind, ObjectPropertyKind, PropertyKey, Statement,
-    TSAccessibility, TSInterfaceDeclaration, TSSignature,
+    AssignmentExpression, Class, ClassElement, Comment, CommentContent, Declaration, ExportDefaultDeclarationKind,
+    Expression, FormalParameters, Function, MemberExpression, MethodDefinitionKind, ObjectPropertyKind, PropertyKey,
+    Statement, TSAccessibility, TSInterfaceDeclaration, TSSignature,
 };
 use oxc_jsdoc::JSDoc;
 use oxc_parser::Parser;
@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 
 use self::ignore::Ignores;
 pub use self::{facts::Facts, ignore::Ignore, rules::Rules};
-use crate::Totals;
+use crate::{Totals, feature::file_docs::FileDocs};
 
 /// What kind of declaration an item is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Deserialize, JsonSchema, clap::ValueEnum)]
@@ -50,6 +50,8 @@ pub enum Kind {
     Namespace,
     /// `export default` or `module.exports =` of an expression.
     Default,
+    /// A file, with `fileDocs`.
+    Module,
 }
 
 impl Kind {
@@ -67,6 +69,7 @@ impl Kind {
             Self::Enum => "enum",
             Self::Namespace => "namespace",
             Self::Default => "default",
+            Self::Module => "module",
         }
     }
 }
@@ -80,7 +83,9 @@ impl Serialize for Kind {
 /// A declaration that should have JSDoc.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Item {
-    /// The declared name, `Class.member` for members, `default` for an unnamed default export.
+    /// The declared name, `Class.member` for members, `default` for an unnamed default export. A
+    /// file's own item is named by its `@module`, or else its path (empty from [`scan`], which has
+    /// no path).
     pub name: String,
     /// What kind of declaration it is.
     pub kind: Kind,
@@ -158,7 +163,12 @@ pub fn scan_file(path: &Path, rules: &Rules) -> Result<FileReport, Error> {
     let source_type = SourceType::from_path(path).map_err(|_| Error::Language { path: path.to_owned() })?;
     let source = fs::read_to_string(path).map_err(|source| Error::Read { path: path.to_owned(), source })?;
     match scan(&source, source_type, rules) {
-        Ok(items) => Ok(FileReport { path: path.to_owned(), items }),
+        Ok(mut items) => {
+            if let Some(file) = items.first_mut().filter(|i| i.kind == Kind::Module && i.name.is_empty()) {
+                file.name = path.display().to_string();
+            }
+            Ok(FileReport { path: path.to_owned(), items })
+        }
         Err(e) => {
             let (line, column) = Lines::new(&source).position(e.offset);
             Err(Error::Syntax { path: path.to_owned(), line, column, message: e.message })
@@ -184,12 +194,8 @@ pub fn scan(source: &str, source_type: SourceType, rules: &Rules) -> Result<Vec<
         .comments
         .iter()
         .filter(|c| c.content == CommentContent::Jsdoc && c.is_leading())
-        .filter_map(|c| {
-            // Past the `/**`, as oxc_jsdoc reads it.
-            let span = Span::new(c.content_span().start + 1, c.content_span().end);
-            let text = span.source_text(source);
-            text.chars().any(|ch| !ch.is_whitespace() && ch != '*').then(|| (c.attached_to, JSDoc::new(text, span)))
-        })
+        .map(|c| (c.attached_to, jsdoc(c, source)))
+        .filter(|(_, doc)| doc.span.source_text(source).chars().any(|ch| !ch.is_whitespace() && ch != '*'))
         .collect();
     let generated = parsed.program.comments.first().is_some_and(|c| c.span.source_text(source).contains("@generated"));
     if rules.skip_generated && generated {
@@ -199,6 +205,9 @@ pub fn scan(source: &str, source_type: SourceType, rules: &Rules) -> Result<Vec<
     let lines = Lines::new(source);
     let ignores = Ignores::find(&parsed.program, &lines);
     let mut collector = Collector { source, docs, found: Vec::new(), exported: FxHashSet::default(), overload: None };
+    if rules.file_docs == FileDocs::Require {
+        collector.file(&parsed.program.comments);
+    }
     for statement in &parsed.program.body {
         collector.statement(statement);
     }
@@ -231,6 +240,17 @@ struct Found<'s> {
     overrides: bool,
     /// For a function or method, each parameter's name, or `None` for a destructured one.
     params: Option<Vec<Option<&'s str>>>,
+    /// Whether it's documented, for an item whose own rule says: a file's.
+    documented: Option<bool>,
+    /// Whether it counts under any scope, as a file's own item does.
+    standalone: bool,
+}
+
+impl<'s> Found<'s> {
+    fn new(name: String, kind: Kind, at: u32, doc: Option<JSDoc<'s>>) -> Self {
+        let (binding, via, protected, overrides, params, documented) = (None, None, false, false, None, None);
+        Self { name, kind, at, doc, binding, via, protected, overrides, params, documented, standalone: false }
+    }
 }
 
 struct Collector<'s> {
@@ -270,10 +290,29 @@ impl<'s> Collector<'s> {
         let doc = self.docs.get(&site.at).or_else(|| self.docs.get(&start)).cloned();
         // A decorator before `export` starts the declaration, and is where its doc goes.
         let at = site.at.min(start);
-        let via = site.via;
-        let (binding, protected, overrides, params) = (site.binding, false, false, None);
-        self.found.push(Found { name, kind, at, doc, binding, via, protected, overrides, params });
+        self.found.push(Found { binding: site.binding, via: site.via, ..Found::new(name, kind, at, doc) });
         self.found.last_mut().expect("just pushed")
+    }
+
+    /// Stops `comment`'s block from documenting the declaration after it.
+    fn detach(&mut self, comment: &Comment, block: &JSDoc) {
+        if self.docs.get(&comment.attached_to).is_some_and(|doc| doc.span == block.span) {
+            self.docs.remove(&comment.attached_to);
+        }
+    }
+
+    /// The file's own item, at its start. Its first JSDoc block documents it when the block is about
+    /// the file and says something, and is its doc, and no other item's, when it's about the file.
+    fn file(&mut self, comments: &[Comment]) {
+        let first = comments.iter().find(|c| matches!(c.content, CommentContent::Jsdoc | CommentContent::JsdocLegal));
+        let block = first.map(|c| jsdoc(c, self.source)).filter(|block| doc::file(block).is_some());
+        if let (Some(comment), Some(block)) = (first, &block) {
+            self.detach(comment, block);
+        }
+        let documented = Some(block.as_ref().and_then(doc::file) == Some(true));
+        let name = block.as_ref().and_then(|b| doc::text(b, "module"));
+        let name = name.and_then(|name| name.split_whitespace().next().map(str::to_owned)).unwrap_or_default();
+        self.found.push(Found { documented, standalone: true, ..Found::new(name, Kind::Module, 0, block) });
     }
 
     fn statement(&mut self, statement: &Statement<'s>) {
@@ -492,6 +531,12 @@ impl<'s> Collector<'s> {
             None => format!("[{}]", key.span().source_text(self.source)),
         }
     }
+}
+
+/// A JSDoc comment's block, past its `/**`, as oxc_jsdoc reads it.
+fn jsdoc<'s>(comment: &Comment, source: &'s str) -> JSDoc<'s> {
+    let span = Span::new(comment.content_span().start + 1, comment.content_span().end);
+    JSDoc::new(span.source_text(source), span)
 }
 
 /// `exports.name` or `module.exports.name`.

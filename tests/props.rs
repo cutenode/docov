@@ -3,8 +3,8 @@
 use std::{fs, path::Path, path::PathBuf, process::Command};
 
 use docov::feature::{
-    Feature, access::Access, add_ignore::AddIgnore, examples::Examples, exports::Exports, inherit::Inherit,
-    kinds::Kinds, report_unused_ignores::ReportUnusedIgnores, sort::Sort,
+    Feature, access::Access, add_ignore::AddIgnore, examples::Examples, exports::Exports, file_docs::FileDocs,
+    inherit::Inherit, kinds::Kinds, report_unused_ignores::ReportUnusedIgnores, sort::Sort,
 };
 use docov::{
     FileReport, Format, Item, Kind, Rules, Scope, Totals, collect, collect::Facts, collect::Ignore, config, feature,
@@ -626,6 +626,8 @@ fn rules_decide_what_counts_and_what_is_documented(tc: TestCase) {
             .into_iter()
             .map(|re| regex::Regex::new(re).unwrap())
             .collect(),
+        // The settings that add items of their own have properties of their own.
+        ..Rules::default()
     };
     // And each rule for what's documented with nothing left out, for the filters not to hide.
     let mut all = vec![rules];
@@ -929,6 +931,48 @@ fn parameters_are_documented_by_name_or_place(tc: TestCase) {
     let facts: Vec<_> = items.iter().map(|i| (i.facts.params_documented, i.facts.params)).collect();
     // The class has no JSDoc, so its method's parameters are documented only when it has none.
     assert_eq!(facts, [(Some(wanted), list.len()), (None, 0), (Some(list.is_empty()), list.len())], "{source}");
+}
+
+/// With `"fileDocs": "require"`, each file is an item at its start, named by its `@module` or its
+/// path, documented when its first JSDoc block is about the file and says something. That block
+/// then documents nothing else, while a first block that isn't about the file still documents what
+/// follows it. Off, files aren't items.
+#[hegel::test(test_cases = 100)]
+fn files_are_items_documented_by_a_block_about_them(tc: TestCase) {
+    // A first block, whether it documents what follows it today, whether it's about the file and
+    // says something, and its `@module` name.
+    let (first, documents, about, module) = tc.draw(gs::sampled_from(vec![
+        ("", false, None, None),
+        ("/** @file Helpers. */", true, Some(true), None),
+        ("/** @file */", true, Some(false), None),
+        ("/**\n * Helpers.\n * @fileoverview\n */", true, Some(true), None),
+        ("/** @overview Helpers. */", true, Some(true), None),
+        ("/** @module util/strings The strings. */", true, Some(true), Some("util/strings")),
+        ("/** @module */", true, Some(false), None),
+        ("/** @packageDocumentation The package. */", true, Some(true), None),
+        ("/**\n * @file Helpers.\n * @license MIT\n */", false, Some(true), None),
+        ("/** Docs. */", true, None, None),
+        ("/** @license MIT */", false, None, None),
+    ]));
+    let ignored = tc.draw(gs::booleans());
+    let source = format!("{first}\nexport const a = 1;\n{}", if ignored { "/* docov-ignore-file */\n" } else { "" });
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("m.ts");
+    fs::write(&path, &source).unwrap();
+    let a = |documented| (String::from("a"), Kind::Variable, documented);
+    let summary = |items: Vec<Item>| items.into_iter().map(|i| (i.name, i.kind, i.documented)).collect::<Vec<_>>();
+
+    let off = Rules::default();
+    assert_eq!(summary(scan(&source, SourceType::ts(), &off).unwrap()), [a(documents)]);
+    let on = Rules { file_docs: FileDocs::Require, ..Rules::default() };
+    let items = scan(&source, SourceType::ts(), &on).unwrap();
+    let file = &items[0];
+    assert_eq!((file.line, file.column, file.ignored()), (1, 1, ignored && about != Some(true)), "{source}");
+    assert_eq!(file.kind.as_str(), "module");
+    let file = (module.unwrap_or_default().to_owned(), Kind::Module, about == Some(true));
+    assert_eq!(summary(items), [file.clone(), a(documents && about.is_none())], "{source}");
+    let named = module.map_or(path.display().to_string(), String::from);
+    assert_eq!(summary(scan_file(&path, &on).unwrap().items)[0], (named, Kind::Module, file.2));
 }
 
 fn render(format: Format, files: &[FileReport]) -> String {
@@ -1503,6 +1547,7 @@ fn rules_come_from_flags_over_the_config(tc: TestCase) {
     run.args.extend(["--sort".into(), if sort == Sort::Priority { "priority" } else { "position" }.into()]);
     let ignore_deprecated = run.set(&tc, "ignoreDeprecated", vec![false, true], |_| vec![]);
     let skip_generated = run.set(&tc, "skipGenerated", vec![false, true], |_| vec![]);
+    let file_docs = run.set(&tc, "fileDocs", vec![FileDocs::Off, FileDocs::Require], |_| vec![]);
 
     let settings = run.settings(dir.path());
     let rules = settings.rules();
@@ -1511,6 +1556,7 @@ fn rules_come_from_flags_over_the_config(tc: TestCase) {
         (ignore_deprecated.unwrap_or_default(), skip_generated.unwrap_or_default())
     );
     assert_eq!(rules.exports, exports.map_or(Exports::default(), |(_, e)| e));
+    assert_eq!(rules.file_docs, file_docs.unwrap_or_default());
     assert_eq!(rules.inherit, inherit.unwrap_or_default());
     assert_eq!(rules.access, access);
     let patterns: Vec<&str> = rules.ignore_names.iter().map(regex::Regex::as_str).collect();

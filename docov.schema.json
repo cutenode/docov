@@ -47,6 +47,21 @@
       },
       "type": "object"
     },
+    "FileDocs": {
+      "description": "Whether each file needs a JSDoc block of its own.",
+      "oneOf": [
+        {
+          "const": "off",
+          "description": "Files aren't items.",
+          "type": "string"
+        },
+        {
+          "const": "require",
+          "description": "Each file is an item of kind `module`, documented when its first JSDoc block has `@file`,\n`@fileoverview`, `@overview`, `@module` or `@packageDocumentation`, with text. That block then\ndocuments nothing else.",
+          "type": "string"
+        }
+      ]
+    },
     "Ignore": {
       "additionalProperties": false,
       "description": "What to leave out.",
@@ -133,6 +148,11 @@
           "const": "default",
           "description": "`export default` or `module.exports =` of an expression.",
           "type": "string"
+        },
+        {
+          "const": "module",
+          "description": "A file, with `fileDocs`.",
+          "type": "string"
         }
       ]
     },
@@ -207,6 +227,11 @@
     "exports": {
       "$ref": "#/$defs/Exports",
       "description": "Which ways of exporting count under the `exports` scope. Globals are items under either scope only when on."
+    },
+    "fileDocs": {
+      "$ref": "#/$defs/FileDocs",
+      "default": "off",
+      "description": "Whether each file needs a JSDoc block of its own (`@file`, `@fileoverview`, `@overview`, `@module` or `@packageDocumentation`, with text), counted as an item of kind `module`."
     },
     "ignore": {
       "$ref": "#/$defs/Ignore",

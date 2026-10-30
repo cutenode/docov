@@ -395,3 +395,16 @@ fn examples_are_counted_and_gated() {
     fs::write(dir.path().join("docov.json"), r#"{ "examplesThreshold": 30 }"#).unwrap();
     assert_eq!(docov(dir.path(), &[]).0, 0);
 }
+
+#[test]
+fn file_docs_make_each_file_an_item() {
+    let dir = project();
+    fs::write(dir.path().join("src/c.js"), "/** @module c The c module. */\n\n/** c */\nexport class C {}\n").unwrap();
+    fs::write(dir.path().join("docov.json"), r#"{ "fileDocs": "require" }"#).unwrap();
+    let (code, out, _) = docov(dir.path(), &["--format", "json", "--kind", "module"]);
+    let json: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let file =
+        |f: usize| (json["files"][f]["items"][0]["name"].clone(), json["files"][f]["items"][0]["documented"].clone());
+    let a = Path::new("src").join("a.ts").display().to_string();
+    assert_eq!((code, file(0), file(1)), (0, (a.into(), false.into()), ("c".into(), true.into())));
+}

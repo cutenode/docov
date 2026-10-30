@@ -6,7 +6,7 @@ use rustc_hash::FxHashSet;
 use super::{Found, Via, doc};
 use crate::{
     Kind, Scope,
-    feature::{access::Access, exports::Exports, inherit::Inherit},
+    feature::{access::Access, exports::Exports, file_docs::FileDocs, inherit::Inherit},
 };
 
 /// Which items count, and when one is documented. The default is docov's out of the box.
@@ -32,6 +32,8 @@ pub struct Rules {
     pub skip_generated: bool,
     /// Which ways of exporting count.
     pub exports: Exports,
+    /// Whether each file is an item, documented by a JSDoc block about it.
+    pub file_docs: FileDocs,
 }
 
 impl From<Scope> for Rules {
@@ -56,7 +58,7 @@ impl Rules {
     }
 
     /// Whether `found` is exported by a way of exporting that counts, where it's declared or apart
-    /// from that.
+    /// from that. An item that counts under any scope is.
     pub(super) fn exported(&self, found: &Found, exported: &FxHashSet<(&str, Via)>) -> bool {
         let counts = |via: Via| match via {
             Via::Esm => self.exports.esm,
@@ -66,7 +68,7 @@ impl Rules {
         let apart = |binding| {
             [Via::Esm, Via::Cjs, Via::Global].into_iter().any(|via| counts(via) && exported.contains(&(binding, via)))
         };
-        found.via.is_some_and(counts) || found.binding.is_some_and(apart)
+        found.standalone || found.via.is_some_and(counts) || found.binding.is_some_and(apart)
     }
 
     /// Whether its kind, name, access level or tags leave `found` out.
@@ -86,6 +88,9 @@ impl Rules {
 
     /// Whether `found` is documented.
     pub(super) fn documents(&self, found: &Found) -> bool {
+        if let Some(documented) = found.documented {
+            return documented;
+        }
         let inherits = self.inherit == Inherit::Override && found.overrides;
         inherits || found.doc.as_ref().is_some_and(|doc| !self.require_description || doc::describes(doc, found.kind))
     }

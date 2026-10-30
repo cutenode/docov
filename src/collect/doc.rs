@@ -18,6 +18,17 @@ pub(super) fn describes(doc: &JSDoc, kind: Kind) -> bool {
         })
 }
 
+/// The tags that make a block about its file.
+const FILE_TAGS: [&str; 5] = ["file", "fileoverview", "overview", "module", "packageDocumentation"];
+
+/// Whether `doc` is about its file, and if it is, whether it says something: a description, or
+/// text on one of its file tags.
+pub(super) fn file(doc: &JSDoc) -> Option<bool> {
+    let tags: Vec<_> = doc.tags().iter().filter(|tag| FILE_TAGS.contains(&tag.kind.parsed())).collect();
+    let text = !doc.comment().parsed().is_empty() || tags.iter().any(|tag| !tag.comment().parsed().is_empty());
+    (!tags.is_empty()).then_some(text)
+}
+
 /// Whether `doc` has the tag `name` (without its `@`).
 pub(super) fn has_tag(doc: &JSDoc, name: &str) -> bool {
     doc.tags().iter().any(|tag| tag.kind.parsed() == name)
