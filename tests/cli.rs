@@ -222,6 +222,18 @@ fn gitlab_fingerprints_are_fnv_1a_of_the_path_kind_and_name() {
 }
 
 #[test]
+fn badge_writes_an_svg_beside_the_report() {
+    let dir = project();
+    let (_, text, _) = docov(dir.path(), &[]);
+    let (code, out, _) = docov(dir.path(), &["--badge", "docs/badge.svg", "--threshold", "60"]);
+    assert_eq!((code, out), (0, text));
+    let svg = fs::read_to_string(dir.path().join("docs/badge.svg")).unwrap();
+    assert!(svg.contains("aria-label=\"docs: 66.7%\"") && svg.contains("#dfb317"), "{svg}");
+    let (_, shields, _) = docov(dir.path(), &["--format", "shields"]);
+    assert_eq!(shields, "{\"color\":\"blue\",\"label\":\"docs\",\"message\":\"66.7%\",\"schemaVersion\":1}\n");
+}
+
+#[test]
 fn the_checked_in_schema_is_current() {
     let dir = tempfile::tempdir().unwrap();
     let (code, out, _) = docov(dir.path(), &["--print-schema"]);

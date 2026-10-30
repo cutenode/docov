@@ -25,7 +25,7 @@ The npm package runs a prebuilt binary for macOS, Linux or Windows on x64 or arm
 ## Usage
 
 ```
-docov [PATHS]... [--config FILE] [--threshold PERCENT] [--scope exports|all] [--format FORMAT[=FILE]]... [--output FILE]
+docov [PATHS]... [--config FILE] [--threshold PERCENT] [--scope exports|all] [--format FORMAT[=FILE]]... [--output FILE] [--badge FILE]
 ```
 
 With no paths it scans the current folder: every `.js`, `.mjs`, `.cjs`, `.jsx`, `.ts`, `.mts`, `.cts` and `.tsx` file, leaving out hidden files and what `.gitignore` leaves out (in a git repository or not). A file named on the command line is always scanned.
@@ -85,6 +85,10 @@ docov --format text --format lcov=coverage/docov.lcov
 - `junit`: JUnit XML, a test suite per file and a test case per item that fails when the item is undocumented.
 - `checkstyle`: Checkstyle XML, a warning at each undocumented item.
 - `rdjson`: [reviewdog](https://github.com/reviewdog/reviewdog)'s diagnostic format (`reviewdog -f=rdjson`).
+- `badge`: an SVG badge of the total, drawn without a network call. `--badge FILE` is short for `--format badge=FILE`.
+- `shields`: the JSON a [shields.io endpoint badge](https://shields.io/badges/endpoint-badge) reads, for a badge from a file you publish.
+
+Badges are red under the threshold, yellow up to 10 points over it, and green past that. With no threshold they're blue.
 
 ## Working on it
 

@@ -438,17 +438,24 @@ struct Drawn {
     failures: Vec<String>,
     /// When the scan ran, in milliseconds since 1970.
     now_ms: u64,
+    threshold: Option<f64>,
 }
 
 impl Drawn {
     fn draw(tc: &TestCase) -> Self {
         let failures = tc.draw(gs::vecs(gs::sampled_from(FAILURES.to_vec())).max_size(2));
         let now_ms = tc.draw(gs::integers::<u64>().max_value(4_000_000_000_000));
-        Self { files: reports(tc), failures: failures.into_iter().map(String::from).collect(), now_ms }
+        let threshold = tc.draw(gs::optional(gs::integers::<u8>().max_value(100))).map(f64::from);
+        Self { files: reports(tc), failures: failures.into_iter().map(String::from).collect(), now_ms, threshold }
     }
 
     fn context(&self) -> Context<'_> {
-        Context { files: &self.files, failures: &self.failures, now: UNIX_EPOCH + Duration::from_millis(self.now_ms) }
+        Context {
+            files: &self.files,
+            failures: &self.failures,
+            now: UNIX_EPOCH + Duration::from_millis(self.now_ms),
+            threshold: self.threshold,
+        }
     }
 }
 
@@ -532,7 +539,8 @@ fn outputs_go_where_the_flags_send_them(tc: TestCase) {
     let output = tc.draw(gs::booleans()).then(|| dir.path().join("out/o.txt"));
     let unnamed = if format.is_empty() { 1 } else { format.iter().filter(|o| o.path.is_none()).count() };
     let github_actions = tc.draw(gs::booleans());
-    let flags = report::Flags { format: format.clone(), output: output.clone() };
+    let badge = tc.draw(gs::booleans()).then(|| dir.path().join("badge.svg"));
+    let flags = report::Flags { format: format.clone(), output: output.clone(), badge: badge.clone() };
     let outputs = match flags.outputs(github_actions) {
         Err(e) => {
             assert!(output.is_some() && unnamed != 1, "{e}");
@@ -542,7 +550,11 @@ fn outputs_go_where_the_flags_send_them(tc: TestCase) {
         Ok(outputs) => outputs,
     };
     assert!(output.is_none() || unnamed == 1);
-    let named: Vec<&str> = outputs.iter().map(|o| o.format.name).collect();
+    let mut named: Vec<&str> = outputs.iter().map(|o| o.format.name).collect();
+    // `--badge` adds a badge, at the end.
+    if badge.is_some() {
+        assert_eq!((named.pop(), &outputs.last().unwrap().path), (Some("badge"), &badge));
+    }
     if format.is_empty() {
         assert_eq!(named, if github_actions { &["text", "github"][..] } else { &["text"] });
     } else {
@@ -857,6 +869,42 @@ fn coverage_formats_agree_on_lines(tc: TestCase) {
     assert_eq!(classes, wanted);
 }
 
+/// `badge` and `shields` show the total to one decimal place, red under the threshold, yellow up
+/// to 10 points over it, green past that, and blue with no threshold to compare with.
+#[hegel::test(test_cases = 100)]
+fn badges_are_colored_by_the_threshold(tc: TestCase) {
+    let mut drawn = Drawn::draw(&tc);
+    let percent = Totals::of(&drawn.files).percent();
+    let near = tc.draw(gs::sampled_from(vec![-10.0, -0.5, 0.0, 5.0, 10.0, 10.5]));
+    drawn.threshold = match tc.draw(gs::integers::<u8>().max_value(2)) {
+        0 => None,
+        1 => Some(f64::from(tc.draw(gs::integers::<u8>().max_value(100)))),
+        _ => Some(percent - near),
+    };
+    let (name, hex) = match drawn.threshold {
+        None => ("blue", "#007ec6"),
+        Some(t) if percent < t => ("red", "#e05d44"),
+        Some(t) if percent <= t + 10.0 => ("yellow", "#dfb317"),
+        Some(_) => ("green", "#97ca00"),
+    };
+    let message = format!("{percent:.1}%");
+
+    let shields: serde_json::Value =
+        serde_json::from_str(&report::format("shields").unwrap().render(&drawn.context())).unwrap();
+    assert_eq!(shields, serde_json::json!({ "schemaVersion": 1, "label": "docs", "message": message, "color": name }));
+
+    let svg = report::format("badge").unwrap().render(&drawn.context());
+    let svg = roxmltree::Document::parse(&svg).unwrap();
+    let root = svg.root_element();
+    assert_eq!(root.attribute("aria-label"), Some(format!("docs: {message}").as_str()));
+    assert!(svg.descendants().any(|n| n.attribute("fill") == Some(hex)), "{name}");
+    let texts: Vec<_> = svg.descendants().filter(|n| n.has_tag_name("text")).filter_map(|n| n.text()).collect();
+    assert_eq!(texts, ["docs", "docs", message.as_str(), message.as_str()]);
+    // Wide enough for the message, at about 7 pixels a character.
+    let width: usize = root.attribute("width").unwrap().parse().unwrap();
+    assert!(width >= 37 + 7 * message.len(), "{width}");
+}
+
 /// Every format reports the same items and totals, and documenting one more item never lowers
 /// coverage.
 #[hegel::test(test_cases = 100)]
@@ -867,11 +915,11 @@ fn formats_agree_on_totals(tc: TestCase) {
     assert_eq!(totals.total, files.iter().map(|f| f.items.len()).sum::<usize>());
 
     let render = |name, files: &[FileReport]| {
-        report::format(name).unwrap().render(&Context { files, failures: &[], now: UNIX_EPOCH })
+        report::format(name).unwrap().render(&Context { files, failures: &[], now: UNIX_EPOCH, threshold: None })
     };
     // Every format fails when its output doesn't fit where it's going, and only then.
     for format in report::FORMATS {
-        let context = Context { files: &files, failures: &[], now: UNIX_EPOCH };
+        let context = Context { files: &files, failures: &[], now: UNIX_EPOCH, threshold: None };
         let length = format.render(&context).len();
         let room = tc.draw(gs::integers::<usize>().max_value(length + 1));
         let result = report::write(&[Output { format, path: None }], &context, &mut Room(room));

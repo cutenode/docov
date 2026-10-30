@@ -57,6 +57,8 @@ pub struct Context<'a> {
     pub failures: &'a [String],
     /// When the scan ran, for formats that say.
     pub now: SystemTime,
+    /// The threshold, which badges are colored by.
+    pub threshold: Option<f64>,
 }
 
 /// `path` with `/` between its parts, as URLs and CI services want it, on Windows too.
@@ -93,6 +95,23 @@ fn lines(file: &FileReport) -> Vec<(usize, bool)> {
         }
     }
     lines
+}
+
+/// The total's percentage as badges show it: `66.7%`.
+fn total(context: &Context) -> String {
+    format!("{:.1}%", Totals::of(context.files).percent())
+}
+
+/// A badge's color, as shields.io names it and in hex: red under the threshold, yellow up to 10
+/// points over it, green past that, and blue with no threshold to compare with.
+fn color(context: &Context) -> (&'static str, &'static str) {
+    let percent = Totals::of(context.files).percent();
+    match context.threshold {
+        None => ("blue", "#007ec6"),
+        Some(threshold) if percent < threshold => ("red", "#e05d44"),
+        Some(threshold) if percent <= threshold + 10.0 => ("yellow", "#dfb317"),
+        Some(_) => ("green", "#97ca00"),
+    }
 }
 
 /// What a finding at an undocumented item says: `function a is undocumented`.
@@ -157,12 +176,15 @@ pub struct Flags {
     /// Write the one format without a file of its own to FILE
     #[arg(long, value_name = "FILE")]
     pub output: Option<PathBuf>,
+    /// Write an SVG badge of the total to FILE, as `--format badge=FILE` does
+    #[arg(long, value_name = "FILE")]
+    pub badge: Option<PathBuf>,
 }
 
 impl Flags {
     /// Each format and where it goes: text without a `--format`, and GitHub annotations too when
     /// `github_actions`, which go to stdout for the runner to read. `--output` is the file for the
-    /// one format without a file of its own.
+    /// one format without a file of its own, and `--badge` adds a badge.
     pub fn outputs(&self, github_actions: bool) -> Result<Vec<Output>, String> {
         let text = Output { format: format("text").expect("text is a format"), path: None };
         let mut outputs = if self.format.is_empty() { vec![text] } else { self.format.clone() };
@@ -176,6 +198,8 @@ impl Flags {
         if self.format.is_empty() && github_actions {
             outputs.push(Output { format: format("github").expect("github is a format"), path: None });
         }
+        let badge = format("badge").expect("badge is a format");
+        outputs.extend(self.badge.iter().map(|path| Output { format: badge, path: Some(path.clone()) }));
         Ok(outputs)
     }
 }
