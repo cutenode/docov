@@ -54,6 +54,11 @@
       },
       "type": "array"
     },
+    "reportUnusedIgnores": {
+      "default": false,
+      "description": "Fail on a docov-ignore-next-line whose items are documented anyway.",
+      "type": "boolean"
+    },
     "requireDescription": {
       "default": false,
       "description": "Count a JSDoc block only with text before its first tag, or @description, @summary, @classdesc or @inheritdoc.",

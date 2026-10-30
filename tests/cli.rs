@@ -209,3 +209,35 @@ fn excluded_tags_come_from_the_flags_or_the_config() {
     // The flags win over the key.
     assert_eq!(total(&["--exclude-tag", "hidden"]), "  50.0%  1/2  total");
 }
+
+#[test]
+fn ignored_items_are_left_out_of_the_text_and_marked_in_the_json() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = "// docov-ignore-next-line: legacy\nexport const a = 1;\nexport const b = 1;\n";
+    fs::write(dir.path().join("a.ts"), source).unwrap();
+    fs::write(dir.path().join("b.ts"), "/* docov-ignore-file */\nexport const c = 1;\n").unwrap();
+    let (code, out, _) = docov(dir.path(), &[]);
+    assert_eq!((code, out.as_str()), (0, "   0.0%  0/1  a.ts\n         a.ts:3:1  variable b\n   0.0%  0/1  total\n"));
+    let (_, out, _) = docov(dir.path(), &["--format", "json"]);
+    let json: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let a = &json["files"][0]["items"];
+    assert_eq!((&a[0]["ignored"], &a[0]["reason"]), (&true.into(), &"legacy".into()));
+    assert_eq!((a[1].get("ignored"), a[1].get("reason")), (None, None));
+    let c = &json["files"][1]["items"][0];
+    assert_eq!((&c["ignored"], c.get("reason")), (&true.into(), None));
+}
+
+#[test]
+fn unused_ignores_fail_when_reported() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = "/** A. */\n// docov-ignore-next-line\nexport const a = 1;\n  // docov-ignore-next-line\n  /** B. */ export const b = 1;\n// docov-ignore-next-line\nexport const c = 1;\n";
+    fs::write(dir.path().join("a.ts"), source).unwrap();
+    assert_eq!(docov(dir.path(), &[]).0, 0);
+    let (code, _, err) = docov(dir.path(), &["--report-unused-ignores"]);
+    assert_eq!(
+        (code, err.as_str()),
+        (1, "docov: a.ts:2:1: unused docov-ignore\ndocov: a.ts:4:3: unused docov-ignore\n")
+    );
+    fs::write(dir.path().join("docov.json"), r#"{ "reportUnusedIgnores": true }"#).unwrap();
+    assert_eq!(docov(dir.path(), &[]).0, 1);
+}

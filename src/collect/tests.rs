@@ -347,3 +347,47 @@ export const d = 1;
     let names: Vec<String> = scan(source, SourceType::ts(), &rules).unwrap().into_iter().map(|i| i.name).collect();
     assert_eq!(names, ["b", "d"]);
 }
+
+#[test]
+fn ignore_comments_cover_the_next_line_or_the_file() {
+    let source = "
+// docov-ignore-next-line: legacy
+export function a() {}
+/** b */
+// docov-ignore-next-line
+export function b() {}
+// docov-ignore-next-line
+/** c */
+export function c() {}
+/* docov-ignore-next-line */
+export class D { e() {} }
+// docov-ignore-next-lines
+export function f() {}
+function g() {
+    /* docov-ignore-file: not here */
+}
+";
+    let items = scan(source, SourceType::ts(), &Rules::default()).unwrap();
+    let ignored: Vec<(&str, bool, Option<&str>)> =
+        items.iter().map(|i| (&*i.name, i.ignored(), i.ignore.as_ref().and_then(|i| i.reason.as_deref()))).collect();
+    assert_eq!(
+        ignored,
+        [
+            ("a", true, Some("legacy")),
+            ("b", false, None),
+            ("c", false, None),
+            ("D", true, None),
+            ("D.e", true, None),
+            ("f", false, None),
+        ]
+    );
+    // A documented item keeps its ignore, which it doesn't need.
+    assert_eq!(items[1].ignore, Some(Ignore { reason: None, line: 5, column: 1, file: false }));
+    assert_eq!(items[2].ignore, None, "the comment covers the JSDoc's line");
+
+    let file = "export const a = 1;\n/** b */ export const b = 1;\nlet x; // docov-ignore-file : generated\n";
+    let items = scan(file, SourceType::ts(), &Rules::default()).unwrap();
+    let ignore = Ignore { reason: Some("generated".into()), line: 3, column: 8, file: true };
+    assert_eq!([items[0].ignored(), items[1].ignored()], [true, false]);
+    assert_eq!([&items[0].ignore, &items[1].ignore], [&Some(ignore.clone()), &Some(ignore)]);
+}

@@ -2,7 +2,11 @@
 
 use std::{fs, path::Path, path::PathBuf, process::Command};
 
-use docov::{FileReport, Format, Item, Kind, Rules, Scope, Totals, collect, config, feature, report, scan, scan_file};
+use docov::feature::{Feature, report_unused_ignores::ReportUnusedIgnores};
+use docov::{
+    FileReport, Format, Item, Kind, Rules, Scope, Totals, collect, collect::Ignore, config, feature, report, scan,
+    scan_file,
+};
 use hegel::{TestCase, generators as gs};
 use oxc_span::SourceType;
 
@@ -14,7 +18,30 @@ struct Module {
     expected: Vec<Expected>,
     specifiers: Vec<String>,
     has_default: bool,
+    /// The `docov-ignore-next-line` just written, for the item on the line after it.
+    next_ignore: Option<Ignore>,
+    /// The module's `docov-ignore-file`.
+    file_ignore: Option<Ignore>,
 }
+
+/// `docov-ignore-next-line` comments and comments that aren't quite, with the reason each one
+/// gives, or `None` for those that aren't one.
+const NEXT_LINE_IGNORES: [(&str, Option<Option<&str>>); 6] = [
+    ("// docov-ignore-next-line", Some(None)),
+    ("// docov-ignore-next-line: legacy API", Some(Some("legacy API"))),
+    ("/* docov-ignore-next-line:   */", Some(None)),
+    ("//docov-ignore-next-line : later", Some(Some("later"))),
+    ("// docov-ignore-next-lines", None),
+    ("// docov-ignore-next-line legacy", None),
+];
+
+/// The same for `docov-ignore-file`, which counts only outside every statement.
+const FILE_IGNORES: [(&str, Option<Option<&str>>); 4] = [
+    ("/* docov-ignore-file */", Some(None)),
+    ("// docov-ignore-file: generated", Some(Some("generated"))),
+    ("if (x) { /* docov-ignore-file */ }", None),
+    ("/* docov-ignore-files */", None),
+];
 
 /// An item a generated module declares.
 struct Expected {
@@ -97,6 +124,24 @@ impl Module {
         self.source.push('\n');
     }
 
+    /// The line about to be written.
+    fn line(&self) -> usize {
+        self.source.matches('\n').count() + 1
+    }
+
+    /// Maybe writes a `docov-ignore-file` (or `-next-line`) comment, or one that isn't quite, and
+    /// gives the ignore it is, if it's one.
+    fn ignore(&mut self, tc: &TestCase, file: bool) -> Option<Ignore> {
+        if !tc.draw(gs::weighted_booleans(0.3)) {
+            return None;
+        }
+        let ignores = if file { FILE_IGNORES.to_vec() } else { NEXT_LINE_IGNORES.to_vec() };
+        let (text, reason) = tc.draw(gs::sampled_from(ignores));
+        let line = self.line();
+        self.write(text);
+        reason.map(|reason| Ignore { reason: reason.map(String::from), line, column: 1, file })
+    }
+
     /// Writes ordinary comments and maybe a JSDoc block, and says which block it wrote.
     fn doc(&mut self, tc: &TestCase) -> Option<Block> {
         let noise = ["// note", "/* note */", "/** */", "/**\n *\n */", "/** @license MIT */"];
@@ -110,13 +155,15 @@ impl Module {
         if tc.draw(gs::booleans()) {
             self.write("// after");
         }
+        self.next_ignore = self.ignore(tc, false);
         doc
     }
 
     /// Expects an item on the line about to be written.
     fn expect(&mut self, exported: bool, name: String, kind: Kind, doc: Option<Block>) {
-        let line = self.source.matches('\n').count() + 1;
-        let item = Item { name, kind, line, column: 1, documented: doc.is_some() };
+        let line = self.line();
+        let ignore = self.next_ignore.take().filter(|ignore| ignore.line + 1 == line);
+        let item = Item { name, kind, line, column: 1, documented: doc.is_some(), ignore };
         self.expected.push(Expected { exported, item, doc });
     }
 
@@ -367,13 +414,24 @@ impl Module {
 
     fn generate(tc: &TestCase) -> Self {
         let mut module = Self::default();
+        let file_ignore_first = tc.draw(gs::booleans());
+        if file_ignore_first {
+            module.file_ignore = module.ignore(tc, true);
+        }
         for i in 0..tc.draw(gs::integers::<usize>().max_value(10)) {
             module.declaration(tc, i);
         }
         if tc.draw(gs::booleans()) {
             module.nothing(tc);
         }
-        module.finish()
+        let mut module = module.finish();
+        if !file_ignore_first {
+            module.file_ignore = module.ignore(tc, true);
+        }
+        for expected in &mut module.expected {
+            expected.item.ignore = expected.item.ignore.take().or_else(|| module.file_ignore.clone());
+        }
+        module
     }
 
     fn finish(mut self) -> Self {
@@ -466,8 +524,9 @@ const ALL_KINDS: [Kind; 11] = [
     Kind::Default,
 ];
 
-fn reports(tc: &TestCase) -> Vec<FileReport> {
-    let item = gs::vecs(gs::integers::<usize>().max_value(ALL_KINDS.len() - 1)).min_size(2).max_size(2);
+/// Generated reports, with `docov-ignore` comments over some items when `ignores` is on.
+fn reports(tc: &TestCase, ignores: bool) -> Vec<FileReport> {
+    let item = gs::vecs(gs::integers::<usize>().max_value(ALL_KINDS.len() - 1)).min_size(3).max_size(3);
     let files = tc.draw(gs::vecs(gs::vecs(item).max_size(6)).max_size(4));
     files
         .into_iter()
@@ -483,6 +542,13 @@ fn reports(tc: &TestCase) -> Vec<FileReport> {
                     line: i / 2 + 1,
                     column: 1,
                     documented: drawn[1] % 2 == 0,
+                    // The comment on the line before, the same for the items that share a line.
+                    ignore: (ignores && drawn[2] % 2 == 0).then(|| Ignore {
+                        reason: (i / 2 % 2 == 1).then(|| "why".into()),
+                        line: i / 2,
+                        column: 1,
+                        file: i / 2 % 3 == 0,
+                    }),
                 })
                 .collect(),
         })
@@ -522,16 +588,11 @@ fn thresholds_are_percentages(tc: TestCase) {
 /// coverage.
 #[hegel::test(test_cases = 100)]
 fn formats_agree_on_totals(tc: TestCase) {
-    let mut files = reports(&tc);
+    let mut files = reports(&tc, false);
     let totals = Totals::of(&files);
     assert!((0.0..=100.0).contains(&totals.percent()));
     assert_eq!(totals.total, files.iter().map(|f| f.items.len()).sum::<usize>());
 
-    let render = |format, files: &[FileReport]| {
-        let mut out = Vec::new();
-        report::write(format, files, &mut out).unwrap();
-        String::from_utf8(out).unwrap()
-    };
     // Every format fails when its output doesn't fit where it's going, and only then.
     for format in [Format::Text, Format::Json, Format::Lcov] {
         let length = render(format, &files).len();
@@ -574,6 +635,73 @@ fn formats_agree_on_totals(tc: TestCase) {
         item.documented = true;
         assert!(Totals::of(&files).percent() > totals.percent());
     }
+}
+
+fn render(format: Format, files: &[FileReport]) -> String {
+    let mut out = Vec::new();
+    report::write(format, files, &mut out).unwrap();
+    String::from_utf8(out).unwrap()
+}
+
+/// An undocumented item under a `docov-ignore` is out of every format's totals and of the text
+/// report, and the JSON report marks it, with its reason. A documented one counts as documented.
+#[hegel::test(test_cases = 100)]
+fn ignored_items_are_out_of_the_totals(tc: TestCase) {
+    let files = reports(&tc, true);
+    let counted = |f: &FileReport| f.items.iter().filter(|i| i.documented || i.ignore.is_none()).count();
+    let totals = Totals::of(&files);
+    assert_eq!(totals.total, files.iter().map(counted).sum::<usize>());
+    assert_eq!(totals.documented, files.iter().flat_map(|f| &f.items).filter(|i| i.documented).count());
+
+    let text = render(Format::Text, &files);
+    let listed = text.lines().filter(|l| l.starts_with("         ")).count();
+    let undocumented = files.iter().flat_map(|f| &f.items).filter(|i| !i.documented && i.ignore.is_none()).count();
+    assert_eq!(listed, undocumented, "{text}");
+    // A file with nothing counted has no line.
+    let headed = text.lines().filter(|l| l.ends_with(".ts") && !l.starts_with("         ")).count();
+    assert_eq!(headed, files.iter().filter(|f| counted(f) > 0).count(), "{text}");
+
+    let json: serde_json::Value = serde_json::from_str(&render(Format::Json, &files)).unwrap();
+    let marks = json["files"].as_array().unwrap().iter().flat_map(|f| f["items"].as_array().unwrap().clone());
+    let wanted = files.iter().flat_map(|f| &f.items).map(|i| {
+        let ignore = i.ignore.as_ref().filter(|_| !i.documented);
+        (ignore.map(|_| true), ignore.and_then(|i| i.reason.clone()))
+    });
+    let marks = marks.map(|m| (m["ignored"].as_bool(), m["reason"].as_str().map(String::from)));
+    assert!(marks.eq(wanted));
+
+    let lcov = render(Format::Lcov, &files);
+    let found: usize = lcov.lines().filter_map(|l| l.strip_prefix("LF:")).map(|n| n.parse::<usize>().unwrap()).sum();
+    let mut lines: Vec<(usize, usize)> = Vec::new();
+    for (f, file) in files.iter().enumerate() {
+        lines.extend(file.items.iter().filter(|i| i.documented || i.ignore.is_none()).map(|i| (f, i.line)));
+    }
+    lines.dedup();
+    assert_eq!(found, lines.len(), "{lcov}");
+}
+
+/// With `--report-unused-ignores`, each `docov-ignore-next-line` whose items are all documented
+/// fails the scan, once, at the comment. Off, or with none, nothing does.
+#[hegel::test(test_cases = 100)]
+fn unused_ignores_fail_the_scan(tc: TestCase) {
+    let files = reports(&tc, true);
+    let mut wanted = Vec::new();
+    for file in &files {
+        // Each comment's line, and whether all its items are documented.
+        let mut comments: Vec<(usize, bool)> = Vec::new();
+        for item in &file.items {
+            let Some(ignore) = item.ignore.as_ref().filter(|i| !i.file) else { continue };
+            match comments.last_mut() {
+                Some((line, all)) if *line == ignore.line => *all &= item.documented,
+                _ => comments.push((ignore.line, item.documented)),
+            }
+        }
+        let unused = comments.iter().filter(|(_, all)| *all);
+        wanted.extend(unused.map(|(line, _)| format!("{}:{line}:1: unused docov-ignore", file.path.display())));
+    }
+    assert_eq!(ReportUnusedIgnores(false).gate(&files), None);
+    let gate = ReportUnusedIgnores(true).gate(&files);
+    assert_eq!(gate, (!wanted.is_empty()).then(|| wanted.join("\n")));
 }
 
 fn write(dir: &Path, path: &str, text: &str) {

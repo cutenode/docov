@@ -29,7 +29,7 @@ pub trait Feature: Sized + Send + Sync + 'static {
     /// Sets its part of what counts and when an item is documented.
     fn rules(&self, _rules: &mut Rules) {}
 
-    /// Why the scan fails, when this setting fails it (exit 1).
+    /// Why the scan fails, when this setting fails it (exit 1). Each line is a message of its own.
     fn gate(&self, _reports: &[FileReport]) -> Option<String> {
         None
     }
