@@ -2,7 +2,7 @@
 
 use std::{fs, path::Path, path::PathBuf, process::Command};
 
-use docov::{Context, FileReport, Item, Kind, Scope, Totals, collect, config, report, scan, scan_file};
+use docov::{Context, FileReport, Item, Kind, Output, Scope, Totals, collect, config, report, scan, scan_file};
 use hegel::{TestCase, generators as gs};
 use oxc_span::SourceType;
 
@@ -455,6 +455,78 @@ fn formats_are_found_by_name(tc: TestCase) {
     }
 }
 
+/// `--format` takes a format's name, then maybe `=FILE`, and nothing else.
+#[hegel::test(test_cases = 100)]
+fn format_flags_name_a_format_and_maybe_a_file(tc: TestCase) {
+    let names: Vec<&str> = report::FORMATS.iter().map(|f| f.name).collect();
+    let name =
+        if tc.draw(gs::booleans()) { tc.draw(gs::sampled_from(names.clone())).to_owned() } else { tc.draw(gs::text()) };
+    let file = tc.draw(gs::optional(gs::sampled_from(vec!["", "x.lcov", "a=b", "deep/x.json"])));
+    let value = file.map_or(name.clone(), |file| format!("{name}={file}"));
+    let (name, file) = value.split_once('=').map_or((&*value, None), |(name, file)| (name, Some(file)));
+    match Output::parse(&value) {
+        Ok(output) => assert_eq!((output.format.name, output.path), (name, file.map(PathBuf::from))),
+        Err(e) if file == Some("") => assert_eq!(e, format!("expected a file after `{name}=`")),
+        Err(e) => assert_eq!(Err(e), report::format(name).map(|f| f.name)),
+    }
+}
+
+/// Each format goes to its file, folders made, or else to stdout, one after another; `--output` is
+/// the file for the one format without its own, and an error without exactly one. With no
+/// `--format`, it's text. A file that can't be written fails, naming it.
+#[hegel::test(test_cases = 50)]
+fn outputs_go_where_the_flags_send_them(tc: TestCase) {
+    let dir = tempfile::tempdir().unwrap();
+    let files = reports(&tc);
+    let context = Context { files: &files };
+    let names: Vec<&str> = report::FORMATS.iter().map(|f| f.name).collect();
+    let mut format = Vec::new();
+    for i in 0..tc.draw(gs::integers::<usize>().max_value(3)) {
+        let name = tc.draw(gs::sampled_from(names.clone()));
+        let file = tc.draw(gs::optional(gs::sampled_from(vec![format!("{i}.out"), format!("deep/er/{i}.out")])));
+        format.push(Output { format: report::format(name).unwrap(), path: file.map(|f| dir.path().join(f)) });
+    }
+    let output = tc.draw(gs::booleans()).then(|| dir.path().join("out/o.txt"));
+    let unnamed = if format.is_empty() { 1 } else { format.iter().filter(|o| o.path.is_none()).count() };
+    let flags = report::Flags { format: format.clone(), output: output.clone() };
+    let outputs = match flags.outputs() {
+        Err(e) => {
+            assert!(output.is_some() && unnamed != 1, "{e}");
+            assert_eq!(e, "--output needs exactly one --format without a file");
+            return;
+        }
+        Ok(outputs) => outputs,
+    };
+    assert!(output.is_none() || unnamed == 1);
+    let named: Vec<&str> = outputs.iter().map(|o| o.format.name).collect();
+    if format.is_empty() {
+        assert_eq!(named, ["text"]);
+    } else {
+        assert_eq!(named, format.iter().map(|o| o.format.name).collect::<Vec<_>>());
+    }
+    let sent_to_output = outputs.iter().filter(|o| o.path.is_some() && o.path == output).count();
+    assert_eq!(sent_to_output, usize::from(output.is_some()));
+    assert!(output.is_none() || outputs.iter().all(|o| o.path.is_some()));
+
+    let mut stdout = Vec::new();
+    report::write(&outputs, &context, &mut stdout).unwrap();
+    let to_stdout: String = outputs.iter().filter(|o| o.path.is_none()).map(|o| o.format.render(&context)).collect();
+    assert_eq!(String::from_utf8(stdout).unwrap(), to_stdout);
+    for output in &outputs {
+        if let Some(path) = &output.path {
+            assert_eq!(fs::read_to_string(path).unwrap(), output.format.render(&context), "{}", path.display());
+        }
+    }
+
+    // A file in the way of the folder, and a folder in the way of the file.
+    write(dir.path(), "in-the-way", "");
+    let format = outputs[0].format;
+    for path in [dir.path().join("in-the-way/x.out"), dir.path().to_owned()] {
+        let e = report::write(&[Output { format, path: Some(path.clone()) }], &context, &mut Vec::new()).unwrap_err();
+        assert!(e.starts_with(&format!("{}: ", path.display())), "{e}");
+    }
+}
+
 /// Every format reports the same items and totals, and documenting one more item never lowers
 /// coverage.
 #[hegel::test(test_cases = 100)]
@@ -469,7 +541,7 @@ fn formats_agree_on_totals(tc: TestCase) {
     for format in report::FORMATS {
         let length = format.render(&Context { files: &files }).len();
         let room = tc.draw(gs::integers::<usize>().max_value(length + 1));
-        let result = report::write(format, &Context { files: &files }, &mut Room(room));
+        let result = report::write(&[Output { format, path: None }], &Context { files: &files }, &mut Room(room));
         assert_eq!(result.is_err(), room < length, "{} in {room} of {length} bytes", format.name);
     }
     let json: serde_json::Value = serde_json::from_str(&render("json", &files)).unwrap();
@@ -727,8 +799,10 @@ fn each_bad_input_fails_naming_itself(tc: TestCase) {
         assert!(stderr.contains(culprit), "{culprit}: {stderr}");
     };
     // Bad arguments, and what the error names.
-    let bad_args: [(&[&str], &str); 4] = [
+    let bad_args: [(&[&str], &str); 6] = [
         (&["--config", "missing.json"], "missing.json"),
+        (&["--output", "o.txt", "--format", "lcov=x.lcov"], "--output"),
+        (&["--format", "json=README.md/x.json"], "README.md"),
         (&["--threshold", "150"], "150"),
         (&["gone"], "gone"),
         (&["README.md"], "README.md"),

@@ -1,7 +1,11 @@
 //! Output formats. Each lives in its own file in src/report/, which build.rs registers, so adding
 //! one adds a file and no line in a shared list.
 
-use std::io::{self, Write};
+use std::{
+    fs,
+    io::{self, Write},
+    path::PathBuf,
+};
 
 use serde::Serialize;
 
@@ -35,10 +39,11 @@ pub fn format(name: &str) -> Result<&'static Format, String> {
 }
 
 /// `--format`'s help: each format and what it writes.
-pub fn help() -> String {
-    FORMATS.iter().fold("How to write the report\n".into(), |help, format| {
-        help + &format!("\n- {}: {}", format.name, format.help)
-    })
+fn help() -> String {
+    FORMATS.iter().fold(
+        "How to write the report, repeatable: a format, or FORMAT=FILE to write it to FILE [default: text]\n".into(),
+        |help, format| help + &format!("\n- {}: {}", format.name, format.help),
+    )
 }
 
 /// What every format reports from.
@@ -72,7 +77,67 @@ impl Totals {
     }
 }
 
-/// Writes the report in `format` to `out`.
-pub fn write(format: &Format, context: &Context, out: &mut impl Write) -> io::Result<()> {
-    out.write_all(format.render(context).as_bytes())
+/// A format, and the file it goes to.
+#[derive(Clone, Debug)]
+pub struct Output {
+    /// The format.
+    pub format: &'static Format,
+    /// The file to write, or stdout.
+    pub path: Option<PathBuf>,
+}
+
+impl Output {
+    /// Parses `--format`: a format's name, then `=FILE` to write it to that file.
+    pub fn parse(value: &str) -> Result<Self, String> {
+        let Some((name, path)) = value.split_once('=') else { return Ok(Self { format: format(value)?, path: None }) };
+        if path.is_empty() {
+            return Err(format!("expected a file after `{name}=`"));
+        }
+        Ok(Self { format: format(name)?, path: Some(path.into()) })
+    }
+}
+
+/// The flags that pick the formats and where they go.
+#[derive(Debug, Default, clap::Args)]
+#[group(skip)]
+pub struct Flags {
+    /// How to write the report, repeatable: a format, or FORMAT=FILE to write it to FILE [default: text]
+    #[arg(long, value_name = "FORMAT[=FILE]", value_parser = Output::parse, long_help = help())]
+    pub format: Vec<Output>,
+    /// Write the one format without a file of its own to FILE
+    #[arg(long, value_name = "FILE")]
+    pub output: Option<PathBuf>,
+}
+
+impl Flags {
+    /// Each format and where it goes: text without a `--format`, and `--output` for the one
+    /// format without a file of its own.
+    pub fn outputs(&self) -> Result<Vec<Output>, String> {
+        let text = Output { format: format("text").expect("text is a format"), path: None };
+        let mut outputs = if self.format.is_empty() { vec![text] } else { self.format.clone() };
+        if let Some(file) = &self.output {
+            let mut unnamed = outputs.iter_mut().filter(|output| output.path.is_none());
+            let (Some(output), None) = (unnamed.next(), unnamed.next()) else {
+                return Err("--output needs exactly one --format without a file".into());
+            };
+            output.path = Some(file.clone());
+        }
+        Ok(outputs)
+    }
+}
+
+/// Writes each output to its file, making the file's folder if it has to, or else to `stdout`.
+/// One scan feeds them all.
+pub fn write(outputs: &[Output], context: &Context, stdout: &mut dyn Write) -> Result<(), String> {
+    for output in outputs {
+        let text = output.format.render(context);
+        let Some(path) = &output.path else {
+            stdout.write_all(text.as_bytes()).map_err(|e| e.to_string())?;
+            continue;
+        };
+        let failed = |e: io::Error| format!("{}: {e}", path.display());
+        path.parent().map_or(Ok(()), fs::create_dir_all).map_err(failed)?;
+        fs::write(path, text).map_err(failed)?;
+    }
+    Ok(())
 }

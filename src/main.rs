@@ -3,7 +3,7 @@
 use std::{io, path::PathBuf, process::ExitCode};
 
 use clap::{CommandFactory, FromArgMatches, Parser};
-use docov::{Config, Format, Scope, Settings, feature, report, scan_file, walk};
+use docov::{Config, Scope, Settings, feature, report, scan_file, walk};
 use rayon::{iter::Either, prelude::*};
 
 /// Checks how much of a JavaScript or TypeScript project's API has JSDoc.
@@ -17,9 +17,8 @@ struct Cli {
     /// The config file [default: docov.json, docov.jsonc or .docovrc here or in the nearest folder above]
     #[arg(long, value_name = "FILE")]
     config: Option<PathBuf>,
-    /// How to write the report
-    #[arg(long, value_parser = report::format, default_value = "text", long_help = report::help())]
-    format: &'static Format,
+    #[command(flatten)]
+    report: report::Flags,
     /// Print the config file's JSON Schema and exit
     #[arg(long, exclusive = true)]
     print_schema: bool,
@@ -46,6 +45,7 @@ fn main() -> ExitCode {
 
 /// Scans and reports, and says whether coverage met the threshold.
 fn run(cli: Cli, matches: &clap::ArgMatches) -> Result<bool, Vec<String>> {
+    let outputs = cli.report.outputs().map_err(|e| vec![e])?;
     let mut config = Config::load(cli.config.as_deref()).map_err(|e| vec![e.to_string()])?;
     let settings = Settings::new(matches, std::mem::take(&mut config.keys));
     // The config's paths are relative to its folder. Collecting the components drops `.` parts after
@@ -62,8 +62,7 @@ fn run(cli: Cli, matches: &clap::ArgMatches) -> Result<bool, Vec<String>> {
     if !errors.is_empty() {
         return Err(errors);
     }
-    report::write(cli.format, &report::Context { files: &reports }, &mut io::stdout().lock())
-        .map_err(|e| vec![e.to_string()])?;
+    report::write(&outputs, &report::Context { files: &reports }, &mut io::stdout().lock()).map_err(|e| vec![e])?;
 
     let failures = settings.gates(&reports);
     for failure in &failures {

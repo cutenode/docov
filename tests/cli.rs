@@ -172,6 +172,27 @@ fn lcov_marks_each_items_line() {
 }
 
 #[test]
+fn several_formats_go_to_stdout_and_their_files_from_one_scan() {
+    let dir = project();
+    let lcov = Path::new("coverage").join("docov.lcov");
+    let (code, text, _) = docov(dir.path(), &[]);
+    let (_, json, _) = docov(dir.path(), &["--format", "json"]);
+    let args = ["--format", "text", "--format", &format!("lcov={}", lcov.display()), "--format", "json"];
+    let (_, out, _) = docov(dir.path(), &args);
+    assert_eq!((code, out), (0, format!("{text}{json}")));
+    assert!(fs::read_to_string(dir.path().join(&lcov)).unwrap().starts_with("SF:"));
+
+    // --output is the file for the one format without its own.
+    let (code, out, _) = docov(dir.path(), &["--output", "out.txt"]);
+    assert_eq!((code, out.as_str(), fs::read_to_string(dir.path().join("out.txt")).unwrap()), (0, "", text));
+    let (code, _, err) = docov(dir.path(), &["--output", "out.txt", "--format", "json", "--format", "text"]);
+    assert_eq!((code, err.as_str()), (2, "docov: --output needs exactly one --format without a file\n"));
+    let (code, _, err) = docov(dir.path(), &["--format", "html"]);
+    assert_eq!(code, 2);
+    assert!(err.contains("unknown format `html`, expected one of: "), "{err}");
+}
+
+#[test]
 fn the_checked_in_schema_is_current() {
     let dir = tempfile::tempdir().unwrap();
     let (code, out, _) = docov(dir.path(), &["--print-schema"]);

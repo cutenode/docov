@@ -25,7 +25,7 @@ The npm package runs a prebuilt binary for macOS, Linux or Windows on x64 or arm
 ## Usage
 
 ```
-docov [PATHS]... [--config FILE] [--threshold PERCENT] [--scope exports|all] [--format text|json|lcov]
+docov [PATHS]... [--config FILE] [--threshold PERCENT] [--scope exports|all] [--format FORMAT[=FILE]]... [--output FILE]
 ```
 
 With no paths it scans the current folder: every `.js`, `.mjs`, `.cjs`, `.jsx`, `.ts`, `.mts`, `.cts` and `.tsx` file, leaving out hidden files and what `.gitignore` leaves out (in a git repository or not). A file named on the command line is always scanned.
@@ -67,6 +67,12 @@ Some things never count: constructors (their class's doc covers them), private m
 [`docov.schema.json`](docov.schema.json) is its JSON Schema, which editors use for completion and checking. The URL above is pinned to a release so it matches the docov you have; `docov --print-schema > docov.schema.json` writes your own copy to point at instead.
 
 ### Formats
+
+`--format` picks one, and can be given more than once: one scan feeds them all. `FORMAT=FILE` writes that one to `FILE`, making its folder if needed, and the rest go to stdout one after another. `--output FILE` writes the one format without a file of its own to `FILE`.
+
+```bash
+docov --format text --format lcov=coverage/docov.lcov
+```
 
 - `text` (the default): each file's percentage and its undocumented items, then the total.
 - `json`: every item, documented or not, with its kind, line and column, and totals per file and overall.
