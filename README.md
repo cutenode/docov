@@ -86,6 +86,7 @@ docov --format text --format lcov=coverage/docov.lcov
 - `checkstyle`: Checkstyle XML, a warning at each undocumented item.
 - `rdjson`: [reviewdog](https://github.com/reviewdog/reviewdog)'s diagnostic format (`reviewdog -f=rdjson`).
 - `unix`: `path:line:column: kind name undocumented [docov]` for each undocumented item, the way compilers write warnings, for editors' problem matchers and grep.
+- `html`: one self-contained page (`--format html=report.html`) with a table of the files and each file's source, its undocumented declarations highlighted. It has no scripts and follows the system's light or dark mode.
 - `badge`: an SVG badge of the total, drawn without a network call. `--badge FILE` is short for `--format badge=FILE`.
 - `shields`: the JSON a [shields.io endpoint badge](https://shields.io/badges/endpoint-badge) reads, for a badge from a file you publish.
 - `benchmark`: the total as `[{"name":"docov","unit":"%","value":66.7}]`, for [github-action-benchmark](https://github.com/benchmark-action/github-action-benchmark)'s `customBiggerIsBetter`, to chart it over time.

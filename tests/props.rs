@@ -971,6 +971,62 @@ fn unix_is_a_line_per_undocumented_item(tc: TestCase) {
     assert_eq!(report::format("unix").unwrap().render(&drawn.context()).lines().collect::<Vec<_>>(), wanted);
 }
 
+/// `html` is one page that reads back as written: a table row per file with items, linking to that
+/// file's source, a row per source line with the lines that have items marked, missed when one
+/// is undocumented and hit otherwise. A file that's gone by the time it's written says so.
+#[hegel::test(test_cases = 50)]
+fn html_shows_each_files_source_with_its_items(tc: TestCase) {
+    let dir = tempfile::tempdir().unwrap();
+    let mut drawn = Drawn::draw(&tc);
+    // Some of the drawn files are real, and scanned.
+    for f in 0..tc.draw(gs::integers::<usize>().max_value(2)) {
+        let Module { source, .. } = Module::generate(&tc);
+        let path = dir.path().join(format!("m{f}.ts"));
+        fs::write(&path, format!("{source}// <&> \"'\n")).unwrap();
+        drawn.files.push(scan_file(&path, Scope::All).unwrap());
+    }
+    let page = report::format("html").unwrap().render(&drawn.context());
+    let options = roxmltree::ParsingOptions { allow_dtd: true, ..Default::default() };
+    let html = roxmltree::Document::parse_with_options(&page, options).unwrap();
+    assert!(!html.descendants().any(|n| n.has_tag_name("script")));
+    let class =
+        |n: &roxmltree::Node, class: &str| n.attribute("class").is_some_and(|c| c.split(' ').any(|c| c == class));
+    let with_items: Vec<&FileReport> = drawn.files.iter().filter(|f| !f.items.is_empty()).collect();
+    let table = html.descendants().find(|n| class(n, "files")).unwrap();
+    let links: Vec<String> =
+        table.descendants().filter(|n| n.has_tag_name("a")).map(|a| a.text().unwrap().to_owned()).collect();
+    assert_eq!(links, with_items.iter().map(|f| f.path.display().to_string()).collect::<Vec<_>>());
+
+    let headings: Vec<_> = html.descendants().filter(|n| n.has_tag_name("h2")).collect();
+    assert_eq!(headings.len(), with_items.len());
+    for (heading, file) in headings.iter().zip(&with_items) {
+        assert!(heading.text().unwrap().starts_with(&file.path.display().to_string()));
+        let after = heading.next_sibling_element().unwrap();
+        let Ok(text) = fs::read_to_string(&file.path) else {
+            assert!(class(&after, "missing"), "{}", file.path.display());
+            continue;
+        };
+        let rows: Vec<_> = after.descendants().filter(|n| n.has_tag_name("tr")).collect();
+        assert_eq!(rows.len(), text.lines().count());
+        for (n, (row, line)) in rows.iter().zip(text.lines()).enumerate().map(|(i, r)| (i + 1, r)) {
+            let cells: Vec<String> =
+                row.children().filter(|c| c.has_tag_name("td")).map(|c| c.text().unwrap_or("").to_owned()).collect();
+            let items: Vec<&Item> = file.items.iter().filter(|i| i.line == n).collect();
+            let notes: Vec<String> =
+                items.iter().filter(|i| !i.documented).map(|i| format!("{} {}", i.kind.as_str(), i.name)).collect();
+            assert_eq!(cells, [n.to_string(), line.to_owned(), notes.join(", ")]);
+            let mark = if items.is_empty() {
+                None
+            } else if notes.is_empty() {
+                Some("hit")
+            } else {
+                Some("miss")
+            };
+            assert_eq!(row.attribute("class"), mark);
+        }
+    }
+}
+
 /// Every format reports the same items and totals, and documenting one more item never lowers
 /// coverage.
 #[hegel::test(test_cases = 100)]

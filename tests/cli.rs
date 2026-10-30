@@ -195,9 +195,9 @@ fn several_formats_go_to_stdout_and_their_files_from_one_scan() {
     assert_eq!((code, out.as_str(), fs::read_to_string(dir.path().join("out.txt")).unwrap()), (0, "", text));
     let (code, _, err) = docov(dir.path(), &["--output", "out.txt", "--format", "json", "--format", "text"]);
     assert_eq!((code, err.as_str()), (2, "docov: --output needs exactly one --format without a file\n"));
-    let (code, _, err) = docov(dir.path(), &["--format", "html"]);
+    let (code, _, err) = docov(dir.path(), &["--format", "pdf"]);
     assert_eq!(code, 2);
-    assert!(err.contains("unknown format `html`, expected one of: "), "{err}");
+    assert!(err.contains("unknown format `pdf`, expected one of: "), "{err}");
 }
 
 #[test]
@@ -244,6 +244,17 @@ fn unix_writes_a_warning_line_per_undocumented_item() {
     let (_, out, _) = docov(project().path(), &["--format", "unix"]);
     let a = Path::new("src").join("a.ts");
     assert_eq!(out, format!("{}:3:1: variable b undocumented [docov]\n", a.display()));
+}
+
+#[test]
+fn html_is_one_page_with_the_sources() {
+    let dir = project();
+    let (code, out, _) = docov(dir.path(), &["--format", "html=report.html"]);
+    let page = fs::read_to_string(dir.path().join("report.html")).unwrap();
+    assert_eq!((code, out.as_str()), (0, ""));
+    let row =
+        "<tr class=\"miss\"><td class=\"ln\">3</td><td>export const b = 1;</td><td class=\"note\">variable b</td></tr>";
+    assert!(page.contains(row) && page.contains("prefers-color-scheme: dark") && !page.contains("<script"), "{page}");
 }
 
 #[test]
