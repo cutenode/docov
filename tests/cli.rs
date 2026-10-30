@@ -214,6 +214,14 @@ fn github_actions_get_annotations_after_the_text() {
 }
 
 #[test]
+fn gitlab_fingerprints_are_fnv_1a_of_the_path_kind_and_name() {
+    // GitLab matches issues between runs by fingerprint, so a change here reopens every one.
+    let (_, out, _) = docov(project().path(), &["--format", "gitlab"]);
+    let issues: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(issues[0]["fingerprint"], "0ed237bda4d88c42");
+}
+
+#[test]
 fn the_checked_in_schema_is_current() {
     let dir = tempfile::tempdir().unwrap();
     let (code, out, _) = docov(dir.path(), &["--print-schema"]);

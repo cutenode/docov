@@ -21,6 +21,8 @@ cargo_common_metadata = "warn"
 
 [dependencies]
 clap = { version = "4.6.7", features = ["derive", "wrap_help"] }
+# GitLab Code Quality fingerprints: a hash that stays the same between runs and versions.
+fnv = "1.0.7"
 # Walks the paths the way ripgrep does: .gitignore, hidden files and the exclude globs.
 ignore = "0.4.34"
 # Blanks docov.json's comments and trailing commas, so serde_json reads it with its error positions
@@ -47,6 +49,7 @@ thiserror = "2.0.21"
 # links its engine as an ordinary dependency, so it's in Cargo.lock.
 hegeltest = { version = "=0.50.4", features = ["static-engine"] }
 pulldown-cmark = { version = "0.13.6", default-features = false }
+roxmltree = "0.21.2"
 tempfile = "3.27.0"
 
 [profile.release]

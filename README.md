@@ -80,6 +80,10 @@ docov --format text --format lcov=coverage/docov.lcov
 - `github`: GitHub Actions annotations, a warning on each undocumented item and an error for each failed gate. In GitHub Actions (`GITHUB_ACTIONS=true`) with no `--format`, docov writes these after the text, the way [oxlint](https://oxc.rs/docs/guide/usage/linter/output-formats.html) does.
 - `markdown`: the total, any failed gates, a table of the files, and each file's undocumented items in a folded `<details>` block. Made for `$GITHUB_STEP_SUMMARY` (`--format markdown=$GITHUB_STEP_SUMMARY`) and pull request comments.
 - `sarif`: SARIF 2.1.0 with one rule, `docov/undocumented`, and a result at each undocumented item, for GitHub code scanning (`github/codeql-action/upload-sarif`) and other SARIF viewers.
+- `gitlab`: a GitLab Code Quality report, an issue of severity `minor` at each undocumented item. Each fingerprint is a hash of the item's path, kind and name, so GitLab tells new issues from old ones.
+- `junit`: JUnit XML, a test suite per file and a test case per item that fails when the item is undocumented.
+- `checkstyle`: Checkstyle XML, a warning at each undocumented item.
+- `rdjson`: [reviewdog](https://github.com/reviewdog/reviewdog)'s diagnostic format (`reviewdog -f=rdjson`).
 
 ## Working on it
 

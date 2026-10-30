@@ -681,6 +681,96 @@ fn sarif_has_a_result_at_each_undocumented_item(tc: TestCase) {
     }
 }
 
+/// `gitlab`, `rdjson`, `checkstyle` and `junit` each report every undocumented item at its file,
+/// line and message, which come back whole from their JSON or XML; `junit` passes the documented
+/// items too. GitLab's fingerprints are the same for the same file, kind and name, and only then.
+#[hegel::test(test_cases = 100)]
+fn ci_formats_report_each_undocumented_item(tc: TestCase) {
+    let drawn = Drawn::draw(&tc);
+    let render = |name| report::format(name).unwrap().render(&drawn.context());
+    let wanted = undocumented(&drawn.files);
+    let message = |item: &Item| format!("{} {} is undocumented", item.kind.as_str(), item.name);
+    let slash = |path: &Path| path.display().to_string().replace(std::path::MAIN_SEPARATOR, "/");
+
+    let gitlab: serde_json::Value = serde_json::from_str(&render("gitlab")).unwrap();
+    let issues = gitlab.as_array().unwrap();
+    assert_eq!(issues.len(), wanted.len());
+    for (issue, (path, item)) in issues.iter().zip(&wanted) {
+        let read = (&issue["description"], &issue["check_name"], &issue["severity"]);
+        assert_eq!(read, (&message(item).into(), &"docov/undocumented".into(), &"minor".into()));
+        assert_eq!(
+            (&issue["location"]["path"], &issue["location"]["lines"]["begin"]),
+            (&path.as_str().into(), &item.line.into())
+        );
+        let fingerprint = issue["fingerprint"].as_str().unwrap();
+        assert!(fingerprint.len() == 16 && fingerprint.chars().all(|c| c.is_ascii_hexdigit()), "{fingerprint}");
+    }
+    for (a, (a_path, a_item)) in issues.iter().zip(&wanted) {
+        for (b, (b_path, b_item)) in issues.iter().zip(&wanted) {
+            let same = (a_path, a_item.kind, &a_item.name) == (b_path, b_item.kind, &b_item.name);
+            assert_eq!(a["fingerprint"] == b["fingerprint"], same);
+        }
+    }
+
+    let rdjson: serde_json::Value = serde_json::from_str(&render("rdjson")).unwrap();
+    assert_eq!(rdjson["source"]["name"], "docov");
+    let diagnostics = rdjson["diagnostics"].as_array().unwrap();
+    assert_eq!(diagnostics.len(), wanted.len());
+    for (diagnostic, (path, item)) in diagnostics.iter().zip(&wanted) {
+        let start = &diagnostic["location"]["range"]["start"];
+        assert_eq!(
+            (&diagnostic["message"], &diagnostic["location"]["path"]),
+            (&message(item).into(), &path.as_str().into())
+        );
+        assert_eq!((&start["line"], &start["column"]), (&item.line.into(), &item.column.into()));
+    }
+
+    let checkstyle = render("checkstyle");
+    let checkstyle = roxmltree::Document::parse(&checkstyle).unwrap();
+    let files: Vec<_> = checkstyle.root_element().children().filter(|n| n.has_tag_name("file")).collect();
+    assert_eq!(
+        files.iter().map(|f| f.attribute("name").unwrap().to_owned()).collect::<Vec<_>>(),
+        drawn.files.iter().map(|f| slash(&f.path)).collect::<Vec<_>>()
+    );
+    let errors = files
+        .iter()
+        .flat_map(|f| f.children().filter(|n| n.has_tag_name("error")).map(move |e| (f.attribute("name").unwrap(), e)));
+    let read: Vec<_> = errors
+        .map(|(path, e)| {
+            (path.to_owned(), e.attribute("line").unwrap().parse().unwrap(), e.attribute("message").unwrap().to_owned())
+        })
+        .collect();
+    assert_eq!(
+        read,
+        wanted
+            .iter()
+            .map(|(path, item)| (path.clone(), item.line, message(item)))
+            .collect::<Vec<(String, usize, String)>>()
+    );
+
+    let junit = render("junit");
+    let junit = roxmltree::Document::parse(&junit).unwrap();
+    let suites = junit.root_element();
+    let totals = Totals::of(&drawn.files);
+    let count = |node: roxmltree::Node, name| node.attribute(name).unwrap().parse::<usize>().unwrap();
+    assert_eq!((count(suites, "tests"), count(suites, "failures")), (totals.total, totals.total - totals.documented));
+    let suites: Vec<_> = suites.children().filter(|n| n.has_tag_name("testsuite")).collect();
+    assert_eq!(suites.len(), drawn.files.len());
+    for (suite, file) in suites.iter().zip(&drawn.files) {
+        assert_eq!(suite.attribute("name"), Some(slash(&file.path).as_str()));
+        let cases: Vec<_> = suite.children().filter(|n| n.has_tag_name("testcase")).collect();
+        assert_eq!(cases.len(), file.items.len());
+        for (case, item) in cases.iter().zip(&file.items) {
+            assert_eq!(case.attribute("name").unwrap(), format!("{} {}", item.kind.as_str(), item.name));
+            let failure = case.children().find(|n| n.has_tag_name("failure"));
+            assert_eq!(
+                failure.map(|f| f.attribute("message").unwrap().to_owned()),
+                (!item.documented).then(|| message(item))
+            );
+        }
+    }
+}
+
 /// Every format reports the same items and totals, and documenting one more item never lowers
 /// coverage.
 #[hegel::test(test_cases = 100)]
