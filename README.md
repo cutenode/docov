@@ -118,9 +118,16 @@ The action runs `npx @docov/cli` once (GitHub's runners have Node), with `--form
 | `summary` | `true` | Adds the report to the job summary |
 | `comment` | `false` | Posts the report on the pull request and edits that comment on later runs. It needs `pull-requests: write`, and only warns without it (from a fork) |
 | `compare` | | An earlier `--format json` report to show the change from |
-| `token` | `github.token` | The token `comment` uses |
+| `data-branch` | | A branch for the reports from the default branch, below |
+| `token` | `github.token` | The token `comment` and `data-branch` use |
 
 The `markdown` output is the report's path.
+
+With `data-branch: docov-data`, each push to the default branch commits `docov.json` (the json report) and `shields.json` (the `shields` format) to that branch as github-actions[bot], so its history is the trend. It needs `contents: write`, and a `concurrency` group keeps two pushes from racing. Pull requests then compare with its `docov.json` unless `compare` names another report. In a public repository a badge can read the branch's raw file:
+
+```markdown
+![docs](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/OWNER/REPO/docov-data/shields.json)
+```
 
 ## Working on it
 

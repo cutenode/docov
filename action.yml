@@ -21,8 +21,11 @@ inputs:
   compare:
     description: "An earlier `--format json` report to show the change from"
     default: ""
+  data-branch:
+    description: "On a push to the default branch, commit docov.json and shields.json to this branch (needs contents write), and compare pull requests with its docov.json"
+    default: ""
   token:
-    description: "The token for the comment"
+    description: "The token for the comment and the data branch"
     default: ${{ github.token }}
 
 outputs:
@@ -42,5 +45,7 @@ runs:
         INPUT_SUMMARY: ${{ inputs.summary }}
         INPUT_COMMENT: ${{ inputs.comment }}
         INPUT_COMPARE: ${{ inputs.compare }}
+        INPUT_DATA_BRANCH: ${{ inputs.data-branch }}
         INPUT_TOKEN: ${{ inputs.token }}
         PR_NUMBER: ${{ github.event.pull_request.number }}
+        PUBLISH: ${{ inputs.data-branch != '' && github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
