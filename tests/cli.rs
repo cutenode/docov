@@ -562,10 +562,27 @@ fn overrides_change_exclude_and_threshold_for_their_files() {
     );
     assert_eq!((code, err), (1, wanted));
 
-    fs::write(dir.path().join("docov.json"), r#"{ "overrides": [{ "files": ["src"], "scope": "all" }] }"#).unwrap();
+    fs::write(dir.path().join("docov.json"), r#"{ "overrides": [{ "files": ["src"], "kinds": ["function"] }] }"#)
+        .unwrap();
     let (code, _, err) = docov(dir.path(), &[]);
     assert_eq!(code, 2);
-    assert!(err.contains("unknown field `scope`, expected one of `files`, `exclude`, `threshold`"), "{err}");
+    assert!(err.contains("unknown field `kinds`, expected one of `files`, `exclude`, `threshold`, `scope`"), "{err}");
+}
+
+#[test]
+fn an_overrides_scope_is_for_its_files_and_the_flag_wins() {
+    let dir = project();
+    fs::write(dir.path().join("src/d.ts"), "const d = 1;\n").unwrap();
+    fs::write(dir.path().join("docov.json"), r#"{ "overrides": [{ "files": ["src/d.ts"], "scope": "all" }] }"#)
+        .unwrap();
+    // `--explain` names the file as it's given.
+    let d = "src/d.ts";
+    let (code, out, _) = docov(dir.path(), &["--explain", d]);
+    let wanted = format!("{d}  scope all: set by overrides[0], for src/d.ts\n{d}:1:1  variable d  undocumented\n");
+    assert_eq!((code, out), (0, wanted));
+    let (code, out, _) = docov(dir.path(), &["--explain", d, "--scope", "exports"]);
+    let wanted = format!("{d}:1:1  variable d  left out: not exported by a way of exporting that counts\n");
+    assert_eq!((code, out), (0, wanted));
 }
 
 #[test]
