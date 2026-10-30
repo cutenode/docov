@@ -425,7 +425,7 @@ fn metric_gates_go_by_each_nested_config(tc: TestCase) {
         let threshold = threshold.filter(|&t| percent < f64::from(t))?;
         Some(format!("{percent:.1}% with {name}, under the {threshold}% {name} threshold"))
     };
-    let pkg = format!("{}: ", root.join("pkg/docov.json").display());
+    let pkg = format!("{}: ", root.join("pkg").join("docov.json").display());
     let mut wanted: Vec<String> = failure(&groups[0], 0, "examples", root_examples).into_iter().collect();
     let pkg_failures = [
         failure(&groups[1], 0, "examples", pkg_examples.or(root_examples)),
@@ -508,7 +508,7 @@ fn public_scope_goes_by_each_nested_config(tc: TestCase) {
     } else {
         let errors = errors.unwrap_err();
         assert!(
-            errors.len() == 1 && errors[0].contains(&root.join("pkg/package.json").display().to_string()),
+            errors.len() == 1 && errors[0].contains(&root.join("pkg").join("package.json").display().to_string()),
             "{errors:?}"
         );
     }
