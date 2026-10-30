@@ -367,6 +367,27 @@
           ],
           "description": "A generator that yields a value has @yields."
         },
+        "summary-sentence": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Level"
+            },
+            {
+              "items": false,
+              "minItems": 1,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Level"
+                },
+                {
+                  "$ref": "#/$defs/SummarySentenceOptions"
+                }
+              ],
+              "type": "array"
+            }
+          ],
+          "description": "A description's first sentence is short and ends with a period."
+        },
         "valid-link": {
           "anyOf": [
             {
@@ -410,6 +431,25 @@
           "type": "string"
         }
       ]
+    },
+    "SummarySentenceOptions": {
+      "additionalProperties": false,
+      "description": "summary-sentence's options.",
+      "properties": {
+        "maxLength": {
+          "default": 120,
+          "description": "The most characters the summary may have.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "period": {
+          "default": true,
+          "description": "Whether the summary ends with `.`, `!` or `?`.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",

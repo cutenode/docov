@@ -2931,3 +2931,54 @@ fn links_are_well_formed_and_resolve(tc: TestCase) {
     let on = [("valid-link", link_level)];
     assert_eq!(diagnose(&source, &on, Rules::from(Scope::All)), at_level(wanted, link_on), "{source}");
 }
+
+/// `summary-sentence` finds a summary, a description's first sentence (up to a `.`, `!` or `?`
+/// with a space after it, or else its first paragraph), that's longer than `maxLength` characters
+/// (120 by default) or, with `period` on (the default), doesn't end with one of those.
+#[hegel::test(test_cases = 100)]
+fn summaries_are_short_sentences(tc: TestCase) {
+    let (summary_level, summary_on) = level(&tc);
+    let length = tc.draw(gs::optional(gs::sampled_from(vec![10, 50, 120])));
+    let period = tc.draw(gs::optional(gs::booleans()));
+    let mut options = serde_json::Map::new();
+    options.extend(length.map(|l| ("maxLength".to_owned(), l.into())));
+    options.extend(period.map(|p| ("period".to_owned(), p.into())));
+    let level = summary_level.as_str().or_else(|| summary_level[0].as_str()).unwrap().to_owned();
+    let setting =
+        if options.is_empty() && tc.draw(gs::booleans()) { level.into() } else { serde_json::json!([level, options]) };
+
+    let words = tc.draw(gs::integers::<usize>().min_value(1).max_value(30));
+    let wrap = tc.draw(gs::integers::<usize>().max_value(words - 1));
+    let end = tc.draw(gs::sampled_from(vec![".", "!", "?", "", ":"]));
+    let second = tc.draw(gs::sampled_from(vec!["", " More here."]));
+    let paragraph = tc.draw(gs::sampled_from(vec!["", "\n *\n * Another paragraph."]));
+    let described = tc.draw(gs::weighted_booleans(0.9));
+    let first = vec!["word"; words];
+    let text = format!("{}\n * {}{end}{second}{paragraph}", first[..wrap].join(" "), first[wrap..].join(" "));
+    let source = if described {
+        format!("/**\n * {text}\n * @since 1\n */\nexport const a = 1;\n")
+    } else {
+        "/**\n * @since 1\n */\nexport const a = 1;\n".to_owned()
+    };
+    let summary = if [".", "!", "?"].contains(&end) || second.is_empty() {
+        format!("{}{end}", first.join(" "))
+    } else {
+        format!("{}{end}{second}", first.join(" "))
+    };
+    let (max, period) = (length.unwrap_or(120), period.unwrap_or(true));
+    let (line, column) = if wrap == 0 { (3, 4) } else { (2, 4) };
+    let mut wanted = Vec::new();
+    if described && summary.len() > max {
+        wanted.push((
+            line,
+            column,
+            "summary-sentence",
+            format!("the summary is {} characters, over {max}", summary.len()),
+        ));
+    }
+    if described && period && !summary.ends_with(['.', '!', '?']) {
+        wanted.push((line, column, "summary-sentence", "the summary doesn't end with a period".to_owned()));
+    }
+    let on = [("summary-sentence", setting)];
+    assert_eq!(diagnose(&source, &on, Rules::default()), at_level(wanted, summary_on), "{source}");
+}

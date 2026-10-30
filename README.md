@@ -88,7 +88,7 @@ Example coverage is a second figure: the share of counted items whose JSDoc has 
 Checks on what each counted item's JSDoc block says. Each is off until `--rule ID=LEVEL` (repeatable) or docov.json's `rules` turns it on, at `warn` or `error`, with its options if it has some:
 
 ```jsonc
-"rules": { "require-param": "error", "param-names": ["warn"] }
+"rules": { "require-param": "error", "param-names": "warn", "summary-sentence": ["warn", { "maxLength": 80 }] }
 ```
 
 Each finding prints to stderr as `docov: path:line:column: rule-id: message`, and one at `error` fails the scan (exit 1). A flag's level wins over the config's, which keeps its options. The checks that want a tag leave a block with `@inheritdoc` alone.
@@ -102,6 +102,7 @@ Each finding prints to stderr as `docov: path:line:column: rule-id: message`, an
 - `empty-tag-description`: each `@param`, `@returns`, `@throws` and `@yields` says something past its type and name, except a `@returns` of nothing.
 - `informative-docs`: a description says more than its item's name (`/** The user name. */` on `userName` doesn't).
 - `valid-link`: each `{@link}`, `{@linkcode}` and `{@linkplain}` is closed, has a target and no unescaped `{`, and each `@see` has text. A target that's a name, or a namepath like `A#b` by its first part, is declared or imported in the same file or is a JavaScript, browser or Node.js global. Names in other files aren't looked up.
+- `summary-sentence`: a description's first sentence is at most `maxLength` characters (120) and, with `period` (on by default), ends with `.`, `!` or `?`.
 
 `const f = () => …` is a variable to docov, so the checks on parameters, returns and throws don't look at it.
 
