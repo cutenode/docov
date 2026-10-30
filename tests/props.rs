@@ -24,6 +24,16 @@ mod combined;
 #[path = "props/config_cli.rs"]
 mod config_cli;
 
+/// The docov binary, without the environment it reads to change its output: GitHub Actions'
+/// annotations and color. Properties that want them set them again.
+fn docov_command() -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_docov"));
+    for var in ["GITHUB_ACTIONS", "NO_COLOR", "CLICOLOR", "CLICOLOR_FORCE"] {
+        command.env_remove(var);
+    }
+    command
+}
+
 /// A generated module, and the items a scan of it should find.
 #[derive(Default)]
 struct Module {
@@ -2516,6 +2526,13 @@ fn write(dir: &Path, path: &str, text: &str) {
     fs::write(path, text).unwrap();
 }
 
+/// An exclude glob globset reads but can't build: its alternates nest deeper than the regex parser
+/// allows (it fails from 125 deep). A glob too big to build fails at the same step, but takes about
+/// a second under coverage, enough over ten cases to trip Hegel's TooSlow check on a loaded machine.
+fn unbuildable_glob() -> String {
+    format!("{}b{}", "{a,".repeat(200), "}".repeat(200))
+}
+
 /// Where a generated project's settings come from.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Settings {
@@ -2529,7 +2546,7 @@ enum Settings {
     Missing,
     /// docov.json with a misspelled key, or a threshold that isn't a number or is over 100.
     Invalid,
-    /// docov.json with an exclude glob that doesn't parse, or is too big to build.
+    /// docov.json with an exclude glob that doesn't parse, or can't be built.
     BadGlob,
 }
 
@@ -2541,7 +2558,7 @@ enum Settings {
 fn the_cli_counts_the_project_and_fails_by_the_threshold(tc: TestCase) {
     let dir = tempfile::tempdir().unwrap();
     if tc.draw(gs::weighted_booleans(0.05)) {
-        let out = Command::new(env!("CARGO_BIN_EXE_docov")).arg("--print-schema").output().unwrap();
+        let out = docov_command().arg("--print-schema").output().unwrap();
         let schema: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
         assert_eq!((out.status.code(), schema["title"].as_str()), (Some(0), Some("Config")));
         return;
@@ -2555,7 +2572,7 @@ fn the_cli_counts_the_project_and_fails_by_the_threshold(tc: TestCase) {
         Settings::Invalid,
         Settings::BadGlob,
     ]));
-    let huge_glob = settings == Settings::BadGlob && tc.draw(gs::weighted_booleans(0.2));
+    let unbuildable = settings == Settings::BadGlob && tc.draw(gs::weighted_booleans(0.2));
     // An invalid docov.json, and what its error names.
     let invalid = (settings == Settings::Invalid).then(|| {
         tc.draw(gs::sampled_from(vec![
@@ -2632,12 +2649,7 @@ fn the_cli_counts_the_project_and_fails_by_the_threshold(tc: TestCase) {
         Settings::Missing => args.extend(["--config".into(), "missing.json".into()]),
         Settings::Invalid => write(dir.path(), name, invalid.unwrap().0),
         Settings::BadGlob => {
-            // Big enough that globset can't build it (it fails from about 30,000 alternatives).
-            let glob = if huge_glob {
-                format!("{{{}}}", (0..40_000).map(|i| format!("x{i}[a-z][0-9]?")).collect::<Vec<_>>().join(","))
-            } else {
-                "src/[z".into()
-            };
+            let glob = if unbuildable { unbuildable_glob() } else { "src/[z".into() };
             write(dir.path(), "docov.json", &serde_json::json!({ "exclude": [glob] }).to_string());
         }
         Settings::Flags => {
@@ -2666,12 +2678,10 @@ fn the_cli_counts_the_project_and_fails_by_the_threshold(tc: TestCase) {
 
     let cwd = dir.path().join(if from_sub { "sub" } else { "" });
     fs::create_dir_all(&cwd).unwrap();
-    let mut command = Command::new(env!("CARGO_BIN_EXE_docov"));
+    let mut command = docov_command();
     command.args(&args).current_dir(cwd);
     if github_actions {
         command.env("GITHUB_ACTIONS", "true");
-    } else {
-        command.env_remove("GITHUB_ACTIONS");
     }
     // A pipe whose reader has gone (`docov | head` after head exits): writes to it fail.
     let unwritable = tc.draw(gs::weighted_booleans(0.1));
@@ -2686,7 +2696,7 @@ fn the_cli_counts_the_project_and_fails_by_the_threshold(tc: TestCase) {
         _ if out_of_range => Some("150"),
         Settings::Missing => Some("missing.json"),
         Settings::Invalid => invalid.map(|(_, culprit)| culprit),
-        Settings::BadGlob => Some(if huge_glob { "NFA" } else { "[z" }),
+        Settings::BadGlob => Some(if unbuildable { "parsing pattern" } else { "[z" }),
         _ if gone => Some("gone"),
         _ => broken.map(|p| Path::new(p).file_name().unwrap().to_str().unwrap()),
     };
@@ -2734,7 +2744,7 @@ fn each_bad_input_fails_naming_itself(tc: TestCase) {
     }
     write(dir.path(), "README.md", "not code");
     let fails_naming = |args: &[&str], culprit: &str| {
-        let out = Command::new(env!("CARGO_BIN_EXE_docov")).args(args).current_dir(dir.path()).output().unwrap();
+        let out = docov_command().args(args).current_dir(dir.path()).output().unwrap();
         let (stdout, stderr) = (String::from_utf8(out.stdout).unwrap(), String::from_utf8(out.stderr).unwrap());
         assert_eq!((out.status.code(), stdout.as_str()), (Some(2), ""), "{args:?} {stderr}");
         assert!(stderr.contains(culprit), "{culprit}: {stderr}");
@@ -2755,15 +2765,13 @@ fn each_bad_input_fails_naming_itself(tc: TestCase) {
     }
     // Bad files, each removed after its run, and what the error names.
     let config = |value: serde_json::Value| value.to_string().into_bytes();
-    // Big enough that globset can't build it (it fails from about 30,000 alternatives).
-    let huge_glob = format!("{{{}}}", (0..40_000).map(|i| format!("x{i}[a-z][0-9]?")).collect::<Vec<_>>().join(","));
     let bad_files = [
         ("docov.json", br#"{ "treshold": 1 }"#.to_vec(), "treshold"),
         ("docov.json", br#"{ "threshold": "80" }"#.to_vec(), "invalid type"),
         ("docov.json", br#"{ "threshold": 150 }"#.to_vec(), "expected a number from 0 to 100"),
         ("docov.jsonc", br#"{ "threshold": 5 / }"#.to_vec(), "doesn't start a comment"),
         ("docov.json", config(serde_json::json!({ "exclude": ["src/[z"] })), "[z"),
-        ("docov.json", config(serde_json::json!({ "exclude": [huge_glob] })), "NFA"),
+        ("docov.json", config(serde_json::json!({ "exclude": [unbuildable_glob()] })), "parsing pattern"),
         ("src/broken.ts", b"export function (".to_vec(), "broken.ts"),
         ("src/latin1.js", b"// caf\xe9\n".to_vec(), "latin1.js"),
     ];
@@ -2777,12 +2785,7 @@ fn each_bad_input_fails_naming_itself(tc: TestCase) {
     for format in ["text", "json", "lcov"] {
         let (reader, writer) = std::io::pipe().unwrap();
         drop(reader);
-        let out = Command::new(env!("CARGO_BIN_EXE_docov"))
-            .args(["--format", format])
-            .current_dir(dir.path())
-            .stdout(writer)
-            .output()
-            .unwrap();
+        let out = docov_command().args(["--format", format]).current_dir(dir.path()).stdout(writer).output().unwrap();
         let stderr = String::from_utf8(out.stderr).unwrap();
         assert_eq!(out.status.code(), Some(2), "{format}: {stderr}");
         assert!(stderr.starts_with("docov: "), "{format}: {stderr}");
@@ -3138,8 +3141,7 @@ fn add_ignore_runs_from_the_command_line(tc: TestCase) {
     for f in 0..count {
         write(dir.path(), &format!("f{f}.ts"), "export const a = 1;\n");
     }
-    let docov =
-        |args: &[&str]| Command::new(env!("CARGO_BIN_EXE_docov")).args(args).current_dir(dir.path()).output().unwrap();
+    let docov = |args: &[&str]| docov_command().args(args).current_dir(dir.path()).output().unwrap();
     let out = docov(&["--add-ignore=legacy"]);
     let message = format!("docov: added {count} docov-ignore-next-line comment{}\n", if count == 1 { "" } else { "s" });
     assert_eq!(
@@ -3538,7 +3540,7 @@ fn gates_leave_ignored_items_out(tc: TestCase) {
 fn the_cli_writes_a_baseline_and_gates_by_it(tc: TestCase) {
     let dir = tempfile::tempdir().unwrap();
     let run = |args: &[&str]| {
-        let out = Command::new(env!("CARGO_BIN_EXE_docov")).args(args).current_dir(dir.path()).output().unwrap();
+        let out = docov_command().args(args).current_dir(dir.path()).output().unwrap();
         (out.status.code().unwrap(), String::from_utf8(out.stdout).unwrap(), String::from_utf8(out.stderr).unwrap())
     };
     let undocumented = tc.draw(gs::integers::<usize>().min_value(1).max_value(3));
@@ -3854,16 +3856,11 @@ fn git_narrows_to_changed_files_and_lines(tc: TestCase) {
         assert!(error.starts_with("git rev-parse --show-cdup: ") && error.contains("not a git repository"), "{error}");
     }
     assert!(diff.added(&root).unwrap_err().contains("not a git repository"));
-    let out = Command::new(env!("CARGO_BIN_EXE_docov"))
-        .args(["--diff-threshold", "100"])
-        .current_dir(dir.path())
-        .output()
-        .unwrap();
+    let out = docov_command().args(["--diff-threshold", "100"]).current_dir(dir.path()).output().unwrap();
     let stderr = String::from_utf8(out.stderr).unwrap();
     assert_eq!(out.status.code(), Some(2), "{stderr}");
     assert!(stderr.contains("not a git repository"), "{stderr}");
-    let out =
-        Command::new(env!("CARGO_BIN_EXE_docov")).arg("--staged").env("PATH", "").current_dir(&repo).output().unwrap();
+    let out = docov_command().arg("--staged").env("PATH", "").current_dir(&repo).output().unwrap();
     let stderr = String::from_utf8(out.stderr).unwrap();
     assert_eq!(out.status.code(), Some(2), "{stderr}");
     assert!(stderr.starts_with("docov: git rev-parse --show-cdup: "), "{stderr}");
