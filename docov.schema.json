@@ -25,6 +25,21 @@
         }
       ]
     },
+    "DocMarkdownOptions": {
+      "additionalProperties": false,
+      "description": "doc-markdown's options.",
+      "properties": {
+        "allowlist": {
+          "default": [],
+          "description": "Words that look like code and aren't, on top of the default ones.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
     "Exports": {
       "additionalProperties": false,
       "description": "Which ways of exporting count.",
@@ -199,6 +214,27 @@
     "Rules": {
       "additionalProperties": false,
       "properties": {
+        "doc-markdown": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Level"
+            },
+            {
+              "items": false,
+              "minItems": 1,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Level"
+                },
+                {
+                  "$ref": "#/$defs/DocMarkdownOptions"
+                }
+              ],
+              "type": "array"
+            }
+          ],
+          "description": "A description's code is in backticks, and its lists have no lazy continuation lines."
+        },
         "empty-tag-description": {
           "anyOf": [
             {

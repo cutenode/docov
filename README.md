@@ -103,6 +103,7 @@ Each finding prints to stderr as `docov: path:line:column: rule-id: message`, an
 - `informative-docs`: a description says more than its item's name (`/** The user name. */` on `userName` doesn't).
 - `valid-link`: each `{@link}`, `{@linkcode}` and `{@linkplain}` is closed, has a target and no unescaped `{`, and each `@see` has text. A target that's a name, or a namepath like `A#b` by its first part, is declared or imported in the same file or is a JavaScript, browser or Node.js global. Names in other files aren't looked up.
 - `summary-sentence`: a description's first sentence is at most `maxLength` characters (120) and, with `period` (on by default), ends with `.`, `!` or `?`.
+- `doc-markdown`: a description's words that look like code (`snake_case`, `a::b`, `camelCase`) are in backticks, and its lists have no lazy continuation lines. `allowlist` adds words to the default list (`JavaScript`, `GitHub` and others).
 
 `const f = () => …` is a variable to docov, so the checks on parameters, returns and throws don't look at it.
 

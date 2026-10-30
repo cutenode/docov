@@ -2982,3 +2982,86 @@ fn summaries_are_short_sentences(tc: TestCase) {
     let on = [("summary-sentence", setting)];
     assert_eq!(diagnose(&source, &on, Rules::default()), at_level(wanted, summary_on), "{source}");
 }
+
+/// `doc-markdown` finds each word of a description that looks like code (`snake_case`, `a::b`,
+/// `camelCase`, `PascalCase`) outside code spans, code blocks and inline tags, unless it's a URL,
+/// path or address or in the allowlist (a default one, and the option's), and each lazy
+/// continuation line: one in a list item that's indented less than the item's text.
+#[hegel::test(test_cases = 100)]
+fn descriptions_are_markdown(tc: TestCase) {
+    let (markdown_level, markdown_on) = level(&tc);
+    let allow = tc.draw(gs::booleans());
+    let level = markdown_level.as_str().or_else(|| markdown_level[0].as_str()).unwrap().to_owned();
+    let setting = if allow { serde_json::json!([level, { "allowlist": ["MyThing"] }]) } else { markdown_level };
+    // Each word, and where in it a word that looks like code starts, if it has one.
+    let words: Vec<(&str, Option<usize>)> = vec![
+        ("plain", None),
+        ("fooBar", Some(0)),
+        ("snake_case", Some(0)),
+        ("a::b", Some(0)),
+        ("`fooBar`", None),
+        ("`a b`", None),
+        ("JavaScript", None),
+        ("MyThing", (!allow).then_some(0)),
+        ("https://x.dev/aB", None),
+        ("src/fooBar.ts", None),
+        ("me@fooBar.dev", None),
+        ("{@link fooBar}", None),
+        ("(fooBar).", Some(1)),
+        ("**boldWord**", Some(2)),
+        ("_emphasis_", None),
+        ("2D", None),
+    ];
+    // Each line's list marker, if it's a list item, its indentation if it isn't, its word, and
+    // whether it's blank (0), a fence (1) or text.
+    let count = tc.draw(gs::integers::<usize>().max_value(6));
+    let drawn: Vec<_> = (0..count)
+        .map(|_| {
+            let marker = tc.draw(gs::sampled_from(vec![Some("- "), Some("1. "), Some("* "), None, None, None]));
+            let indent = tc.draw(gs::sampled_from(vec![0, 2, 4]));
+            (marker, indent, tc.draw(gs::sampled_from(words.clone())), tc.draw(gs::integers::<u8>().max_value(9)))
+        })
+        .collect();
+    let mut lines = vec!["Docs.".to_owned()];
+    let mut wanted = Vec::new();
+    let (mut item, mut fenced) = (None::<usize>, false);
+    for (marker, indent, (word, code), shape) in drawn {
+        // The block's first line is `/**`, and its description starts on the next.
+        let line = lines.len() + 2;
+        let text = match (marker, shape) {
+            (_, 0) => {
+                item = None;
+                lines.push(String::new());
+                continue;
+            }
+            (_, 1) => {
+                fenced = !fenced;
+                lines.push("```".into());
+                continue;
+            }
+            (Some(marker), _) => format!("{marker}{word}"),
+            (None, _) => format!("{}{word}", " ".repeat(indent)),
+        };
+        lines.push(text.clone());
+        if fenced {
+            continue;
+        }
+        match marker {
+            Some(marker) => item = Some(marker.len()),
+            None if item.is_some_and(|text| indent < text) => {
+                wanted.push((line, 4, "doc-markdown", "a lazy continuation line in a list item: indent it".to_owned()));
+            }
+            None => {}
+        }
+        if let Some(at) = code {
+            let start = text.len() - word.len() + at;
+            let code = word[at..].trim_end_matches(['*', ')', '.']);
+            wanted.push((line, 4 + start, "doc-markdown", format!("`{code}` is code, so put it in backticks")));
+        }
+    }
+    let block: String =
+        lines.iter().map(|l| if l.is_empty() { " *\n".to_owned() } else { format!(" * {l}\n") }).collect();
+    let source = format!("/**\n{block} * @since 1\n */\nexport const a = 1;\n");
+    let on = [("doc-markdown", setting)];
+    assert_eq!(diagnose(&source, &on, Rules::default()), at_level(wanted, markdown_on), "{source}");
+}
