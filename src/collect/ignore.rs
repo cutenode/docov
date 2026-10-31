@@ -1,12 +1,13 @@
 //! `docov-ignore` comments: `// docov-ignore-next-line` takes the items on the next line out of
-//! the total, and `/* docov-ignore-file */` the file's, unless they're documented.
+//! the total (and the file's own item, before the file's code), and `/* docov-ignore-file */` the
+//! file's, unless they're documented.
 
 use oxc_ast::ast::Program;
 use oxc_span::GetSpan;
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 
-use super::Lines;
+use super::{Kind, Lines};
 
 /// A `docov-ignore` comment that covers an item.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -25,6 +26,9 @@ pub struct Ignore {
 pub(super) struct Ignores {
     /// Each `docov-ignore-next-line`, by the line it covers.
     next_line: FxHashMap<usize, Ignore>,
+    /// The first `docov-ignore-next-line` before the file's code, which also covers the file's own
+    /// item: that's at line 1, where no comment above can be.
+    module: Option<Ignore>,
     /// The last `docov-ignore-file` outside every statement.
     file: Option<Ignore>,
 }
@@ -32,7 +36,9 @@ pub(super) struct Ignores {
 impl Ignores {
     /// The ones in `program`.
     pub(super) fn find(program: &Program, lines: &Lines) -> Self {
-        let mut ignores = Self { next_line: FxHashMap::default(), file: None };
+        let mut ignores = Self { next_line: FxHashMap::default(), module: None, file: None };
+        let code = program.directives.first().map(|d| d.span.start);
+        let code = code.or_else(|| program.body.first().map(|s| s.span().start)).unwrap_or(u32::MAX);
         for comment in &program.comments {
             let text = comment.content_span().source_text(program.source_text);
             let Some((directive, reason)) = directive(text) else { continue };
@@ -41,6 +47,9 @@ impl Ignores {
             let nested =
                 |s: &oxc_ast::ast::Statement| s.span().start < comment.span.start && comment.span.end <= s.span().end;
             if directive == Directive::NextLine {
+                if comment.span.end <= code && ignores.module.is_none() {
+                    ignores.module = Some(ignore.clone());
+                }
                 ignores.next_line.insert(lines.position(comment.span.end as usize).0 + 1, ignore);
             } else if !program.body.iter().any(nested) {
                 ignores.file = Some(ignore);
@@ -49,9 +58,10 @@ impl Ignores {
         ignores
     }
 
-    /// The one that covers the items on `line`, if one does.
-    pub(super) fn covering(&self, line: usize) -> Option<Ignore> {
-        self.next_line.get(&line).or(self.file.as_ref()).cloned()
+    /// The one that covers an item of `kind` on `line`, if one does.
+    pub(super) fn covering(&self, kind: Kind, line: usize) -> Option<Ignore> {
+        let next_line = if kind == Kind::Module { self.module.as_ref() } else { self.next_line.get(&line) };
+        next_line.or(self.file.as_ref()).cloned()
     }
 }
 

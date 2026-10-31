@@ -7,12 +7,13 @@ use crate::FileReport;
 /// `source` with each insert's text (a line, or several) put above its 1-based line, indented like
 /// that line and ended like it. `inserts` go in line order, and a line's own in the order given.
 /// Those for lines past the last go at the end, unindented, after a line ending if the last line
-/// has none.
+/// has none. Those for line 1 go below a shebang, which has to stay the first line.
 pub fn insert_above(source: &str, inserts: &[(usize, &str)]) -> String {
     let ending_of = |line: &str| line.strip_suffix('\n').map(|l| if l.ends_with('\r') { "\r\n" } else { "\n" });
     // A last line with no line ending takes the file's first one.
     let file_ending = source.split_inclusive('\n').next().and_then(ending_of).unwrap_or("\n");
-    let mut inserts = inserts.iter().peekable();
+    let first = 1 + usize::from(source.starts_with("#!"));
+    let mut inserts = inserts.iter().map(|&(at, text)| (at.max(first), text)).peekable();
     let mut out = String::with_capacity(source.len());
     let put = |out: &mut String, text: &str, indent: &str, ending: &str| {
         for text_line in text.lines() {

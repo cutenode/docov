@@ -242,7 +242,7 @@ impl Collected<'_> {
                 let (line, column) = lines.position(f.at as usize);
                 let is_exported = rules.exported(f, &exported);
                 let facts = Facts::of(f, is_exported, source_type.is_javascript());
-                let (documented, ignore) = (rules.documents(f), ignores.covering(line));
+                let (documented, ignore) = (rules.documents(f), ignores.covering(f.kind, line));
                 let mut item = Item { name: f.name.clone(), kind: f.kind, line, column, documented, facts, ignore };
                 if let Some(checks) = rules.checks.as_ref().filter(|_| !item.ignored()) {
                     item.facts.diagnostics = diagnose::diagnose(checks, f, is_exported, &lines, &names);
