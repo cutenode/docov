@@ -8,7 +8,7 @@ pub const FORMAT: Format =
     Format { name: "github", help: "GitHub Actions annotations: undocumented items, findings and failed gates", render };
 
 /// Workflow commands, which the runner reads from the step's output:
-/// https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-commands
+/// <https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-commands>
 fn render(context: &Context) -> String {
     let mut out = String::new();
     for (file, item) in undocumented(context.files) {

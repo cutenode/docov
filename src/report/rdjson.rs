@@ -8,7 +8,7 @@ use crate::report::{Context, Format, RULE, diagnostics, json, message, rule_id, 
 pub const FORMAT: Format = Format { name: "rdjson", help: "reviewdog's diagnostic format (rdjson)", render };
 
 /// A diagnostic at each undocumented item, then one at each doc check finding:
-/// https://github.com/reviewdog/reviewdog/tree/master/proto/rdf
+/// <https://github.com/reviewdog/reviewdog/tree/master/proto/rdf>
 fn render(context: &Context) -> String {
     let diagnostic = |path, line: usize, column: usize, message: &str, severity: &str, code: &str| {
         json!({
