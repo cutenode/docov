@@ -248,6 +248,17 @@
           },
           "type": "array"
         },
+        "scope": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Scope"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "In place of the top-level `scope`, for these files. `--scope` wins over it."
+        },
         "threshold": {
           "anyOf": [
             {

@@ -148,7 +148,7 @@ Each finding prints to stderr as `docov: path:line:column: rule-id: message`, an
 
 `--jsdoc-config FILE` (or `"jsdocConfig": "jsdoc.json"`, relative to the config) scans the files a [jsdoc config](https://jsdoc.app/about-configuring-jsdoc) documents: its `source.include` are the paths, unless there are paths already, and `source.exclude` leaves files and folders out, both relative to the jsdoc config. `source.includePattern` and `excludePattern` filter files only when the config writes them, since jsdoc's default `includePattern` would leave out TypeScript. It has to be JSON; docov can't read a `.js` config.
 
-With `"nested": true` in the root config, each file is scanned with the nearest docov.json, docov.jsonc or .docovrc in a folder above it, up to the root config's folder, merged over the root config, the way [oxlint's nested configs](https://oxc.rs/docs/guide/usage/linter/nested-config.html) work. A nested config's `exclude` applies in its folder, its gates (`threshold`, `maxUndocumented`, `overrides`, `baseline`, the examples, release-tags, types and complete thresholds, and the doc checks' errors) hold for its own files (a failure names the config), and its `paths` aren't read.
+With `"nested": true` in the root config, each file is scanned with the nearest docov.json, docov.jsonc or .docovrc in a folder above it, up to the root config's folder, merged over the root config, the way [oxlint's nested configs](https://oxc.rs/docs/guide/usage/linter/nested-config.html) work. A nested config's `exclude` applies in its folder, its gates (`threshold`, `maxUndocumented`, `overrides`, `baseline`, the examples, release-tags, types and complete thresholds, and the doc checks' errors) hold for its own files (a failure names the config), its `overrides` (in place of the root config's) set its own files' scope, and its `paths` aren't read.
 
 `--by-package` adds a total line for each workspace package after the text total, and a `packages` array to the JSON. The packages are the folders with a package.json that the globs in the root config folder's package.json `workspaces` or pnpm-workspace.yaml `packages` match.
 
@@ -162,11 +162,12 @@ With `"nested": true` in the root config, each file is scanned with the nearest 
 
 `docov --update-threshold` ratchets the threshold: when the documented percentage, rounded down to a tenth, is over the config's global threshold, it writes it there (into `global` for an object of thresholds), changing only that number so comments and formatting stay. A negative threshold stays as it is. Without a config it writes a new `docov.json` where docov runs. With nested configs, it goes by the files the root config scans.
 
-`overrides` changes settings for some paths: each has `files` (gitignore-style globs) and any of `exclude` and `threshold`, which replace the top-level ones for those files. For each file and setting, the last override that matches the file and has the setting wins. The top-level thresholds then cover only the files no override has a threshold for. As in .gitignore, a file in a folder that's left out stays out.
+`overrides` changes settings for some paths: each has `files` (gitignore-style globs) and any of `exclude`, `threshold` and `scope`, which replace the top-level ones for those files. For each file and setting, the last override that matches the file and has the setting wins. The top-level thresholds then cover only the files no override has a threshold for. As in .gitignore, a file in a folder that's left out stays out. `--scope` wins over every override's `scope`, and `--explain` names the override that set a file's scope.
 
 ```jsonc
 "overrides": [
   { "files": ["src/legacy/"], "exclude": [], "threshold": 20 },
+  { "files": ["src/internal/"], "scope": "all" },
 ]
 ```
 
