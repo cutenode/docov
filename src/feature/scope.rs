@@ -1,5 +1,6 @@
 //! `--scope` and `scope`: which declarations count.
 
+use clap::{ArgMatches, FromArgMatches};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -30,7 +31,7 @@ pub enum Scope {
 #[derive(clap::Args)]
 #[group(skip)]
 pub struct Flags {
-    /// Which declarations count [default: the config's, or exports]
+    /// Which declarations count, over the config's and its overrides' [default: the config's, or exports]
     #[arg(long, value_enum)]
     scope: Option<Scope>,
 }
@@ -41,6 +42,13 @@ pub struct Flags {
 pub struct Keys {
     /// Which declarations count.
     scope: Scope,
+}
+
+impl Scope {
+    /// The scope `--scope` gives in `matches`, if it's given. It wins over every override's too.
+    pub fn flag(matches: &ArgMatches) -> Option<Self> {
+        Flags::from_arg_matches(matches).expect("the flags were added by `args`").scope
+    }
 }
 
 impl Feature for Scope {

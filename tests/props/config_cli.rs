@@ -13,7 +13,10 @@ use docov::{
     config,
     config::Config,
     feature,
-    feature::{by_package::ByPackage, color, overrides::Overrides, stdin_filename, threads::Threads, watch},
+    feature::{
+        Feature, by_package::ByPackage, color, overrides::Overrides, print_config, rules::DocChecks, stdin_filename,
+        threads::Threads, watch,
+    },
     glob::Globs,
     init, jsdoc, nested, packages, report, scan, scan_file, walk,
     walk::Exclude,
@@ -189,6 +192,113 @@ fn extended_configs_merge_nearest_first(tc: TestCase) {
     let flat = serde_json::json!({ "threshold": expected.threshold, "scope": expected.scope.unwrap_or("exports") });
     write(dir.path(), "flat.json", &flat.to_string());
     assert_eq!(loaded.keys, Config::load(Some(&dir.path().join("flat.json"))).unwrap().keys);
+}
+
+/// A rule's setting in a generated config: its level, and its options if it gives them.
+type Drawn = (&'static str, Option<serde_json::Value>);
+
+/// Rules by rule id, in the order they were set.
+type Drawns = Vec<(&'static str, Drawn)>;
+
+/// The rules a generated config file sets, as docov.json writes them (a level as `"warn"` or
+/// `["warn"]`, or a level and options) and as the model reads them. Ids overlap across files about
+/// half the time.
+fn drawn_rules(tc: &TestCase) -> (serde_json::Map<String, serde_json::Value>, Drawns) {
+    let (mut written, mut drawn) = (serde_json::Map::new(), Vec::new());
+    for id in ["summary-sentence", "param-names", "require-param"] {
+        if !tc.draw(gs::booleans()) {
+            continue;
+        }
+        let level = tc.draw(gs::sampled_from(vec!["off", "warn", "error"]));
+        let options = if id == "summary-sentence" {
+            serde_json::json!({ "maxLength": tc.draw(gs::integers::<u16>()) })
+        } else {
+            serde_json::json!({})
+        };
+        let (json, options) = match tc.draw(gs::integers::<u8>().max_value(2)) {
+            0 => (serde_json::json!(level), None),
+            1 => (serde_json::json!([level]), None),
+            _ => (serde_json::json!([level, options]), Some(options)),
+        };
+        written.insert(id.to_owned(), json);
+        drawn.push((id, (level, options)));
+    }
+    (written, drawn)
+}
+
+/// `top`'s rules over `base`'s, by rule id: a level alone keeps `base`'s options.
+fn rules_over(base: &[(&'static str, Drawn)], top: &[(&'static str, Drawn)]) -> Drawns {
+    let mut merged = base.to_vec();
+    for (id, (level, options)) in top {
+        let kept = merged.iter().position(|(known, _)| known == id).map(|at| merged.remove(at).1.1);
+        merged.push((id, (level, options.clone().or(kept.flatten()))));
+    }
+    merged
+}
+
+/// The rules that are on, as `--print-config` writes them.
+fn rules_on(rules: &[(&'static str, Drawn)]) -> serde_json::Value {
+    let on = rules.iter().filter(|(_, (level, _))| *level != "off");
+    let written =
+        |(level, options): &Drawn| options.as_ref().map_or(serde_json::json!(level), |o| serde_json::json!([level, o]));
+    serde_json::Value::Object(on.map(|(id, setting)| ((*id).to_owned(), written(setting))).collect())
+}
+
+/// What generated config `i` sets, over the files it extends, each over the ones before it.
+fn chain_rules(files: &[(Drawns, Vec<usize>)], i: usize) -> Drawns {
+    let below = files[i].1.iter().fold(Vec::new(), |merged, &j| rules_over(&merged, &chain_rules(files, j)));
+    rules_over(&below, &files[i].0)
+}
+
+/// `rules` merges by rule id across config files, where every other key's value replaces the one
+/// below: through `extends` (one path or a list, each over the ones before it) and from a nested
+/// config, itself extending one of the chain or not, over the root config. A rule a file sets
+/// replaces that rule's setting below it, keeping its options when it gives a level alone, and the
+/// other rules stay. `--print-config` shows the merged map, and the cache stamps by it.
+#[hegel::test(test_cases = 60)]
+fn rules_merge_by_rule_id_across_configs(tc: TestCase) {
+    let dir = tempfile::tempdir().unwrap();
+    let count = tc.draw(gs::integers::<usize>().min_value(1).max_value(4));
+    // Each file's rules, and the files it extends: only later ones, so there's no cycle.
+    let mut files: Vec<(Drawns, Vec<usize>)> = Vec::new();
+    for i in 0..count {
+        let mut extends = tc.draw(gs::vecs(gs::integers::<usize>().min_value(i + 1).max_value(count)).max_size(2));
+        extends.retain(|&j| j < count);
+        let (written, rules) = drawn_rules(&tc);
+        let mut json =
+            serde_json::json!({ "extends": extends.iter().map(|j| format!("f{j}.json")).collect::<Vec<_>>() });
+        if i == 0 {
+            json["nested"] = true.into();
+        }
+        if !written.is_empty() || tc.draw(gs::booleans()) {
+            json["rules"] = written.into();
+        }
+        write(dir.path(), &format!("f{i}.json"), &json.to_string());
+        files.push((rules, extends));
+    }
+    // A nested config, extending one of the chain or none.
+    let base = tc.draw(gs::optional(gs::integers::<usize>().max_value(count - 1)));
+    let (written, own) = drawn_rules(&tc);
+    let mut json = serde_json::json!({ "rules": written });
+    if let Some(base) = base {
+        json["extends"] = format!("../f{base}.json").into();
+    }
+    write(dir.path(), "n/docov.json", &json.to_string());
+    write(dir.path(), "n/a.ts", "");
+
+    let mut root = Config::load(Some(&dir.path().join("f0.json"))).unwrap();
+    let settings = Settings::new(&matches(&[]), std::mem::take(&mut root.keys));
+    let file = dir.path().join("n/a.ts");
+    let plan = nested::Plan::new(&root, settings, &matches(&[]), vec![file.clone()]).unwrap();
+    let root_rules = chain_rules(&files, 0);
+    let nested_rules = rules_over(&base.map(|base| chain_rules(&files, base)).unwrap_or_default(), &own);
+    let expected = [rules_on(&root_rules), rules_on(&rules_over(&root_rules, &nested_rules))];
+    assert_eq!(print_config::json(&root, &[], plan.settings())["features"]["rules"], expected[0]);
+    let described: Vec<_> = plan.groups.iter().map(|g| g.settings.get::<DocChecks>().describe().unwrap()).collect();
+    assert_eq!(described, expected);
+    let cache = Cache::read(dir.path().join("cache.json"));
+    let stamps: Vec<_> = plan.groups.iter().map(|g| cache.stamp(&file, &g.rules).unwrap()).collect();
+    assert_eq!(stamps[0] == stamps[1], expected[0] == expected[1]);
 }
 
 /// Runs the binary in `dir`, with stdout closed if `closed` (a pipe whose reader has gone, as with

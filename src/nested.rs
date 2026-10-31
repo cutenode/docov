@@ -33,6 +33,11 @@ pub struct Group {
     pub settings: Settings,
     /// What counts in its files, by its settings.
     pub rules: Rules,
+    /// What counts in the files an override sets the scope for, by that override's index: the
+    /// last one that matches the file and has a scope.
+    scoped: IndexMap<usize, Rules>,
+    /// For each of `files`, its place in `scoped`, if an override sets its scope.
+    scoped_by: Vec<Option<usize>>,
     /// Its folder, and those of the files it extends, which its keys' globs are relative to.
     pub root: Root,
     /// Its config file's folder, where the public scope looks for package.json.
@@ -49,18 +54,37 @@ pub struct Group {
 impl Group {
     /// The group for the files of the config `config` (the merged settings of the file at `path`,
     /// or the root config's with none), whose baseline is in `top`'s folder unless it names
-    /// its own.
+    /// its own. With `flagged`, `--scope` gives every file's scope, over the overrides'.
     fn new(
         path: Option<PathBuf>,
         config: &Config,
         settings: Settings,
         top: &Config,
         files: Vec<PathBuf>,
+        flagged: bool,
     ) -> Result<Self, String> {
         let baseline_dir = config.dirs.get("baseline").unwrap_or(&top.dir).clone();
         let excused = settings.get::<Baseline>().read(&baseline_dir)?;
         let (rules, root, dir) = (settings.rules(), config.root(), config.dir.clone());
-        Ok(Self { config: path, settings, rules, root, dir, baseline_dir, excused, files })
+        let (overrides, at) = (settings.get::<Overrides>(), root.of("overrides"));
+        let mut scoped = IndexMap::new();
+        let scope_of = |file: &PathBuf| {
+            let inside = at.inside(file).filter(|_| !flagged);
+            let (i, &scope) = inside.and_then(|p| overrides.last(&p, false, |o| o.scope.as_ref()))?;
+            let entry = scoped.entry(i);
+            let place = entry.index();
+            let scope_set_by = Some((i, overrides.0[i].files.clone()));
+            entry.or_insert_with(|| Rules { scope, scope_set_by, ..rules.clone() });
+            Some(place)
+        };
+        let scoped_by = files.iter().map(scope_of).collect();
+        Ok(Self { config: path, settings, rules, scoped, scoped_by, root, dir, baseline_dir, excused, files })
+    }
+
+    /// Each of its files, with the rules it's scanned with.
+    fn files(&self) -> impl Iterator<Item = (&Path, &Rules)> {
+        let rules = self.scoped_by.iter().map(|place| place.map_or(&self.rules, |place| &self.scoped[place]));
+        self.files.iter().map(PathBuf::as_path).zip(rules)
     }
 
     /// Its own of `reports`.
@@ -95,8 +119,9 @@ impl Plan {
         mut files: Vec<PathBuf>,
     ) -> Result<Self, String> {
         files.retain(|file| root.patterns.keep(file));
+        let flagged = Scope::flag(matches).is_some();
         if !settings.get::<Nested>().0 {
-            return Ok(Self { groups: vec![Group::new(None, root, settings, root, files)?] });
+            return Ok(Self { groups: vec![Group::new(None, root, settings, root, files, flagged)?] });
         }
         let top = real(&root.dir);
         let mut nearest_in: FxHashMap<PathBuf, Option<PathBuf>> = FxHashMap::default();
@@ -115,7 +140,7 @@ impl Plan {
 
         let mut members = members.into_iter();
         let (_, files) = members.next().expect("the root group is first");
-        let mut groups = vec![Group::new(None, root, settings, root, files)?];
+        let mut groups = vec![Group::new(None, root, settings, root, files, flagged)?];
         for (config, mut files) in members {
             let path = config.expect("only the root group has no config");
             let mut nested = root.under(&path).map_err(|e| e.to_string())?;
@@ -123,16 +148,23 @@ impl Plan {
             // The walk left out what the root config excludes; this is what the nested one does.
             let excluded = settings.get::<Overrides>().clone().excluder(nested.exclude.clone(), &nested.root());
             files.retain(|file| !walk::excludes(&excluded, file));
-            groups.push(Group::new(Some(path), &nested, settings, root, files)?);
+            groups.push(Group::new(Some(path), &nested, settings, root, files, flagged)?);
         }
         Ok(Self { groups })
     }
 
-    /// Reads what the package's entry points reach for each group under the public scope: the
-    /// package.json in its config's folder, or else the nearest one above one of `paths`.
+    /// Reads what the package's entry points reach for each group whose scope is public, or an
+    /// override's for some of its files: the package.json in its config's folder, or else the
+    /// nearest one above one of `paths`, read once for the group and its overrides.
     pub fn load_public(&mut self, paths: &[PathBuf]) -> Result<(), Vec<String>> {
-        for group in self.groups.iter_mut().filter(|group| group.rules.scope == Scope::Public) {
-            group.rules.public = Some(Arc::new(Api::load(&group.dir, paths)?));
+        for group in &mut self.groups {
+            let all = std::iter::once(&mut group.rules).chain(group.scoped.values_mut());
+            let public: Vec<_> = all.filter(|rules| rules.scope == Scope::Public).collect();
+            if public.is_empty() {
+                continue;
+            }
+            let api = Arc::new(Api::load(&group.dir, paths)?);
+            public.into_iter().for_each(|rules| rules.public = Some(api.clone()));
         }
         Ok(())
     }
@@ -144,11 +176,7 @@ impl Plan {
 
     /// Each file to scan, with the rules it's scanned with, sorted.
     pub fn files(&self) -> Vec<(&Path, &Rules)> {
-        let mut files: Vec<_> = self
-            .groups
-            .iter()
-            .flat_map(|group| group.files.iter().map(|file| (file.as_path(), &group.rules)))
-            .collect();
+        let mut files: Vec<_> = self.groups.iter().flat_map(Group::files).collect();
         files.sort_by_key(|&(file, _)| file);
         files
     }

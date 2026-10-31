@@ -1,11 +1,14 @@
 //! Properties of doc stubs: `--fix` and the blocks it writes.
 
-use std::fs;
+use std::{fs, path::Path};
 
-use docov::{Rules, Scope, check, collect, feature::Feature, feature::fix::Fix, rewrite, scan_file};
+use docov::feature::{
+    Feature, Run, add_ignore::AddIgnore, file_docs::FileDocs, fix::Fix, report_unused_ignores::ReportUnusedIgnores,
+};
+use docov::{FileReport, Kind, Rules, Scope, check, collect, rewrite, root::Root, scan_file};
 use hegel::{TestCase, generators as gs};
 
-use super::{config_cli::docov, write};
+use super::{Module, config_cli::docov, settings, write};
 
 /// A generated declaration that `--fix` may write a stub for.
 struct Declared {
@@ -169,7 +172,7 @@ fn files_get_a_stub_at_the_top(tc: TestCase) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("m.ts");
     fs::write(&path, format!("{shebang}{body}")).unwrap();
-    let rules = Rules { file_docs: docov::feature::file_docs::FileDocs::Require, ..Rules::default() };
+    let rules = Rules { file_docs: FileDocs::Require, ..Rules::default() };
     let before = scan_file(&path, &rules).unwrap();
     let edited = Fix(true).edit(std::slice::from_ref(&before));
     let added = 1 + usize::from(stub.is_some());
@@ -214,4 +217,40 @@ fn fix_runs_from_the_command_line(tc: TestCase) {
         assert_eq!(code, 2, "{err}");
         assert!(err.contains("cannot be used with"), "{err}");
     }
+}
+
+/// With `fileDocs`, `--add-ignore` covers a file's own item with a comment at the top, below a
+/// shebang, after which every item is documented or ignored, the shebang is still first, no comment
+/// it wrote is unused, and running it again changes nothing.
+#[hegel::test(test_cases = 50)]
+fn adding_ignores_covers_a_files_own_item(tc: TestCase) {
+    let shebang = tc.draw(gs::sampled_from(vec!["", "#!/usr/bin/env node\n"]));
+    let head = vec!["", "/** @file Helpers. */\n", "/** @file */\n", "\"use strict\";\n", "// header\n"];
+    let head = tc.draw(gs::sampled_from(head));
+    let source = format!("{shebang}{head}{}", Module::generate(&tc).source);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("m.ts");
+    fs::write(&path, &source).unwrap();
+    let scope = tc.draw(gs::sampled_from(vec![Scope::Exports, Scope::All]));
+    let rules = Rules { file_docs: FileDocs::Require, ..Rules::from(scope) };
+    let add = AddIgnore(Some("// docov-ignore-next-line".into()));
+    let settings = settings(dir.path(), "{}", &[]);
+    let root = Root::new(Path::new(""));
+    let unused = |report: &FileReport| {
+        ReportUnusedIgnores(true).gate(&Run { reports: std::slice::from_ref(report), root: &root, settings: &settings })
+    };
+
+    let before = scan_file(&path, &rules).unwrap();
+    assert_eq!(before.items[0].kind, Kind::Module);
+    add.edit(std::slice::from_ref(&before)).unwrap().unwrap();
+    let ignored = fs::read_to_string(&path).unwrap();
+    let after = scan_file(&path, &rules).unwrap();
+    assert!(after.items.iter().all(|i| i.documented || i.ignored()), "{ignored}");
+    assert!(ignored.starts_with(shebang), "{ignored}");
+    let summary = |r: &FileReport| r.items.iter().map(|i| (i.name.clone(), i.documented)).collect::<Vec<_>>();
+    assert_eq!(summary(&after), summary(&before));
+    assert_eq!(unused(&after).len(), unused(&before).len(), "{ignored}");
+    let again = add.edit(std::slice::from_ref(&after));
+    assert_eq!(again, Some(Ok("added 0 docov-ignore-next-line comments".into())), "{ignored}");
+    assert_eq!(fs::read_to_string(&path).unwrap(), ignored);
 }
