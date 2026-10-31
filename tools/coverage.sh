@@ -7,17 +7,18 @@ cd "$(dirname "$0")/.."
 
 export HEGEL_DERANDOMIZE=true
 
-# cargo coverage, writing lcov to $LCOV_DIR/$1.lcov in place of its table when LCOV_DIR is set (CI
-# sets it, for the job summary and the coverage artifact). The thresholds hold either way.
+# cargo coverage, whose table lists any uncovered lines. With LCOV_DIR set (CI sets it, for the job
+# summary and the coverage artifact), the same run is also written to $LCOV_DIR/$1.lcov, under the
+# thresholds too, so the summary shows where it fell short.
 coverage() {
-  local name=$1
+  local name=$1 status=0
   shift
-  if [[ -z "${LCOV_DIR:-}" ]]; then
-    cargo coverage "$@"
-    return
+  cargo coverage "$@" || status=$?
+  if [[ -n "${LCOV_DIR:-}" ]]; then
+    mkdir -p "$LCOV_DIR"
+    cargo llvm-cov report --lcov --output-path "$LCOV_DIR/$name.lcov"
   fi
-  mkdir -p "$LCOV_DIR"
-  cargo coverage "$@" --lcov --output-path "$LCOV_DIR/$name.lcov"
+  return "$status"
 }
 coverage suite
 coverage props --test props
