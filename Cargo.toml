@@ -10,8 +10,9 @@ readme = "README.md"
 repository = "https://github.com/cutenode/docov"
 keywords = ["jsdoc", "coverage", "documentation", "javascript", "typescript"]
 categories = ["command-line-utilities", "development-tools"]
-# The npm package, which only runs the binary, the GitHub Action and the pre-commit hook.
-exclude = ["/npm", "/action", "/action.yml", "/.pre-commit-hooks.yaml"]
+# The npm packages, the package.json uppt reads to release them, the GitHub Action and the
+# pre-commit hook.
+exclude = ["/npm", "/package.json", "/action", "/action.yml", "/.pre-commit-hooks.yaml"]
 
 [lints.rust]
 missing_docs = "warn"

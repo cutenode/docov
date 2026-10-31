@@ -1,0 +1,4 @@
+{
+  "private": true,
+  "description": "Not a package. uppt, which runs release.yml, reads it. docov's npm packages are in npm/."
+}

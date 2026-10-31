@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
-# Sets up trusted publishing for release.yml. crates.io and npm only trust a workflow with a
-# package they already have, so this publishes the first version from here: the crate from this
-# checkout, and the npm packages from release.yml's latest successful run on main. Then it trusts
-# release.yml for the crate and for each npm package. Finished steps are skipped, so run it again
-# after a failure or after adding a platform to release.yml.
+# Sets up what release.yml needs to publish: the `npm` and `crates-io` GitHub environments its
+# publishing jobs run in, permission for Actions to open the release PR, and each registry trusting
+# release.yml from its environment, staged publishing only on npm. Both registries only trust a
+# workflow with a package they already have, so a crate or npm package that isn't there yet gets
+# published first: the crate from this checkout, an npm package as a 0.0.0 placeholder. Finished
+# steps are skipped, so run it again after a failure or after adding a platform to release.yml.
 #
-# npm drops a trust config that no publish has used within 48 hours, so push the next release tag
-# within 48 hours of running this, or run it again first to renew them.
+# npm drops a trust config that no publish has used within 48 hours, so merge the next release PR
+# within 48 hours of running this, or run it again first with RETRUST=1 to renew them.
 #
-# Needs `npm login` as a member of the docov npm org (https://www.npmjs.com/org/create), and asks for a crates.io token with the publish-new, publish-update and
-# trusted-publishing scopes (https://crates.io/settings/tokens/new).
+# Needs `gh` logged in as a repository admin, `npm login` as a member of the docov npm org
+# (https://www.npmjs.com/org/create), and asks for a crates.io token with the publish-new,
+# publish-update and trusted-publishing scopes (https://crates.io/settings/tokens/new).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 owner=cutenode repo=docov workflow=release.yml
@@ -20,7 +22,23 @@ if [[ -z ${CARGO_REGISTRY_TOKEN:-} ]]; then
   echo
   export CARGO_REGISTRY_TOKEN
 fi
-version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+
+# An environment that's already there keeps whatever protection it has.
+for environment in npm crates-io; do
+  if gh api "repos/$owner/$repo/environments/$environment" >/dev/null 2>&1; then
+    echo "GitHub environment $environment already exists"
+    continue
+  fi
+  echo '{"deployment_branch_policy": {"protected_branches": false, "custom_branch_policies": true}}' |
+    gh api -X PUT "repos/$owner/$repo/environments/$environment" --input - >/dev/null
+  # Only release tags can deploy to it, so only they can publish.
+  gh api "repos/$owner/$repo/environments/$environment/deployment-branch-policies" -f name='v*' -f type=tag >/dev/null
+  echo "Created GitHub environment $environment for v* tags"
+done
+if [[ $(gh api "repos/$owner/$repo/actions/permissions/workflow" -q .can_approve_pull_request_reviews) != true ]]; then
+  gh api -X PUT "repos/$owner/$repo/actions/permissions/workflow" -F can_approve_pull_request_reviews=true
+  echo "Actions can open pull requests"
+fi
 
 tools/cargo-publish.sh
 crates() {
@@ -28,43 +46,41 @@ crates() {
     -H @<(printf 'Authorization: %s\n' "$CARGO_REGISTRY_TOKEN") "$@"
 }
 config=$(jq -n --arg owner $owner --arg repo $repo --arg workflow $workflow \
-  '{crate: "docov", repository_owner: $owner, repository_name: $repo, workflow_filename: $workflow, environment: null}')
+  '{crate: "docov", repository_owner: $owner, repository_name: $repo, workflow_filename: $workflow, environment: "crates-io"}')
 configs=https://crates.io/api/v1/trusted_publishing/github_configs
-trusted=$(crates "$configs?crate=docov" | jq --argjson config "$config" \
-  '[.github_configs[] | select(.repository_owner == $config.repository_owner and .repository_name == $config.repository_name and .workflow_filename == $config.workflow_filename)] | length')
-if [[ $trusted == 0 ]]; then
+existing=$(crates "$configs?crate=docov" | jq --argjson config "$config" \
+  '[.github_configs[] | select(.repository_owner == $config.repository_owner and .repository_name == $config.repository_name and .workflow_filename == $config.workflow_filename)]')
+if jq -e --argjson config "$config" 'any(.environment == $config.environment)' <<<"$existing" >/dev/null; then
+  echo "crates.io already trusts $workflow for docov"
+else
+  # One from before release.yml published from an environment.
+  for id in $(jq -r '.[].id' <<<"$existing"); do
+    crates -X DELETE "$configs/$id" >/dev/null
+  done
   jq -n --argjson config "$config" '{github_config: $config}' |
     crates -X POST -H 'Content-Type: application/json' --data @- "$configs" >/dev/null
   echo "crates.io trusts $workflow for docov"
-else
-  echo "crates.io already trusts $workflow for docov"
 fi
 
-run=$(gh run list -R $owner/$repo --workflow $workflow --branch main --status success -L 1 --json databaseId -q '.[0].databaseId')
-if [[ -z $run ]]; then
-  echo "$workflow hasn't run on main. Start it with \`gh workflow run $workflow -R $owner/$repo --ref main\` and run this again when it's done." >&2
-  exit 1
-fi
-packages=$(mktemp -d)
-trap 'rm -rf "$packages"' EXIT
-gh run download "$run" -R $owner/$repo -n npm-packages -D "$packages"
-if [[ ! -f $packages/docov-cli-$version.tgz ]]; then
-  echo "$workflow's latest run on main didn't pack docov $version. Start one with \`gh workflow run $workflow -R $owner/$repo --ref main\` and run this again when it's done." >&2
-  exit 1
-fi
-tools/npm-publish.sh "$packages"
+for name in @docov/cli $(grep -oE 'platform: [a-z0-9]+-[a-z0-9]+' .github/workflows/$workflow | sed 's|platform: |@docov/|'); do
+  if [[ -z $(npm view "$name" version 2>/dev/null) ]]; then
+    stub=$(mktemp -d)
+    jq --arg name "$name" '{name: $name, description, license, repository}' npm/docov/package.json >"$stub/package.json"
+    npx -y setup-trusted-publishing@1.0.2 --cwd "$stub" --access public
+    rm -rf "$stub"
+  fi
 
-for tgz in "$packages"/*.tgz; do
-  name=$(tar -xOzf "$tgz" package/package.json | jq -r .name)
-  # A version from CI has a provenance attestation. That publish validated the trust config, so
-  # it no longer expires.
-  if [[ -n $(npm view "$name" dist.attestations) ]]; then
-    echo "npm trusts $workflow for $name, and CI has published it"
+  # npm keeps one config per package, and an expired one still lists, so replace whatever's there
+  # unless it's the one uppt needs.
+  trusts=$(npm trust list "$name" --json | jq -s .)
+  if [[ -z ${RETRUST:-} ]] && jq -e --arg repo $owner/$repo --arg file $workflow \
+    'length == 1 and (.[0] | .repository == $repo and .file == $file and .environment == "npm" and .permissions == ["createStagedPackage"])' \
+    <<<"$trusts" >/dev/null; then
+    echo "npm already trusts $workflow to stage $name"
     continue
   fi
-  # npm keeps one config per package, and an expired one still lists, so replace whatever's there.
-  for id in $(npm trust list "$name" --json | jq -r .id); do
+  for id in $(jq -r '.[].id' <<<"$trusts"); do
     npm trust revoke "$name" --id "$id"
   done
-  npm trust github "$name" --repo $owner/$repo --file $workflow --allow-publish --yes
+  npm trust github "$name" --repo $owner/$repo --file $workflow --env npm --allow-stage-publish --yes
 done

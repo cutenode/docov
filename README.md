@@ -327,12 +327,12 @@ Each flag and docov.json key belongs to a feature, one file in `src/feature/` th
 
 ```bash
 cargo run -- [PATHS]...   # docov on a project
-tools/check.sh            # what CI runs: tools/lint.sh (format, clippy) and tools/coverage.sh (coverage for the whole suite, for the Hegel properties alone, and for the npm launcher's tests)
+tools/check.sh            # what CI runs: tools/lint.sh (format, clippy, matching crate and npm versions) and tools/coverage.sh (coverage for the whole suite, for the Hegel properties alone, and for the npm launcher's tests)
 tools/jsdoc-oracle.sh [DIR]   # where docov and jsdoc disagree on a folder of plain JavaScript (default: tests/fixtures/jsdoc)
-git tag v1.2.3 && git push origin v1.2.3   # release Cargo.toml's version 1.2.3 to crates.io and npm
+tools/npm-approve.sh 1.2.3   # put a release's staged npm packages live
 ```
 
-Pushing a version tag runs `.github/workflows/release.yml`, which builds the binaries and publishes with trusted publishing, so there are no registry tokens. The npm packages are `@docov/cli` (`npm/docov`, a launcher) and an `@docov/<platform>-<arch>` package per binary. `tools/bootstrap-publishing.sh` publishes the first version by hand and sets up the trust, which both registries only allow for a package they already have.
+Releases go through [uppt](https://github.com/danielroe/uppt) in `.github/workflows/release.yml`. Each push to main opens or updates a draft release PR from the conventional commits since the last tag, bumping the version in `npm/docov/package.json` and `Cargo.toml` together. Merging it tags the version, builds the binaries, publishes the crate to crates.io, and stages the npm packages, which go live once `tools/npm-approve.sh` approves them. `gh workflow run release.yml -f prerelease=beta` opens a prerelease PR instead. The npm packages are `@docov/cli` (`npm/docov`, a launcher) and an `@docov/<platform>-<arch>` package per binary. Both registries use trusted publishing, so there are no tokens. `tools/bootstrap-publishing.sh` sets it up, along with the GitHub environments the publishing jobs run in.
 
 `cargo coverage` fails under the thresholds in `.cargo/config.toml`. On a pull request, lint and coverage are separate pass/fail checks for each OS. With `LCOV_DIR` set, `tools/coverage.sh` writes each Rust coverage run to `$LCOV_DIR/suite.lcov` and `props.lcov` in place of its table. CI sets it, puts each run's per-file numbers in the job summary, and uploads the lcov files as the `coverage-<os>` artifact. The property tests (`tests/props.rs`) use [Hegel](https://github.com/hegeldev/hegel-rust). They check scans against a model of generated modules, the language server over an in-memory connection, and the binary against generated projects.
 
