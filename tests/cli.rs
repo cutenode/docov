@@ -1070,3 +1070,19 @@ fn doc_checks_print_what_they_find_and_fail_on_errors() {
     let (code, _, err) = docov(dir.path(), &["--rule", "nope=warn"]);
     assert_eq!(code, 2, "{err}");
 }
+
+/// On Windows, `fs::canonicalize` gives `\\?\C:\...` paths, which would leak into errors about a
+/// package.json found through the scanned paths. docov reads them with `dunce`, which drops that
+/// prefix where the path allows it.
+#[cfg(windows)]
+#[test]
+fn public_scope_errors_show_plain_windows_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("pkg")).unwrap();
+    fs::write(dir.path().join("pkg").join("package.json"), r#"{ "main": "gone.js" }"#).unwrap();
+    fs::write(dir.path().join("pkg").join("a.js"), "export const a = 1;\n").unwrap();
+    let (code, _, err) = docov(dir.path(), &["--scope", "public", "pkg"]);
+    assert_eq!(code, 2, "{err}");
+    assert!(err.contains("package.json"), "{err}");
+    assert!(!err.contains(r"\\?\"), "{err}");
+}

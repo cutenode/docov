@@ -24,6 +24,7 @@ cargo_common_metadata = "warn"
 anstream = "1.0.0"
 anstyle = "1.0.14"
 clap = { version = "4.6.7", features = ["derive", "wrap_help"] }
+dunce = "1.0.5"
 # GitLab Code Quality fingerprints: a hash that stays the same between runs and versions.
 fnv = "1.0.7"
 # Matches workspace globs (`packages/*`) against folders, for --by-package.

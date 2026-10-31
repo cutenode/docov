@@ -170,7 +170,7 @@ fn extended_configs_merge_nearest_first(tc: TestCase) {
             let error = loaded.unwrap_err();
             let config::Error::Cycle { chain } = &error else { panic!("{error:?}") };
             // It goes back to the first file, the only one extended twice.
-            let real = |p: &PathBuf| std::fs::canonicalize(p).unwrap();
+            let real = |p: &PathBuf| dunce::canonicalize(p).unwrap();
             assert_eq!((&chain[0], real(&chain[0])), (&first, real(chain.last().unwrap())), "{chain:?}");
             let names: Vec<_> = chain.iter().map(|p| p.display().to_string()).collect();
             assert!(error.to_string().ends_with(&names.join(" -> ")), "{error}");

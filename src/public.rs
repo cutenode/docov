@@ -26,7 +26,7 @@ pub struct Api {
 impl Api {
     /// The local names the entry points reach in the file at `path`, if they reach it at all.
     pub fn reach(&self, path: &Path) -> Option<&FxHashSet<String>> {
-        fs::canonicalize(path).ok().and_then(|path| self.files.get(&path))
+        dunce::canonicalize(path).ok().and_then(|path| self.files.get(&path))
     }
 
     /// What it was read from: package.json, the tsconfig.json beside it (there or not), each
@@ -73,7 +73,7 @@ impl Api {
 fn find(dir: &Path, paths: &[PathBuf]) -> Option<PathBuf> {
     let here = [PathBuf::from(".")];
     let paths = if paths.is_empty() { &here[..] } else { paths };
-    let starts = std::iter::once(dir.to_path_buf()).chain(paths.iter().filter_map(|p| fs::canonicalize(p).ok()));
+    let starts = std::iter::once(dir.to_path_buf()).chain(paths.iter().filter_map(|p| dunce::canonicalize(p).ok()));
     starts.flat_map(|start| start.ancestors().map(|d| d.join("package.json")).collect::<Vec<_>>()).find(|p| p.is_file())
 }
 
@@ -293,7 +293,7 @@ impl Graph {
 
 /// The file `specifier` names from `dir`, found the way a resolver finds it, by its real path.
 fn resolve(resolver: &Resolver, dir: &Path, specifier: &str) -> Option<PathBuf> {
-    resolver.resolve(dir, specifier).ok().and_then(|resolved| fs::canonicalize(resolved.path()).ok())
+    resolver.resolve(dir, specifier).ok().and_then(|resolved| dunce::canonicalize(resolved.path()).ok())
 }
 
 /// What's wanted of a module for a name imported or exported from it.

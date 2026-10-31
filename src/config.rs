@@ -299,7 +299,7 @@ impl Config {
 /// files that extend it, each as its real path and as it was named, to stop at a cycle.
 fn layer(path: &Path, chain: &mut Vec<(PathBuf, PathBuf)>) -> Result<Layer, Error> {
     let read = |source| Error::Read { path: path.to_owned(), source };
-    let real = fs::canonicalize(path).map_err(read)?;
+    let real = dunce::canonicalize(path).map_err(read)?;
     if let Some(at) = chain.iter().position(|(seen, _)| *seen == real) {
         let names = chain[at..].iter().map(|(_, name)| name.clone());
         return Err(Error::Cycle { chain: names.chain([path.to_owned()]).collect() });

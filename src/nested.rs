@@ -3,7 +3,6 @@
 //! oxlint's nested configs work.
 
 use std::{
-    fs,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -241,5 +240,5 @@ fn nearest(folder: &Path, top: &Path) -> Option<PathBuf> {
 
 /// `folder`'s real path, or an empty one if it's gone, which is under no folder.
 fn real(folder: &Path) -> PathBuf {
-    fs::canonicalize(Path::new(".").join(folder)).unwrap_or_default()
+    dunce::canonicalize(Path::new(".").join(folder)).unwrap_or_default()
 }
