@@ -12,8 +12,7 @@ pub fn scan(files: &[(&Path, &Rules)], cache: &Cache) -> Result<Vec<FileReport>,
     let (scanned, errors): (Vec<_>, Vec<_>) = files.par_iter().partition_map(|&(path, rules)| {
         let stamp = cache.stamp(path, rules);
         let cached = stamp.and_then(|stamp| cache.get(path, stamp));
-        let report = cached.map(|items| Ok(FileReport { path: path.to_owned(), items }));
-        match report.unwrap_or_else(|| scan_file(path, rules)) {
+        match cached.map_or_else(|| scan_file(path, rules), Ok) {
             Ok(report) => Either::Left((report, stamp)),
             Err(e) => Either::Right(e.to_string()),
         }

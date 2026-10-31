@@ -791,7 +791,7 @@
     },
     "reportUnusedIgnores": {
       "default": false,
-      "description": "Fail on a docov-ignore-next-line whose items are documented anyway.",
+      "description": "Fail on a docov-ignore comment that changes nothing.",
       "type": "boolean"
     },
     "requireDescription": {

@@ -9,6 +9,7 @@ use std::{
 use docov::{
     Context, FileReport, Item, Kind, Output, Rules, Scope, Settings, Totals, batch,
     cache::Cache,
+    collect,
     collect::Facts,
     config,
     config::Config,
@@ -592,7 +593,8 @@ fn packages_total_their_own_files(tc: TestCase) {
         facts: Facts::default(),
         ignore: None,
     };
-    let mut reports = vec![FileReport { path: PathBuf::from("outside.ts"), items: vec![outside] }];
+    let mut reports =
+        vec![FileReport { path: PathBuf::from("outside.ts"), items: vec![outside], ..Default::default() }];
     let mut expected: Vec<(String, Totals)> = Vec::new();
     for f in 0..tc.draw(gs::integers::<usize>().max_value(8)) {
         let (folder, package) = tc.draw(gs::sampled_from(folders.to_vec()));
@@ -606,7 +608,11 @@ fn packages_total_their_own_files(tc: TestCase) {
             facts: Facts::default(),
             ignore: None,
         };
-        reports.push(FileReport { path: root.join(folder).join(format!("f{f}.ts")), items: vec![item] });
+        reports.push(FileReport {
+            path: root.join(folder).join(format!("f{f}.ts")),
+            items: vec![item],
+            ..Default::default()
+        });
         if let Some(package) = package {
             let path = root.join(package).display().to_string();
             let at = expected.iter().position(|e| e.0 == path).unwrap_or_else(|| {
@@ -860,7 +866,8 @@ fn stdin_scans_as_the_file_it_names(tc: TestCase) {
     let rules = Rules::from(Scope::Exports);
     let scanned = stdin_filename::scan(&[(path, &rules)], &mut source.as_bytes()).unwrap();
     let expected = scan(&source, SourceType::from_path(path).unwrap(), &rules).unwrap();
-    assert_eq!(scanned, vec![FileReport { path: path.to_owned(), items: expected }]);
+    assert_eq!(scanned, vec![collect::scan_source(path, &source, &rules).unwrap()]);
+    assert_eq!(scanned[0].items, expected);
     // With nothing to scan, stdin isn't read.
     assert_eq!(stdin_filename::scan(&[], &mut &b"\xff"[..]), Ok(Vec::new()));
 
@@ -1092,7 +1099,7 @@ fn the_cache_keeps_unchanged_files_items(tc: TestCase) {
         .unwrap();
     assert_eq!(cache.stamp(&path, &rules), None);
     assert_eq!(cache.stamp(&dir.path().join("gone.ts"), &rules), None);
-    let report = FileReport { path: path.clone(), items: Vec::new() };
+    let report = FileReport { path: path.clone(), items: Vec::new(), ..Default::default() };
     cache.write(&[(report, None)]).unwrap();
     assert!(!fs::read_to_string(&cache_path).unwrap().contains("a.ts"));
 

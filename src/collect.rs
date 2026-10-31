@@ -124,12 +124,19 @@ impl Item {
 }
 
 /// One file's items, in source order.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct FileReport {
     /// The file, as the walk or the command line named it.
     pub path: PathBuf,
     /// Its items.
     pub items: Vec<Item>,
+    /// Its `docov-ignore` comments that change nothing, when the rules look for them.
+    #[serde(skip)]
+    pub unused_ignores: Vec<Ignore>,
+    /// The line its code starts on (its first directive or statement), past the comments before
+    /// it, where a `docov-ignore-next-line` above still covers the file's own item. 1-based.
+    #[serde(skip)]
+    pub code_line: usize,
 }
 
 impl FileReport {
@@ -186,8 +193,9 @@ fn read(path: &Path) -> Result<(String, SourceType), Error> {
 pub fn scan_source(path: &Path, source: &str, rules: &Rules) -> Result<FileReport, Error> {
     let source_type = language(path)?;
     let reached = rules.public.as_ref().and_then(|api| api.reach(path));
-    let items = collect(source, source_type, rules, Some(path), false, |c| c.items(rules, source_type, reached));
-    Ok(FileReport { path: path.to_owned(), items: items.map_err(|e| e.at(path, source))? })
+    let report =
+        collect(source, source_type, rules, Some(path), false, |c| c.report(path, rules, source_type, reached));
+    report.map_err(|e| e.at(path, source))
 }
 
 impl SyntaxError {
@@ -207,7 +215,7 @@ fn language(path: &Path) -> Result<SourceType, Error> {
 /// would undercount. Under the public scope it has no path to know what the entry points reach,
 /// so nothing is.
 pub fn scan(source: &str, source_type: SourceType, rules: &Rules) -> Result<Vec<Item>, SyntaxError> {
-    collect(source, source_type, rules, None, false, |c| c.items(rules, source_type, None))
+    collect(source, source_type, rules, None, false, |c| c.report(Path::new(""), rules, source_type, None).items)
 }
 
 /// What a scan of a file found, before the rules pick its items.
@@ -216,6 +224,8 @@ struct Collected<'s> {
     exported: FxHashSet<(&'s str, Via)>,
     ignores: Ignores,
     lines: Lines<'s>,
+    /// Where its code starts.
+    code: u32,
     /// What it passed over, when asked to keep that.
     skips: Vec<Skip>,
     /// The names it declares or imports at its top level, when the doc checks are on.
@@ -230,12 +240,20 @@ struct Skip {
 }
 
 impl Collected<'_> {
-    /// The items that count by `rules` (`reached` holds the local names the public scope's entry
-    /// points reach in the file, if they reach it), each with what the doc checks found in it
-    /// unless it's [ignored](Item::ignored).
-    fn items(self, rules: &Rules, source_type: SourceType, reached: Option<&FxHashSet<String>>) -> Vec<Item> {
-        let Self { found, exported, ignores, lines, names, .. } = self;
-        found
+    /// The report of the file at `path`: the items that count by `rules` (`reached` holds the
+    /// local names the public scope's entry points reach in the file, if they reach it), each with
+    /// what the doc checks found in it unless it's [ignored](Item::ignored), and the
+    /// `docov-ignore` comments that change nothing, when the rules look for them.
+    fn report(
+        self,
+        path: &Path,
+        rules: &Rules,
+        source_type: SourceType,
+        reached: Option<&FxHashSet<String>>,
+    ) -> FileReport {
+        let unused_ignores = if rules.unused_ignores { self.unused_ignores(rules, reached) } else { Vec::new() };
+        let Self { found, exported, ignores, lines, names, code, .. } = self;
+        let items = found
             .iter()
             .filter(|f| rules.counts(f, &exported, reached))
             .map(|f| {
@@ -253,7 +271,16 @@ impl Collected<'_> {
                 }
                 item
             })
-            .collect()
+            .collect();
+        let code_line = lines.position(code as usize).0;
+        FileReport { path: path.to_owned(), items, unused_ignores, code_line }
+    }
+
+    /// The `docov-ignore` comments that change nothing: see [`Ignores::unused`].
+    fn unused_ignores(&self, rules: &Rules, reached: Option<&FxHashSet<String>>) -> Vec<Ignore> {
+        let undocumented =
+            self.found.iter().filter(|f| rules.counts(f, &self.exported, reached) && !rules.documents(f));
+        self.ignores.unused(undocumented.map(|f| (f.kind, self.lines.position(f.at as usize).0)))
     }
 }
 
@@ -285,7 +312,10 @@ fn collect<T>(
         .filter(|(_, doc)| doc.span.source_text(source).chars().any(|ch| !ch.is_whitespace() && ch != '*'))
         .collect();
     let lines = Lines::new(source);
-    let ignores = Ignores::find(&parsed.program, &lines);
+    let program = &parsed.program;
+    let code =
+        program.directives.first().map(|d| d.span.start).or_else(|| program.body.first().map(|s| s.span().start));
+    let code = code.unwrap_or(source.len() as u32);
     let (found, exported, overload, declared) = (Vec::new(), FxHashSet::default(), None, FxHashMap::default());
     // At the top of a CommonJS file, `this` is `module.exports`.
     let this_exports = rules.commonjs_members && !parsed.program.source_type.is_module();
@@ -297,8 +327,10 @@ fn collect<T>(
         collector.skip(0, || "the file".into(), "its first comment says it's @generated");
         let (skips, found, exported, names) =
             (collector.skips.unwrap_or_default(), Vec::new(), FxHashSet::default(), FxHashSet::default());
-        return Ok(finish(Collected { found, exported, ignores, lines, skips, names }));
+        // None of its comments is unused either: a tool writes the file, and would write them back.
+        return Ok(finish(Collected { found, exported, ignores: Ignores::default(), lines, code, skips, names }));
     }
+    let ignores = Ignores::find(program, &lines, code);
     let legal = parsed.program.comments.iter().filter(|c| c.content == CommentContent::JsdocLegal && c.is_leading());
     for comment in legal {
         collector.skip(comment.span.start, || "a block".into(), "a license header, not docs");
@@ -325,7 +357,7 @@ fn collect<T>(
 
     let Collector { found, exported, skips, .. } = collector;
     let names = diagnose::names(&parsed.program, source, rules);
-    Ok(finish(Collected { found, exported, ignores, lines, skips: skips.unwrap_or_default(), names }))
+    Ok(finish(Collected { found, exported, ignores, lines, code, skips: skips.unwrap_or_default(), names }))
 }
 
 struct Found<'s> {

@@ -1,5 +1,5 @@
-//! `--explain`: for each item in a file, whether it counts and is documented, and why, and what
-//! the scan passed over, and why.
+//! `--explain`: for each item in a file, whether it counts and is documented, and why, what the
+//! scan passed over, and why, and the `docov-ignore` comments that change nothing.
 
 use std::path::Path;
 
@@ -8,9 +8,9 @@ use rustc_hash::FxHashSet;
 use super::{Collected, Error, Found, Rules, collect, doc, read};
 use crate::feature::inherit::Inherit;
 
-/// A line for each item in the file at `path` and each declaration or block the scan passed over,
-/// in the file's order, saying what it is and why it counts, doesn't, or was passed over:
-/// `path:line:column  kind name  status`.
+/// A line for each item in the file at `path`, each declaration or block the scan passed over and
+/// each `docov-ignore` comment that changes nothing, in the file's order, saying what it is and why
+/// it counts, doesn't, or was passed over: `path:line:column  kind name  status`.
 pub fn explain(path: &Path, rules: &Rules) -> Result<Vec<String>, Error> {
     let (source, source_type) = read(path)?;
     let reached = rules.public.as_ref().and_then(|api| api.reach(path));
@@ -20,21 +20,27 @@ pub fn explain(path: &Path, rules: &Rules) -> Result<Vec<String>, Error> {
 }
 
 impl Collected<'_> {
-    /// Each item's and each skip's line, column and explanation, in the file's order.
+    /// Each item's, each skip's and each unused `docov-ignore` comment's line, column and
+    /// explanation, in the file's order.
     fn explain(self, rules: &Rules, reached: Option<&FxHashSet<String>>) -> Vec<(usize, usize, String)> {
         let items = self
             .found
             .iter()
             .map(|f| (f.at, format!("{} {}  {}", f.kind.as_str(), f.name, self.status(f, rules, reached))));
         let skips = self.skips.iter().map(|s| (s.at, format!("skipped {}: {}", s.what, s.why)));
-        let mut all: Vec<_> = items.chain(skips).collect();
-        all.sort_by_key(|(at, _)| *at);
-        all.into_iter()
+        let unused = self.unused_ignores(rules, reached).into_iter().map(|ignore| {
+            (ignore.line, ignore.column, format!("unused {}: removing it changes nothing", ignore.directive()))
+        });
+        let mut all: Vec<_> = items
+            .chain(skips)
             .map(|(at, text)| {
                 let (line, column) = self.lines.position(at as usize);
                 (line, column, text)
             })
-            .collect()
+            .chain(unused)
+            .collect();
+        all.sort_by_key(|&(line, column, _)| (line, column));
+        all
     }
 
     /// Whether `found` counts and is documented, and why.
@@ -50,9 +56,8 @@ impl Collected<'_> {
         if !rules.documents(found) {
             let line = self.lines.position(found.at as usize).0;
             if let Some(ignore) = self.ignores.covering(found.kind, line) {
-                let comment = if ignore.file { "docov-ignore-file" } else { "docov-ignore-next-line" };
-                let reason = ignore.reason.map(|reason| format!(" ({reason})")).unwrap_or_default();
-                return format!("ignored by the {comment} at {}:{}{reason}", ignore.line, ignore.column);
+                let reason = ignore.reason.as_ref().map(|reason| format!(" ({reason})")).unwrap_or_default();
+                return format!("ignored by the {} at {}:{}{reason}", ignore.directive(), ignore.line, ignore.column);
             }
             return match &found.doc {
                 Some(doc) => format!("undocumented: the block at {} doesn't describe it", block(doc)),
