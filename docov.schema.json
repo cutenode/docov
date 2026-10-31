@@ -1,68 +1,909 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Config",
-  "description": "docov's settings. Flags on the command line win over them.",
-  "type": "object",
-  "properties": {
-    "$schema": {
-      "description": "This file's JSON Schema, for editors.",
-      "type": [
-        "string",
-        "null"
-      ],
-      "default": null
-    },
-    "exclude": {
-      "description": "Gitignore-style globs of files to leave out, relative to this file's folder, on top of .gitignore.",
-      "type": "array",
-      "default": [],
-      "items": {
-        "type": "string"
-      }
-    },
-    "paths": {
-      "description": "Files and folders to scan, relative to this file's folder. Defaults to the folder docov runs in.",
-      "type": "array",
-      "default": [],
-      "items": {
-        "type": "string"
-      }
-    },
-    "scope": {
-      "description": "Which declarations count.",
-      "$ref": "#/$defs/Scope",
-      "default": "exports"
-    },
-    "threshold": {
-      "description": "The lowest documented percentage that passes.",
-      "type": [
-        "number",
-        "null"
-      ],
-      "format": "double",
-      "default": null,
-      "maximum": 100,
-      "minimum": 0
-    }
-  },
-  "additionalProperties": false,
-  "allowComments": true,
-  "allowTrailingCommas": true,
   "$defs": {
+    "Access": {
+      "description": "An item's access level: its JSDoc's `@public`, `@protected`, `@package`, `@private` or\n`@access` tag, or else `protected` for a TypeScript `protected` member and `public` for the rest.",
+      "oneOf": [
+        {
+          "const": "public",
+          "description": "No access tag, or `@public`.",
+          "type": "string"
+        },
+        {
+          "const": "protected",
+          "description": "`@protected`, or a TypeScript `protected` member.",
+          "type": "string"
+        },
+        {
+          "const": "package",
+          "description": "`@package`.",
+          "type": "string"
+        },
+        {
+          "const": "private",
+          "description": "`@private`.",
+          "type": "string"
+        }
+      ]
+    },
+    "DocMarkdownOptions": {
+      "additionalProperties": false,
+      "description": "doc-markdown's options.",
+      "properties": {
+        "allowlist": {
+          "default": [],
+          "description": "Words that look like code and aren't, on top of the default ones.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "Exports": {
+      "additionalProperties": false,
+      "description": "Which ways of exporting count.",
+      "properties": {
+        "cjs": {
+          "default": true,
+          "description": "CommonJS: `exports.a = …`, `module.exports = …` and TypeScript's `export =`.",
+          "type": "boolean"
+        },
+        "esm": {
+          "default": true,
+          "description": "ES modules: `export`, `export { a }` and `export default`.",
+          "type": "boolean"
+        },
+        "globals": {
+          "default": false,
+          "description": "Globals: `window.a = …` and `globalThis.a = …` at the top level.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "Extends": {
+      "anyOf": [
+        {
+          "description": "One file.",
+          "type": "string"
+        },
+        {
+          "description": "Files, each winning over the ones before it.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      ],
+      "description": "A config file to extend, or a list of them."
+    },
+    "FileDocs": {
+      "description": "Whether each file needs a JSDoc block of its own.",
+      "oneOf": [
+        {
+          "const": "off",
+          "description": "Files aren't items.",
+          "type": "string"
+        },
+        {
+          "const": "require",
+          "description": "Each file is an item of kind `module`, documented when its first JSDoc block has `@file`,\n`@fileoverview`, `@overview`, `@module` or `@packageDocumentation`, with text. That block then\ndocuments nothing else.",
+          "type": "string"
+        }
+      ]
+    },
+    "Ignore": {
+      "additionalProperties": false,
+      "description": "What to leave out.",
+      "properties": {
+        "names": {
+          "description": "Regexes: an item whose name matches one doesn't count. A member matches by its own name or as `Class.member`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "Inherit": {
+      "description": "What documents an item by inheriting its docs.",
+      "oneOf": [
+        {
+          "const": "tag",
+          "description": "An `@inheritdoc` tag.",
+          "type": "string"
+        },
+        {
+          "const": "override",
+          "description": "An `@inheritdoc` tag, or TypeScript's `override` on a class member.",
+          "type": "string"
+        }
+      ]
+    },
+    "Kind": {
+      "description": "What kind of declaration an item is.",
+      "oneOf": [
+        {
+          "const": "function",
+          "description": "`function f() {}`, or a function assigned to an export.",
+          "type": "string"
+        },
+        {
+          "const": "class",
+          "description": "`class C {}`, or a class assigned to an export.",
+          "type": "string"
+        },
+        {
+          "const": "method",
+          "description": "A class method or an interface method signature, or a function member of a tagged object\nliteral, an object type or a CommonJS export (with `members` or `commonjsMembers`).",
+          "type": "string"
+        },
+        {
+          "const": "accessor",
+          "description": "A getter (with its setter, if any), a lone setter, or an `accessor` property.",
+          "type": "string"
+        },
+        {
+          "const": "property",
+          "description": "A class field or an interface property signature, or another member that isn't a function\n(with `members` or `commonjsMembers`).",
+          "type": "string"
+        },
+        {
+          "const": "variable",
+          "description": "`const`, `let` or `var`, or another value CommonJS exports by name.",
+          "type": "string"
+        },
+        {
+          "const": "interface",
+          "description": "`interface I {}`.",
+          "type": "string"
+        },
+        {
+          "const": "type",
+          "description": "`type T = …`.",
+          "type": "string"
+        },
+        {
+          "const": "enum",
+          "description": "`enum E {}`.",
+          "type": "string"
+        },
+        {
+          "const": "namespace",
+          "description": "`namespace N {}`.",
+          "type": "string"
+        },
+        {
+          "const": "default",
+          "description": "`export default` or `module.exports =` of an expression.",
+          "type": "string"
+        },
+        {
+          "const": "module",
+          "description": "A file, with `fileDocs`.",
+          "type": "string"
+        }
+      ]
+    },
+    "Level": {
+      "description": "How much a check's findings matter.",
+      "oneOf": [
+        {
+          "const": "off",
+          "description": "The check doesn't run.",
+          "type": "string"
+        },
+        {
+          "const": "warn",
+          "description": "Its findings are reported, and the scan still passes.",
+          "type": "string"
+        },
+        {
+          "const": "error",
+          "description": "Its findings are reported, and fail the scan.",
+          "type": "string"
+        }
+      ]
+    },
+    "Members": {
+      "description": "Which members count.",
+      "oneOf": [
+        {
+          "const": "classes",
+          "description": "The public members of classes and interfaces.",
+          "type": "string"
+        },
+        {
+          "const": "all",
+          "description": "Those, and enum members, the members of a type alias's object type, and the properties of\nan object literal tagged `@enum`, `@namespace` or `@lends`. A matching `@property` in the\nparent's block documents one of these.",
+          "type": "string"
+        }
+      ]
+    },
+    "NoOptions": {
+      "additionalProperties": false,
+      "description": "The options of a check that has none.",
+      "type": "object"
+    },
+    "Override": {
+      "additionalProperties": false,
+      "description": "Settings for the files some globs match, in place of the top-level ones.",
+      "properties": {
+        "exclude": {
+          "description": "In place of the top-level `exclude`, for these files.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "files": {
+          "description": "Gitignore-style globs of the files it's for, relative to this file's folder.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "scope": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Scope"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "In place of the top-level `scope`, for these files. `--scope` wins over it."
+        },
+        "threshold": {
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "anyOf": [
+                    {
+                      "maximum": 100,
+                      "minimum": 0,
+                      "type": "number"
+                    },
+                    {
+                      "maximum": -1,
+                      "type": "integer"
+                    }
+                  ],
+                  "description": "A documented percentage from 0 to 100, or a negative whole number for at most that many undocumented items."
+                },
+                {
+                  "additionalProperties": {
+                    "anyOf": [
+                      {
+                        "maximum": 100,
+                        "minimum": 0,
+                        "type": "number"
+                      },
+                      {
+                        "maximum": -1,
+                        "type": "integer"
+                      }
+                    ],
+                    "description": "For the files a gitignore-style glob matches, relative to this file's folder, together."
+                  },
+                  "properties": {
+                    "global": {
+                      "anyOf": [
+                        {
+                          "maximum": 100,
+                          "minimum": 0,
+                          "type": "number"
+                        },
+                        {
+                          "maximum": -1,
+                          "type": "integer"
+                        }
+                      ],
+                      "description": "For every file together."
+                    },
+                    "perFile": {
+                      "anyOf": [
+                        {
+                          "maximum": 100,
+                          "minimum": 0,
+                          "type": "number"
+                        },
+                        {
+                          "maximum": -1,
+                          "type": "integer"
+                        }
+                      ],
+                      "description": "For each file on its own."
+                    }
+                  },
+                  "type": "object"
+                }
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "In place of the top-level `threshold`, for these files."
+        }
+      },
+      "required": [
+        "files"
+      ],
+      "type": "object"
+    },
+    "Rules": {
+      "additionalProperties": false,
+      "properties": {
+        "doc-markdown": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Level"
+            },
+            {
+              "items": false,
+              "minItems": 1,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Level"
+                },
+                {
+                  "$ref": "#/$defs/DocMarkdownOptions"
+                }
+              ],
+              "type": "array"
+            }
+          ],
+          "description": "A description's code is in backticks, and its lists have no lazy continuation lines."
+        },
+        "empty-tag-description": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Level"
+            },
+            {
+              "items": false,
+              "minItems": 1,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Level"
+                },
+                {
+                  "$ref": "#/$defs/NoOptions"
+                }
+              ],
+              "type": "array"
+            }
+          ],
+          "description": "Each @param, @returns, @throws and @yields tag has a description."
+        },
+        "informative-docs": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Level"
+            },
+            {
+              "items": false,
+              "minItems": 1,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Level"
+                },
+                {
+                  "$ref": "#/$defs/NoOptions"
+                }
+              ],
+              "type": "array"
+            }
+          ],
+          "description": "A description says more than its item's name."
+        },
+        "param-names": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Level"
+            },
+            {
+              "items": false,
+              "minItems": 1,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Level"
+                },
+                {
+                  "$ref": "#/$defs/NoOptions"
+                }
+              ],
+              "type": "array"
+            }
+          ],
+          "description": "Each @param names a parameter of its function or method."
+        },
+        "require-param": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Level"
+            },
+            {
+              "items": false,
+              "minItems": 1,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Level"
+                },
+                {
+                  "$ref": "#/$defs/NoOptions"
+                }
+              ],
+              "type": "array"
+            }
+          ],
+          "description": "Each parameter of a function or method has a matching @param."
+        },
+        "require-returns": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Level"
+            },
+            {
+              "items": false,
+              "minItems": 1,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Level"
+                },
+                {
+                  "$ref": "#/$defs/NoOptions"
+                }
+              ],
+              "type": "array"
+            }
+          ],
+          "description": "A function or method that returns a value has @returns, unless its return type is void."
+        },
+        "require-template": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Level"
+            },
+            {
+              "items": false,
+              "minItems": 1,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Level"
+                },
+                {
+                  "$ref": "#/$defs/NoOptions"
+                }
+              ],
+              "type": "array"
+            }
+          ],
+          "description": "Each type parameter of a declaration has a @template."
+        },
+        "require-throws": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Level"
+            },
+            {
+              "items": false,
+              "minItems": 1,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Level"
+                },
+                {
+                  "$ref": "#/$defs/NoOptions"
+                }
+              ],
+              "type": "array"
+            }
+          ],
+          "description": "An exported function or method that throws has @throws."
+        },
+        "require-yields": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Level"
+            },
+            {
+              "items": false,
+              "minItems": 1,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Level"
+                },
+                {
+                  "$ref": "#/$defs/NoOptions"
+                }
+              ],
+              "type": "array"
+            }
+          ],
+          "description": "A generator that yields a value has @yields."
+        },
+        "summary-sentence": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Level"
+            },
+            {
+              "items": false,
+              "minItems": 1,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Level"
+                },
+                {
+                  "$ref": "#/$defs/SummarySentenceOptions"
+                }
+              ],
+              "type": "array"
+            }
+          ],
+          "description": "A description's first sentence is short and ends with a period."
+        },
+        "valid-link": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Level"
+            },
+            {
+              "items": false,
+              "minItems": 1,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Level"
+                },
+                {
+                  "$ref": "#/$defs/NoOptions"
+                }
+              ],
+              "type": "array"
+            }
+          ],
+          "description": "Each {@link} is well formed, and a target that's a name is declared or imported in its file."
+        }
+      },
+      "type": "object"
+    },
     "Scope": {
       "description": "Which declarations count toward coverage.",
       "oneOf": [
         {
+          "const": "exports",
           "description": "What a module exports, with the public members of exported classes and interfaces.",
-          "type": "string",
-          "const": "exports"
+          "type": "string"
         },
         {
+          "const": "all",
           "description": "Every module-level declaration, exported or not.",
-          "type": "string",
-          "const": "all"
+          "type": "string"
+        },
+        {
+          "const": "public",
+          "description": "What the package's entry points (package.json's `exports`, `main`, `module`, `types` and\n`typings`) export, following re-exports through the module graph.",
+          "type": "string"
         }
       ]
+    },
+    "SummarySentenceOptions": {
+      "additionalProperties": false,
+      "description": "summary-sentence's options.",
+      "properties": {
+        "maxLength": {
+          "default": 120,
+          "description": "The most characters the summary may have.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "period": {
+          "default": true,
+          "description": "Whether the summary ends with `.`, `!` or `?`.",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
     }
-  }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "allowComments": true,
+  "allowTrailingCommas": true,
+  "description": "docov's settings. Flags on the command line win over them.",
+  "properties": {
+    "$schema": {
+      "default": null,
+      "description": "This file's JSON Schema, for editors.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "access": {
+      "default": null,
+      "description": "Count only items with these access levels, by their access tags. Without it, access tags change nothing.",
+      "items": {
+        "$ref": "#/$defs/Access"
+      },
+      "type": [
+        "array",
+        "null"
+      ]
+    },
+    "baseline": {
+      "default": null,
+      "description": "A file of undocumented items the gates let pass, relative to this file's folder, as `docov --write-baseline` writes it.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "commonjsMembers": {
+      "default": false,
+      "description": "Count `X.prototype.m = …` and `X.m = …` at the top level as members of X, a function or class declared there, and `this.a = …` in a CommonJS file as an export.",
+      "type": "boolean"
+    },
+    "completeThreshold": {
+      "default": null,
+      "description": "The lowest percentage of counted items documented with a @param for each parameter that passes.",
+      "format": "double",
+      "maximum": 100,
+      "minimum": 0,
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "examplesThreshold": {
+      "default": null,
+      "description": "The lowest percentage of counted items with an @example that passes.",
+      "format": "double",
+      "maximum": 100,
+      "minimum": 0,
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "exclude": {
+      "default": [],
+      "description": "Gitignore-style globs of files to leave out, relative to this file's folder, on top of .gitignore.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "excludeTags": {
+      "default": [],
+      "description": "Leave out items whose JSDoc has one of these tags, named without the @ (`internal` for @internal).",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "exports": {
+      "$ref": "#/$defs/Exports",
+      "default": {
+        "cjs": true,
+        "esm": true,
+        "globals": false
+      },
+      "description": "Which ways of exporting count under the `exports` scope. Globals are items under either scope only when on."
+    },
+    "extends": {
+      "$ref": "#/$defs/Extends",
+      "description": "Config files this one builds on, relative to its folder. Its keys win over theirs, and a later one's over an earlier one's."
+    },
+    "fileDocs": {
+      "$ref": "#/$defs/FileDocs",
+      "default": "off",
+      "description": "Whether each file needs a JSDoc block of its own (`@file`, `@fileoverview`, `@overview`, `@module` or `@packageDocumentation`, with text), counted as an item of kind `module`."
+    },
+    "ignore": {
+      "$ref": "#/$defs/Ignore",
+      "description": "What to leave out."
+    },
+    "ignoreDeprecated": {
+      "default": false,
+      "description": "Leave out items whose JSDoc has @deprecated.",
+      "type": "boolean"
+    },
+    "inherit": {
+      "$ref": "#/$defs/Inherit",
+      "default": "tag",
+      "description": "What documents an item by inheriting its docs."
+    },
+    "jsdocConfig": {
+      "default": null,
+      "description": "A jsdoc.json, relative to this file's folder, whose `source` picks the files: its `include` is the paths unless `paths` is set, and its `exclude`, `includePattern` and `excludePattern` leave files out.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "kinds": {
+      "default": null,
+      "description": "Count only these kinds of item. Every kind counts without it.",
+      "items": {
+        "$ref": "#/$defs/Kind"
+      },
+      "type": [
+        "array",
+        "null"
+      ]
+    },
+    "maxUndocumented": {
+      "default": null,
+      "description": "The most undocumented items that pass.",
+      "format": "uint",
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "members": {
+      "$ref": "#/$defs/Members",
+      "default": "classes",
+      "description": "Which members count: those of classes and interfaces, or all of them, with enum members, a type alias's object members and the properties of an object literal tagged @enum, @namespace or @lends."
+    },
+    "nested": {
+      "default": false,
+      "description": "Scan each file with the nearest docov.json, docov.jsonc or .docovrc above it, up to this file's folder, merged over this one. Only the root config's counts.",
+      "type": "boolean"
+    },
+    "overrides": {
+      "default": [],
+      "description": "Settings for the files globs match, in place of the top-level ones. For each file and setting, the last override that matches it and has the setting wins.",
+      "items": {
+        "$ref": "#/$defs/Override"
+      },
+      "type": "array"
+    },
+    "paths": {
+      "default": [],
+      "description": "Files and folders to scan, relative to this file's folder. Defaults to the folder docov runs in.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "releaseTagsThreshold": {
+      "default": null,
+      "description": "The lowest percentage of top-level exports with exactly one of @public, @beta, @alpha and @internal that passes.",
+      "format": "double",
+      "maximum": 100,
+      "minimum": 0,
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "reportUnusedIgnores": {
+      "default": false,
+      "description": "Fail on a docov-ignore comment that changes nothing.",
+      "type": "boolean"
+    },
+    "requireDescription": {
+      "default": false,
+      "description": "Count a JSDoc block only with text before its first tag, or @description, @summary, @classdesc or @inheritdoc.",
+      "type": "boolean"
+    },
+    "rules": {
+      "$ref": "#/$defs/Rules",
+      "description": "Doc checks to turn on, by rule id: \"off\", \"warn\" or \"error\", or that level with the check's options, as [\"warn\", { … }]. Every check is off by default. A rule set here replaces that rule's setting in a config this one extends or nests under, keeping its options if this gives a level alone, and leaves that config's other rules be."
+    },
+    "scope": {
+      "$ref": "#/$defs/Scope",
+      "default": "exports",
+      "description": "Which declarations count."
+    },
+    "skipGenerated": {
+      "default": false,
+      "description": "Leave out files whose first comment has @generated.",
+      "type": "boolean"
+    },
+    "threshold": {
+      "anyOf": [
+        {
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "maximum": 100,
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "maximum": -1,
+                  "type": "integer"
+                }
+              ],
+              "description": "A documented percentage from 0 to 100, or a negative whole number for at most that many undocumented items."
+            },
+            {
+              "additionalProperties": {
+                "anyOf": [
+                  {
+                    "maximum": 100,
+                    "minimum": 0,
+                    "type": "number"
+                  },
+                  {
+                    "maximum": -1,
+                    "type": "integer"
+                  }
+                ],
+                "description": "For the files a gitignore-style glob matches, relative to this file's folder, together."
+              },
+              "properties": {
+                "global": {
+                  "anyOf": [
+                    {
+                      "maximum": 100,
+                      "minimum": 0,
+                      "type": "number"
+                    },
+                    {
+                      "maximum": -1,
+                      "type": "integer"
+                    }
+                  ],
+                  "description": "For every file together."
+                },
+                "perFile": {
+                  "anyOf": [
+                    {
+                      "maximum": 100,
+                      "minimum": 0,
+                      "type": "number"
+                    },
+                    {
+                      "maximum": -1,
+                      "type": "integer"
+                    }
+                  ],
+                  "description": "For each file on its own."
+                }
+              },
+              "type": "object"
+            }
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "The lowest documented percentage that passes, or thresholds by path: `global` for every file together, `perFile` for each file, and gitignore-style globs for the files each matches together."
+    },
+    "typesThreshold": {
+      "default": null,
+      "description": "The lowest percentage of JavaScript functions and methods with a {type} on each @param and @returns that passes.",
+      "format": "double",
+      "maximum": 100,
+      "minimum": 0,
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "virtual": {
+      "default": false,
+      "description": "Count a JavaScript file's named @typedef and @callback blocks as items of kind `type`, documented when they have a description. They then document nothing else.",
+      "type": "boolean"
+    }
+  },
+  "title": "Config",
+  "type": "object"
 }

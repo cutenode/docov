@@ -1,0 +1,52 @@
+{
+  "$defs": {
+    "Known": {
+      "additionalProperties": false,
+      "description": "An undocumented item, by what stays the same when lines move.",
+      "properties": {
+        "kind": {
+          "description": "Its kind, as reports name it: `function`, `class`, `method` and so on.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Its name, as reports give it.",
+          "type": "string"
+        },
+        "path": {
+          "description": "Its file, relative to the config's folder, with `/` between folders on every OS.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "kind",
+        "name"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "A baseline file: undocumented items the gates let pass.",
+  "properties": {
+    "$schema": {
+      "description": "This file's JSON Schema, for editors.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "items": {
+      "description": "The items. Each entry lets one item with its path, kind and name through.",
+      "items": {
+        "$ref": "#/$defs/Known"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "items"
+  ],
+  "title": "Baseline",
+  "type": "object"
+}

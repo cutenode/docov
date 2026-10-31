@@ -1,0 +1,251 @@
+//! Features: settings from a flag, a docov.json key, or both. Each lives in its own file in
+//! src/feature/, which build.rs registers, so adding one adds a file and no line in a shared list.
+
+use std::{any::Any, fmt::Debug, sync::LazyLock};
+
+use clap::{ArgMatches, Args, Command, FromArgMatches};
+use schemars::{JsonSchema, Schema};
+use serde::{Deserialize, de::DeserializeOwned};
+use serde_json::{Map, Value};
+
+use crate::{FileReport, Rules, metric::Metric, root::Root};
+
+include!(concat!(env!("OUT_DIR"), "/features.rs"));
+
+/// A feature's name, its file's, and what makes its entry.
+type Maker = (&'static str, fn() -> Entry);
+
+/// Every feature, registered.
+static FEATURES: LazyLock<Vec<Entry>> =
+    LazyLock::new(|| ENTRIES.iter().map(|&(name, entry)| Entry { name, ..entry() }).collect());
+
+/// A setting, or a group of them, read from flags and docov.json. Register one by giving its file
+/// a `pub(crate) fn entry() -> Entry { Entry::of::<YourFeature>() }`.
+pub trait Feature: Sized + Send + Sync + 'static {
+    /// Its flags. Give the struct `#[group(skip)]`: clap names a group after each struct, and
+    /// every feature's is called `Flags`.
+    type Flags: Args + FromArgMatches;
+    /// Its keys at the top level of docov.json. Each feature reads the whole file and keeps its own.
+    type Keys: DeserializeOwned + JsonSchema + Default + PartialEq + Debug + Send + Sync + 'static;
+
+    /// The setting, from its flags and keys. A flag wins over its key.
+    fn new(flags: Self::Flags, keys: Self::Keys) -> Self;
+
+    /// Sets its part of what counts and when an item is documented.
+    fn rules(&self, _rules: &mut Rules) {}
+
+    /// The metric past coverage it adds to the reports, if it adds one.
+    fn metric(&self) -> Option<Metric> {
+        None
+    }
+
+    /// Why the scan fails, a line for each way this setting fails it (exit 1).
+    fn gate(&self, _run: &Run) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// Edits the scanned files in place of a report, when this setting asks for that, and says
+    /// what it did, or why it couldn't (exit 2).
+    fn edit(&self, _reports: &[FileReport]) -> Option<Result<String, String>> {
+        None
+    }
+
+    /// The setting as JSON, for `--print-config`, if it has one worth printing.
+    fn describe(&self) -> Option<Value> {
+        None
+    }
+
+    /// Turns its keys in `top`, a config file's, into what they are over `base`, the keys of a file
+    /// it extends or nests under, before `top`'s replace `base`'s. Left as is, a key `top` sets
+    /// replaces `base`'s whole.
+    fn merge(_base: &Map<String, Value>, _top: &mut Map<String, Value>) {}
+}
+
+/// What a scan found, for the gates.
+pub struct Run<'a> {
+    /// Each file's items.
+    pub reports: &'a [FileReport],
+    /// The config's folder, which docov.json's globs are relative to, and the folders of the
+    /// files it extends, which their own keys' are.
+    pub root: &'a Root,
+    /// Every feature's setting, for a gate that depends on another feature's.
+    pub settings: &'a Settings,
+}
+
+/// The keys of a feature that only has flags.
+#[derive(Debug, Default, PartialEq, Deserialize, JsonSchema)]
+pub struct NoKeys {}
+
+/// A feature, registered.
+pub struct Entry {
+    /// Its file's name.
+    name: &'static str,
+    args: fn(Command) -> Command,
+    schema: fn() -> Schema,
+    keys: fn(&str) -> serde_json::Result<Box<dyn AnyKeys>>,
+    load: fn(&ArgMatches, Box<dyn AnyKeys>) -> Box<dyn Loaded>,
+    merge: fn(&Map<String, Value>, &mut Map<String, Value>),
+}
+
+impl Entry {
+    /// The entry for `F`.
+    pub fn of<F: Feature>() -> Self {
+        let (args, merge) = (F::Flags::augment_args, F::merge);
+        Self { name: "", args, schema: schema::<F>, keys: keys::<F>, load: load::<F>, merge }
+    }
+}
+
+fn schema<F: Feature>() -> Schema {
+    schemars::schema_for!(F::Keys)
+}
+
+fn keys<F: Feature>(text: &str) -> serde_json::Result<Box<dyn AnyKeys>> {
+    Ok(Box::new(serde_json::from_str::<F::Keys>(text)?))
+}
+
+fn load<F: Feature>(matches: &ArgMatches, keys: Box<dyn AnyKeys>) -> Box<dyn Loaded> {
+    let flags = F::Flags::from_arg_matches(matches).expect("the flags were added by `args`");
+    let keys = keys.into_any().downcast::<F::Keys>().expect("each entry reads its own keys");
+    Box::new(F::new(flags, *keys))
+}
+
+/// Adds every feature's flags to `command`. clap would make each flags struct's doc the command's
+/// own, so the command keeps the about text it had.
+pub fn args(command: Command) -> Command {
+    let (about, long_about) = (command.get_about().cloned(), command.get_long_about().cloned());
+    FEATURES
+        .iter()
+        .fold(command, |command, entry| (entry.args)(command))
+        .about(about.unwrap_or_default())
+        .long_about(long_about.unwrap_or_default())
+}
+
+/// Every feature's keys' schemas, in registration order.
+pub(crate) fn schemas() -> impl Iterator<Item = Schema> {
+    FEATURES.iter().map(|entry| (entry.schema)())
+}
+
+/// Turns `top`, a config file's keys, into what they are over `base`, by each feature's
+/// [`merge`](Feature::merge).
+pub(crate) fn merge(base: &Map<String, Value>, top: &mut Map<String, Value>) {
+    FEATURES.iter().for_each(|entry| (entry.merge)(base, top));
+}
+
+/// A feature's keys, of a type only its entry knows.
+trait AnyKeys: Debug + Send + Sync {
+    fn eq(&self, other: &dyn AnyKeys) -> bool;
+    fn as_any(&self) -> &dyn Any;
+    fn into_any(self: Box<Self>) -> Box<dyn Any>;
+}
+
+impl<T: PartialEq + Debug + Send + Sync + 'static> AnyKeys for T {
+    fn eq(&self, other: &dyn AnyKeys) -> bool {
+        other.as_any().downcast_ref::<T>() == Some(self)
+    }
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn into_any(self: Box<Self>) -> Box<dyn Any> {
+        self
+    }
+}
+
+/// Every feature's keys from docov.json, one per entry.
+#[derive(Debug)]
+pub struct Keys(Vec<Box<dyn AnyKeys>>);
+
+impl Keys {
+    /// Each feature's keys in `text`, which has had its comments blanked.
+    pub(crate) fn parse(text: &str) -> serde_json::Result<Self> {
+        FEATURES.iter().map(|entry| (entry.keys)(text)).collect::<Result<_, _>>().map(Self)
+    }
+}
+
+impl Default for Keys {
+    fn default() -> Self {
+        Self::parse("{}").expect("every feature's keys default")
+    }
+}
+
+impl PartialEq for Keys {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.iter().zip(&other.0).all(|(a, b)| AnyKeys::eq(a.as_ref(), b.as_ref()))
+    }
+}
+
+/// A feature, made.
+trait Loaded: Send + Sync {
+    fn as_any(&self) -> &dyn Any;
+    fn rules(&self, rules: &mut Rules);
+    fn metric(&self) -> Option<Metric>;
+    fn gate(&self, run: &Run) -> Vec<String>;
+    fn edit(&self, reports: &[FileReport]) -> Option<Result<String, String>>;
+    fn describe(&self) -> Option<Value>;
+}
+
+impl<F: Feature> Loaded for F {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn rules(&self, rules: &mut Rules) {
+        Feature::rules(self, rules);
+    }
+    fn metric(&self) -> Option<Metric> {
+        Feature::metric(self)
+    }
+    fn gate(&self, run: &Run) -> Vec<String> {
+        Feature::gate(self, run)
+    }
+    fn edit(&self, reports: &[FileReport]) -> Option<Result<String, String>> {
+        Feature::edit(self, reports)
+    }
+    fn describe(&self) -> Option<Value> {
+        Feature::describe(self)
+    }
+}
+
+/// Every feature's setting, from the flags and docov.json.
+pub struct Settings(Vec<Box<dyn Loaded>>);
+
+impl Settings {
+    /// Makes each feature from its flags in `matches` and its keys.
+    pub fn new(matches: &ArgMatches, keys: Keys) -> Self {
+        Self(FEATURES.iter().zip(keys.0).map(|(entry, keys)| (entry.load)(matches, keys)).collect())
+    }
+
+    /// Feature `F`'s setting.
+    pub fn get<F: Feature>(&self) -> &F {
+        self.0.iter().find_map(|f| f.as_any().downcast_ref()).expect("every feature is registered")
+    }
+
+    /// The scan's rules, with each feature's part set.
+    pub fn rules(&self) -> Rules {
+        let mut rules = Rules::default();
+        for feature in &self.0 {
+            feature.rules(&mut rules);
+        }
+        rules
+    }
+
+    /// The metrics past coverage that features add to the reports, in registration order.
+    pub fn metrics(&self) -> Vec<Metric> {
+        self.0.iter().filter_map(|f| f.metric()).collect()
+    }
+
+    /// What the first feature that edits the files in place of a report did, if one does.
+    pub fn edit(&self, reports: &[FileReport]) -> Option<Result<String, String>> {
+        self.0.iter().find_map(|f| f.edit(reports))
+    }
+
+    /// Why the scan of `reports` fails, from each feature that fails it. `root` is the config's
+    /// folder, with those of the files it extends.
+    pub fn gates(&self, reports: &[FileReport], root: &Root) -> Vec<String> {
+        let run = Run { reports, root, settings: self };
+        self.0.iter().flat_map(|f| f.gate(&run)).collect()
+    }
+
+    /// Each feature's setting as JSON, by its name, leaving out those without one.
+    pub fn describe(&self) -> Map<String, Value> {
+        FEATURES.iter().zip(&self.0).filter_map(|(entry, f)| Some((entry.name.to_owned(), f.describe()?))).collect()
+    }
+}

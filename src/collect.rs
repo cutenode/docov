@@ -2,31 +2,52 @@
 
 use std::{fs, io, path::Path, path::PathBuf};
 
+mod diagnose;
+pub(crate) mod doc;
+mod explain;
+mod facts;
+mod ignore;
+mod rules;
+mod shape;
+mod stub;
+
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
-    AssignmentExpression, Class, ClassElement, CommentContent, Declaration, ExportDefaultDeclarationKind, Expression,
-    Function, MemberExpression, MethodDefinitionKind, ObjectPropertyKind, PropertyKey, Statement, TSAccessibility,
-    TSInterfaceDeclaration, TSSignature,
+    AssignmentExpression, Class, ClassElement, Comment, CommentContent, Declaration, ExportDefaultDeclarationKind,
+    Expression, FormalParameters, Function, MemberExpression, MethodDefinitionKind, ObjectExpression,
+    ObjectPropertyKind, PropertyKey, Statement, TSAccessibility, TSInterfaceDeclaration, TSSignature, TSType,
 };
+use oxc_jsdoc::JSDoc;
 use oxc_parser::Parser;
-use oxc_span::{GetSpan, SourceType};
-use rustc_hash::FxHashSet;
-use serde::Serialize;
+use oxc_span::{GetSpan, SourceType, Span};
+use rustc_hash::{FxHashMap, FxHashSet};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
-use crate::{Scope, Totals};
+use self::ignore::Ignores;
+pub use self::{explain::explain, facts::Facts, ignore::Ignore, rules::Rules, shape::Shape, stub::Stub};
+use crate::{
+    Totals,
+    feature::{file_docs::FileDocs, members::Members},
+};
 
 /// What kind of declaration an item is.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema, clap::ValueEnum,
+)]
+#[serde(rename_all = "lowercase")]
 pub enum Kind {
     /// `function f() {}`, or a function assigned to an export.
     Function,
     /// `class C {}`, or a class assigned to an export.
     Class,
-    /// A class method or an interface method signature.
+    /// A class method or an interface method signature, or a function member of a tagged object
+    /// literal, an object type or a CommonJS export (with `members` or `commonjsMembers`).
     Method,
     /// A getter (with its setter, if any), a lone setter, or an `accessor` property.
     Accessor,
-    /// A class field or an interface property signature.
+    /// A class field or an interface property signature, or another member that isn't a function
+    /// (with `members` or `commonjsMembers`).
     Property,
     /// `const`, `let` or `var`, or another value CommonJS exports by name.
     Variable,
@@ -40,6 +61,8 @@ pub enum Kind {
     Namespace,
     /// `export default` or `module.exports =` of an expression.
     Default,
+    /// A file, with `fileDocs`.
+    Module,
 }
 
 impl Kind {
@@ -57,20 +80,22 @@ impl Kind {
             Self::Enum => "enum",
             Self::Namespace => "namespace",
             Self::Default => "default",
+            Self::Module => "module",
         }
     }
-}
 
-impl Serialize for Kind {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(self.as_str())
+    /// Whether it's a member of a class, interface, enum or object.
+    pub fn is_member(self) -> bool {
+        matches!(self, Self::Method | Self::Accessor | Self::Property)
     }
 }
 
 /// A declaration that should have JSDoc.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Item {
-    /// The declared name, `Class.member` for members, `default` for an unnamed default export.
+    /// The declared name, `Class.member` for members, `default` for an unnamed default export. A
+    /// file's own item is named by its `@module`, or else its path (empty from [`scan`], which has
+    /// no path).
     pub name: String,
     /// What kind of declaration it is.
     pub kind: Kind,
@@ -79,23 +104,50 @@ pub struct Item {
     pub line: usize,
     /// 1-based, in characters.
     pub column: usize,
-    /// Whether a JSDoc block with something in it comes right before it.
+    /// Whether a JSDoc block with something in it comes right before it (and, by the rules, says
+    /// enough).
     pub documented: bool,
+    /// What its JSDoc says past that.
+    #[serde(flatten)]
+    pub facts: Facts,
+    /// The `docov-ignore` comment that covers it, if one does. The JSON report shapes it.
+    #[serde(skip)]
+    pub ignore: Option<Ignore>,
+}
+
+impl Item {
+    /// Whether it's out of the total: undocumented, and covered by a `docov-ignore` comment. A
+    /// documented item counts as documented, ignore or not.
+    pub fn ignored(&self) -> bool {
+        !self.documented && self.ignore.is_some()
+    }
 }
 
 /// One file's items, in source order.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct FileReport {
     /// The file, as the walk or the command line named it.
     pub path: PathBuf,
     /// Its items.
     pub items: Vec<Item>,
+    /// Its `docov-ignore` comments that change nothing, when the rules look for them.
+    #[serde(skip)]
+    pub unused_ignores: Vec<Ignore>,
+    /// The line its code starts on (its first directive or statement), past the comments before
+    /// it, where a `docov-ignore-next-line` above still covers the file's own item. 1-based.
+    #[serde(skip)]
+    pub code_line: usize,
 }
 
 impl FileReport {
-    /// How many of its items are documented.
+    /// Its items that aren't [ignored](Item::ignored).
+    pub fn counted(&self) -> impl Iterator<Item = &Item> {
+        self.items.iter().filter(|i| !i.ignored())
+    }
+
+    /// How many of its counted items are documented.
     pub fn totals(&self) -> Totals {
-        Totals { documented: self.items.iter().filter(|i| i.documented).count(), total: self.items.len() }
+        Totals { documented: self.items.iter().filter(|i| i.documented).count(), total: self.counted().count() }
     }
 }
 
@@ -124,20 +176,124 @@ pub struct SyntaxError {
 }
 
 /// Reads and scans one file.
-pub fn scan_file(path: &Path, scope: Scope) -> Result<FileReport, Error> {
-    let source_type = SourceType::from_path(path).map_err(|_| Error::Language { path: path.to_owned() })?;
+pub fn scan_file(path: &Path, rules: &Rules) -> Result<FileReport, Error> {
+    let (source, _) = read(path)?;
+    scan_source(path, &source, rules)
+}
+
+/// The text of the file at `path`, and what language it's in. The language comes first, so a file
+/// that isn't JavaScript fails as one even if it isn't UTF-8.
+fn read(path: &Path) -> Result<(String, SourceType), Error> {
+    let source_type = language(path)?;
     let source = fs::read_to_string(path).map_err(|source| Error::Read { path: path.to_owned(), source })?;
-    match scan(&source, source_type, scope) {
-        Ok(items) => Ok(FileReport { path: path.to_owned(), items }),
-        Err(e) => {
-            let (line, column) = Lines::new(&source).position(e.offset);
-            Err(Error::Syntax { path: path.to_owned(), line, column, message: e.message })
-        }
+    Ok((source, source_type))
+}
+
+/// Scans `source` as the file at `path`, whose extension picks the language.
+pub fn scan_source(path: &Path, source: &str, rules: &Rules) -> Result<FileReport, Error> {
+    let source_type = language(path)?;
+    let reached = rules.public.as_ref().and_then(|api| api.reach(path));
+    let report =
+        collect(source, source_type, rules, Some(path), false, |c| c.report(path, rules, source_type, reached));
+    report.map_err(|e| e.at(path, source))
+}
+
+impl SyntaxError {
+    /// The error, in the file at `path` whose text is `source`.
+    fn at(self, path: &Path, source: &str) -> Error {
+        let (line, column) = Lines::new(source).position(self.offset);
+        Error::Syntax { path: path.to_owned(), line, column, message: self.message }
     }
 }
 
-/// The items in `source`. Any syntax error fails the scan: a partial AST would undercount.
-pub fn scan(source: &str, source_type: SourceType, scope: Scope) -> Result<Vec<Item>, SyntaxError> {
+/// The language of the file at `path`, by its extension.
+fn language(path: &Path) -> Result<SourceType, Error> {
+    SourceType::from_path(path).map_err(|_| Error::Language { path: path.to_owned() })
+}
+
+/// The items in `source` that count by `rules`. Any syntax error fails the scan: a partial AST
+/// would undercount. Under the public scope it has no path to know what the entry points reach,
+/// so nothing is.
+pub fn scan(source: &str, source_type: SourceType, rules: &Rules) -> Result<Vec<Item>, SyntaxError> {
+    collect(source, source_type, rules, None, false, |c| c.report(Path::new(""), rules, source_type, None).items)
+}
+
+/// What a scan of a file found, before the rules pick its items.
+struct Collected<'s> {
+    found: Vec<Found<'s>>,
+    exported: FxHashSet<(&'s str, Via)>,
+    ignores: Ignores,
+    lines: Lines<'s>,
+    /// Where its code starts.
+    code: u32,
+    /// What it passed over, when asked to keep that.
+    skips: Vec<Skip>,
+    /// The names it declares or imports at its top level, when the doc checks are on.
+    names: FxHashSet<&'s str>,
+}
+
+/// A declaration, or a block, the scan passed over, and why, for `--explain`.
+struct Skip {
+    at: u32,
+    what: String,
+    why: &'static str,
+}
+
+impl Collected<'_> {
+    /// The report of the file at `path`: the items that count by `rules` (`reached` holds the
+    /// local names the public scope's entry points reach in the file, if they reach it), each with
+    /// what the doc checks found in it unless it's [ignored](Item::ignored), and the
+    /// `docov-ignore` comments that change nothing, when the rules look for them.
+    fn report(
+        self,
+        path: &Path,
+        rules: &Rules,
+        source_type: SourceType,
+        reached: Option<&FxHashSet<String>>,
+    ) -> FileReport {
+        let unused_ignores = if rules.unused_ignores { self.unused_ignores(rules, reached) } else { Vec::new() };
+        let Self { found, exported, ignores, lines, names, code, .. } = self;
+        let items = found
+            .iter()
+            .filter(|f| rules.counts(f, &exported, reached))
+            .map(|f| {
+                let (line, column) = lines.position(f.at as usize);
+                let is_exported = rules.exported(f, &exported);
+                let facts = Facts::of(f, is_exported, source_type.is_javascript());
+                let (documented, ignore) = (rules.documents(f), ignores.covering(f.kind, line));
+                let mut item = Item { name: f.name.clone(), kind: f.kind, line, column, documented, facts, ignore };
+                if let Some(checks) = rules.checks.as_ref().filter(|_| !item.ignored()) {
+                    item.facts.diagnostics = diagnose::diagnose(checks, f, is_exported, &lines, &names);
+                }
+                // `--fix` leaves a block that's there already alone, a stub included.
+                if !item.documented && !item.ignored() && !f.block {
+                    item.facts.stub = Stub::of(f, &lines);
+                }
+                item
+            })
+            .collect();
+        let code_line = lines.position(code as usize).0;
+        FileReport { path: path.to_owned(), items, unused_ignores, code_line }
+    }
+
+    /// The `docov-ignore` comments that change nothing: see [`Ignores::unused`].
+    fn unused_ignores(&self, rules: &Rules, reached: Option<&FxHashSet<String>>) -> Vec<Ignore> {
+        let undocumented =
+            self.found.iter().filter(|f| rules.counts(f, &self.exported, reached) && !rules.documents(f));
+        self.ignores.unused(undocumented.map(|f| (f.kind, self.lines.position(f.at as usize).0)))
+    }
+}
+
+/// Parses and collects `source`, from the file at `path` if it's from one, keeping what it passes
+/// over when `skips` is on, and hands what it found to `finish`.
+fn collect<T>(
+    source: &str,
+    source_type: SourceType,
+    rules: &Rules,
+    path: Option<&Path>,
+    skips: bool,
+    finish: impl FnOnce(Collected<'_>) -> T,
+) -> Result<T, SyntaxError> {
     let allocator = Allocator::default();
     let parsed = Parser::new(&allocator, source, source_type).parse();
     if let Some(error) = parsed.diagnostics.errors().next() {
@@ -145,53 +301,153 @@ pub fn scan(source: &str, source_type: SourceType, scope: Scope) -> Result<Vec<I
         return Err(SyntaxError { offset, message: error.message.to_string() });
     }
 
-    // The positions that a JSDoc block with something in it is attached to: the first token after
-    // it. Legal comments (`/** @license */`) are file headers, not docs.
-    let docs = parsed
-        .program
-        .comments
-        .iter()
-        .filter(|c| c.content == CommentContent::Jsdoc && c.is_leading())
-        .filter(|c| c.content_span().source_text(source).chars().any(|ch| !ch.is_whitespace() && ch != '*'))
-        .map(|c| c.attached_to)
+    // The JSDoc block with something in it attached to each position: the first token after it.
+    // With several, the nearest is the item's, as in jsdoc. Legal comments (`/** @license */`) are
+    // file headers, not docs.
+    let leading = parsed.program.comments.iter().filter(|c| c.content == CommentContent::Jsdoc && c.is_leading());
+    // Every position with a block, empty or not, where `--fix` writes no stub.
+    let blocks = leading.clone().map(|c| c.attached_to).collect();
+    let docs = leading
+        .map(|c| (c.attached_to, jsdoc(c, source)))
+        .filter(|(_, doc)| doc.span.source_text(source).chars().any(|ch| !ch.is_whitespace() && ch != '*'))
         .collect();
-    let mut collector = Collector { source, docs, found: Vec::new(), exported: FxHashSet::default(), overload: None };
+    let lines = Lines::new(source);
+    let program = &parsed.program;
+    let code =
+        program.directives.first().map(|d| d.span.start).or_else(|| program.body.first().map(|s| s.span().start));
+    let code = code.unwrap_or(source.len() as u32);
+    let (found, exported, overload, declared) = (Vec::new(), FxHashSet::default(), None, FxHashMap::default());
+    // At the top of a CommonJS file, `this` is `module.exports`.
+    let this_exports = rules.commonjs_members && !parsed.program.source_type.is_module();
+    let skips = skips.then(Vec::new);
+    let mut collector =
+        Collector { source, rules, docs, blocks, found, exported, overload, declared, this_exports, skips };
+    let generated = parsed.program.comments.first().is_some_and(|c| c.span.source_text(source).contains("@generated"));
+    if rules.skip_generated && generated {
+        collector.skip(0, || "the file".into(), "its first comment says it's @generated");
+        let (skips, found, exported, names) =
+            (collector.skips.unwrap_or_default(), Vec::new(), FxHashSet::default(), FxHashSet::default());
+        // None of its comments is unused either: a tool writes the file, and would write them back.
+        return Ok(finish(Collected { found, exported, ignores: Ignores::default(), lines, code, skips, names }));
+    }
+    let ignores = Ignores::find(program, &lines, code);
+    let legal = parsed.program.comments.iter().filter(|c| c.content == CommentContent::JsdocLegal && c.is_leading());
+    for comment in legal {
+        collector.skip(comment.span.start, || "a block".into(), "a license header, not docs");
+    }
+    let stubs: Vec<u32> =
+        collector.docs.values().filter(|doc| doc::placeholder(doc)).map(|doc| doc.span.start - 3).collect();
+    for at in stubs {
+        collector.skip(at, || "a block".into(), "a stub, whose description is still TODO");
+    }
+    if rules.file_docs == FileDocs::Require {
+        collector.file(&parsed.program.comments, path);
+    }
+    let types = rules.virtual_types && source_type.is_javascript();
+    if types {
+        collector.types(&parsed.program.comments);
+    }
     for statement in &parsed.program.body {
         collector.statement(statement);
     }
+    // The types are where their blocks are, among the declarations.
+    if types {
+        collector.found.sort_by_key(|f| f.at);
+    }
 
-    let lines = Lines::new(source);
-    let Collector { found, exported, .. } = collector;
-    Ok(found
-        .into_iter()
-        .filter(|f| scope == Scope::All || f.exported || f.binding.is_some_and(|b| exported.contains(b)))
-        .map(|f| {
-            let (line, column) = lines.position(f.at as usize);
-            Item { name: f.name, kind: f.kind, line, column, documented: f.documented }
-        })
-        .collect())
+    let Collector { found, exported, skips, .. } = collector;
+    let names = diagnose::names(&parsed.program, source, rules);
+    Ok(finish(Collected { found, exported, ignores, lines, code, skips: skips.unwrap_or_default(), names }))
 }
 
-struct Found<'a> {
+struct Found<'s> {
     name: String,
     kind: Kind,
     at: u32,
-    documented: bool,
+    /// Its JSDoc block, if it has one with something in it.
+    doc: Option<JSDoc<'s>>,
     /// The module-level name that exports it (a member's class), when `export { name }` can.
-    binding: Option<&'a str>,
-    exported: bool,
+    binding: Option<&'s str>,
+    /// How it's exported, where it's declared.
+    via: Option<Via>,
+    /// Whether it's a TypeScript `protected` member.
+    protected: bool,
+    /// Whether it's a TypeScript `override` member.
+    overrides: bool,
+    /// For a function or method, each parameter's name, or `None` for a destructured one.
+    params: Option<Vec<Option<&'s str>>>,
+    /// What its code says, for the doc checks.
+    shape: Shape<'s>,
+    /// Whether it's documented, for an item whose own rule says: a file's, or a comment's type.
+    documented: Option<bool>,
+    /// Whether a JSDoc block sits right before it, even an empty one or a stub.
+    block: bool,
+    /// Whether it counts under any scope, as a file's own item and a comment's type do.
+    standalone: bool,
+    /// Whether its parent's block has a matching `@property`, which documents it too.
+    listed: bool,
+}
+
+impl<'s> Found<'s> {
+    fn new(name: String, kind: Kind, at: u32, doc: Option<JSDoc<'s>>) -> Self {
+        let (binding, via, protected, overrides, params, documented) = (None, None, false, false, None, None);
+        let (shape, block, standalone, listed) = (Shape::default(), false, false, false);
+        Self {
+            name,
+            kind,
+            at,
+            doc,
+            binding,
+            via,
+            protected,
+            overrides,
+            params,
+            shape,
+            documented,
+            block,
+            standalone,
+            listed,
+        }
+    }
+
+    /// Sets its parameters and shape from a value assigned to it, when that's a function.
+    fn value(&mut self, value: &Expression<'s>) {
+        self.params = value_params(value);
+        self.shape = Shape::value(value);
+    }
 }
 
 struct Collector<'s> {
     source: &'s str,
-    docs: FxHashSet<u32>,
+    rules: &'s Rules,
+    docs: FxHashMap<u32, JSDoc<'s>>,
+    /// Every position a JSDoc block attaches to, empty or not.
+    blocks: FxHashSet<u32>,
     found: Vec<Found<'s>>,
-    /// Names exported apart from their declarations: `export { a }`, `export default a`,
-    /// `export = a`, `exports.a = a`.
-    exported: FxHashSet<&'s str>,
+    /// Names exported apart from their declarations, and how: `export { a }`, `export default a`,
+    /// `export = a`, `exports.a = a`, `window.a = a`.
+    exported: FxHashSet<(&'s str, Via)>,
     /// The name of the function the last statement declared without a body. An overload's
     /// implementation follows its signatures, and only the signatures are documented.
     overload: Option<&'s str>,
+    /// The functions and classes declared by name so far, and how each is exported where it's
+    /// declared, which `X.m = …` adds members to.
+    declared: FxHashMap<&'s str, Option<Via>>,
+    /// Whether `this.a = …` exports `a`.
+    this_exports: bool,
+    /// What it passed over, when asked to keep that.
+    skips: Option<Vec<Skip>>,
+}
+
+/// How a module exports something.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum Via {
+    /// `export`.
+    Esm,
+    /// `exports.a =`, `module.exports =` or TypeScript's `export =`.
+    Cjs,
+    /// `window.a =` or `globalThis.a =`.
+    Global,
 }
 
 /// The owner of a declaration being collected: where its docs go and how it's exported.
@@ -200,40 +456,105 @@ struct Site<'s> {
     /// The start of the statement, where JSDoc attaches when the declaration is exported.
     at: u32,
     binding: Option<&'s str>,
-    exported: bool,
+    via: Option<Via>,
 }
 
 impl<'s> Collector<'s> {
-    fn push(&mut self, site: Site<'s>, start: u32, name: String, kind: Kind) {
-        let documented = self.docs.contains(&site.at) || self.docs.contains(&start);
+    fn push(&mut self, site: Site<'s>, start: u32, name: String, kind: Kind) -> &mut Found<'s> {
+        // A stub nobody filled in is no doc.
+        let doc = self.docs.get(&site.at).or_else(|| self.docs.get(&start)).filter(|doc| !doc::placeholder(doc));
+        let block = self.blocks.contains(&site.at) || self.blocks.contains(&start);
         // A decorator before `export` starts the declaration, and is where its doc goes.
         let at = site.at.min(start);
-        self.found.push(Found { name, kind, at, documented, binding: site.binding, exported: site.exported });
+        let found = Found::new(name, kind, at, doc.cloned());
+        self.found.push(Found { binding: site.binding, via: site.via, block, ..found });
+        self.found.last_mut().expect("just pushed")
+    }
+
+    /// Pushes `owner`'s member `key`, at `start`, which a matching `@property` in `parent`
+    /// documents too.
+    fn member(
+        &mut self,
+        site: Site<'s>,
+        start: u32,
+        (owner, key): (&str, &str),
+        kind: Kind,
+        parent: Option<&JSDoc>,
+    ) -> &mut Found<'s> {
+        let listed = parent.is_some_and(|parent| doc::lists(parent, key));
+        let found = self.push(Site { at: start, ..site }, start, format!("{owner}.{key}"), kind);
+        found.listed = listed;
+        found
+    }
+
+    /// Notes that it passed over `what` at `at`, and why, when it keeps what it passes over.
+    fn skip(&mut self, at: u32, what: impl FnOnce() -> String, why: &'static str) {
+        if let Some(skips) = &mut self.skips {
+            skips.push(Skip { at, what: what(), why });
+        }
+    }
+
+    /// Stops `comment`'s block from documenting the declaration after it.
+    fn detach(&mut self, comment: &Comment, block: &JSDoc) {
+        if self.docs.get(&comment.attached_to).is_some_and(|doc| doc.span == block.span) {
+            self.docs.remove(&comment.attached_to);
+        }
+    }
+
+    /// A type for each block that declares one (`@typedef` or `@callback`, with a name), at the
+    /// block, documented when it has a description. The block documents nothing else.
+    fn types(&mut self, comments: &[Comment]) {
+        for comment in comments.iter().filter(|c| c.content == CommentContent::Jsdoc) {
+            let block = jsdoc(comment, self.source);
+            let Some((name, documented)) = doc::declared_type(&block) else { continue };
+            self.detach(comment, &block);
+            let found = Found::new(name, Kind::Type, comment.span.start, Some(block));
+            self.found.push(Found { documented: Some(documented), block: true, standalone: true, ..found });
+        }
+    }
+
+    /// The file's own item, at its start, named by its `@module` or else `path`. Its first JSDoc
+    /// block documents it when the block is about the file and says something, and is its doc, and
+    /// no other item's, when it's about the file.
+    fn file(&mut self, comments: &[Comment], path: Option<&Path>) {
+        let first = comments.iter().find(|c| matches!(c.content, CommentContent::Jsdoc | CommentContent::JsdocLegal));
+        let block = first.map(|c| jsdoc(c, self.source)).filter(|block| doc::file(block).is_some());
+        if let (Some(comment), Some(block)) = (first, &block) {
+            self.detach(comment, block);
+        }
+        let documented = Some(block.as_ref().and_then(doc::file) == Some(true));
+        let name = block.as_ref().and_then(|b| doc::text(b, "module"));
+        let name = name.and_then(|name| name.split_whitespace().next().map(str::to_owned));
+        let name = name.or_else(|| path.map(|path| path.display().to_string())).unwrap_or_default();
+        let found = Found::new(name, Kind::Module, 0, block.as_ref().filter(|b| !doc::placeholder(b)).cloned());
+        self.found.push(Found { documented, block: block.is_some(), standalone: true, ..found });
     }
 
     fn statement(&mut self, statement: &Statement<'s>) {
         let overload = self.overload.take();
         let at = statement.span().start;
         match statement {
-            Statement::ExportDeclaration(e) => self.declaration(&e.declaration, at, true, overload),
+            Statement::ExportDeclaration(e) => self.declaration(&e.declaration, at, Some(Via::Esm), overload),
             Statement::ExportNamedDeclaration(e) => {
-                self.exported.extend(e.specifiers.iter().map(|s| s.local.name().as_str()));
+                self.exported.extend(e.specifiers.iter().map(|s| (s.local.name().as_str(), Via::Esm)));
             }
             Statement::ExportDefaultDeclaration(e) => {
-                let site = Site { at, binding: None, exported: true };
+                let site = Site { at, binding: None, via: Some(Via::Esm) };
                 match &e.declaration {
                     ExportDefaultDeclarationKind::FunctionDeclaration(f) => self.function(f, site, overload),
                     ExportDefaultDeclarationKind::ClassDeclaration(c) => self.class(c, site),
                     ExportDefaultDeclarationKind::TSInterfaceDeclaration(i) => self.interface(i, site),
                     ExportDefaultDeclarationKind::Identifier(id) => {
-                        self.exported.insert(id.name.as_str());
+                        self.exported.insert((id.name.as_str(), Via::Esm));
                     }
-                    expression => self.push(site, expression.span().start, "default".into(), Kind::Default),
+                    expression => {
+                        self.push(site, expression.span().start, "default".into(), Kind::Default);
+                    }
                 }
             }
             Statement::TSExportAssignment(e) => {
                 if let Expression::Identifier(id) = &e.expression {
-                    self.exported.insert(id.name.as_str());
+                    self.exported.insert((id.name.as_str(), Via::Cjs));
                 }
             }
             Statement::ExpressionStatement(e) => {
@@ -241,73 +562,118 @@ impl<'s> Collector<'s> {
                     self.commonjs(assignment, at);
                 }
             }
+            Statement::ExportFromDeclaration(e) => {
+                let names =
+                    || e.specifiers.iter().map(|s| s.exported.name().to_string()).collect::<Vec<_>>().join(", ");
+                self.skip(at, names, "a re-export, which counts in its own file");
+            }
+            Statement::ExportAllDeclaration(e) => {
+                let what = || e.exported.as_ref().map_or("*".into(), |name| format!("* as {}", name.name()));
+                self.skip(at, what, "a re-export, which counts in its own file");
+            }
             _ => {
                 if let Some(declaration) = statement.as_declaration() {
-                    self.declaration(declaration, at, false, overload);
+                    self.declaration(declaration, at, None, overload);
                 }
             }
         }
     }
 
-    fn declaration(&mut self, declaration: &Declaration<'s>, at: u32, exported: bool, overload: Option<&'s str>) {
+    fn declaration(&mut self, declaration: &Declaration<'s>, at: u32, via: Option<Via>, overload: Option<&'s str>) {
         let site =
-            |binding: &oxc_ast::ast::BindingIdentifier<'s>| Site { at, binding: Some(binding.name.as_str()), exported };
+            |binding: &oxc_ast::ast::BindingIdentifier<'s>| Site { at, binding: Some(binding.name.as_str()), via };
         match declaration {
             Declaration::VariableDeclaration(v) => {
                 // Destructured bindings (`const { a } = b`) have nowhere for a doc of their own, and
                 // `require()` is an import.
                 for d in &v.declarations {
+                    let text = || d.id.span().source_text(self.source).to_owned();
                     if d.init.as_ref().is_some_and(Expression::is_require_call) {
+                        self.skip(d.span.start, text, "a require() binding, which is an import");
                         continue;
                     }
-                    if let Some(id) = d.id.get_binding_identifier() {
-                        self.push(site(id), d.span.start, id.name.to_string(), Kind::Variable);
+                    let Some(id) = d.id.get_binding_identifier() else {
+                        self.skip(d.span.start, text, "destructured, with nowhere for a doc of its own");
+                        continue;
+                    };
+                    let doc = self.push(site(id), d.span.start, id.name.to_string(), Kind::Variable).doc.clone();
+                    if let Some(Expression::ObjectExpression(object)) = &d.init
+                        && self.rules.members == Members::All
+                    {
+                        self.object(object, id.name.as_str(), doc, site(id));
                     }
                 }
             }
             Declaration::FunctionDeclaration(f) => {
-                let site = Site { at, binding: f.id.as_ref().map(|id| id.name.as_str()), exported };
+                let site = Site { at, binding: f.id.as_ref().map(|id| id.name.as_str()), via };
+                self.declared.extend(site.binding.map(|name| (name, via)));
                 self.function(f, site, overload);
             }
             Declaration::ClassDeclaration(c) => {
-                self.class(c, Site { at, binding: c.id.as_ref().map(|id| id.name.as_str()), exported });
+                let site = Site { at, binding: c.id.as_ref().map(|id| id.name.as_str()), via };
+                self.declared.extend(site.binding.map(|name| (name, via)));
+                self.class(c, site);
             }
             Declaration::TSInterfaceDeclaration(i) => self.interface(i, site(&i.id)),
             Declaration::TSTypeAliasDeclaration(t) => {
-                self.push(site(&t.id), t.span.start, t.id.name.to_string(), Kind::Type);
+                let found = self.push(site(&t.id), t.span.start, t.id.name.to_string(), Kind::Type);
+                found.shape = Shape::generic(t.type_parameters.as_deref());
+                let doc = found.doc.clone();
+                if let TSType::TSTypeLiteral(literal) = &t.type_annotation
+                    && self.rules.members == Members::All
+                {
+                    self.signatures(&literal.members, t.id.name.as_str(), site(&t.id), doc.as_ref());
+                }
             }
             Declaration::TSEnumDeclaration(e) => {
-                self.push(site(&e.id), e.span.start, e.id.name.to_string(), Kind::Enum)
+                let (name, site) = (e.id.name.as_str(), site(&e.id));
+                let doc = self.push(site, e.span.start, name.to_owned(), Kind::Enum).doc.clone();
+                for member in e.body.members.iter().filter(|_| self.rules.members == Members::All) {
+                    let key = member.id.static_name().display().to_string();
+                    self.member(site, member.span.start, (name, &key), Kind::Property, doc.as_ref());
+                }
             }
             Declaration::TSNamespaceDeclaration(n) => {
                 self.push(site(&n.id), n.span.start, n.id.name.to_string(), Kind::Namespace);
             }
             // `declare module 'x'`, `declare global` and `import x = require()` declare nothing of
             // this module's own.
-            Declaration::TSExternalModuleDeclaration(_)
-            | Declaration::TSGlobalDeclaration(_)
-            | Declaration::TSImportEqualsDeclaration(_) => {}
+            Declaration::TSExternalModuleDeclaration(_) => {
+                self.skip(at, || "declare module".into(), "it declares nothing of this module's own");
+            }
+            Declaration::TSGlobalDeclaration(_) => {
+                self.skip(at, || "declare global".into(), "it declares nothing of this module's own");
+            }
+            Declaration::TSImportEqualsDeclaration(i) => {
+                self.skip(at, || i.id.name.to_string(), "an import = require(), which is an import");
+            }
         }
     }
 
-    /// CommonJS exports: `module.exports = …`, `module.exports.name = …` and `exports.name = …`.
-    /// An identifier exports its declaration, which carries the doc; anything else is an item
-    /// here. `module.exports = { … }` exports each property.
+    /// CommonJS exports: `module.exports = …`, `module.exports.name = …` and `exports.name = …`,
+    /// and globals: `window.name = …` and `globalThis.name = …`. An identifier exports its
+    /// declaration, which carries the doc; anything else is an item here. `module.exports = { … }`
+    /// exports each property.
     fn commonjs(&mut self, assignment: &AssignmentExpression<'s>, at: u32) {
         let Some(target) = assignment.left.as_member_expression() else { return };
-        let site = Site { at, binding: None, exported: true };
         let value = &assignment.right;
         let is_module_exports = target.is_specific_member_access("module", "exports");
+        let this = self.this_exports && matches!(target.object(), Expression::ThisExpression(_));
+        let via = if is_module_exports || this || is_commonjs_export(target) {
+            Via::Cjs
+        } else if target.object().is_specific_id("window") || target.object().is_specific_id("globalThis") {
+            Via::Global
+        } else {
+            return self.assigned_member(target, value, at);
+        };
+        let site = Site { at, binding: None, via: Some(via) };
         if let Expression::Identifier(id) = value {
-            if is_module_exports || is_commonjs_export(target) {
-                self.exported.insert(id.name.as_str());
-            }
+            self.exported.insert((id.name.as_str(), via));
             return;
         }
         if !is_module_exports {
-            let name = target.static_property_name().and_then(|name| name.as_str());
-            if let Some(name) = name.filter(|_| is_commonjs_export(target)) {
-                self.push(site, at, name.to_owned(), value_kind(value));
+            if let Some(name) = target.static_property_name().and_then(|name| name.as_str()) {
+                self.push(site, at, name.to_owned(), value_kind(value)).value(value);
             }
             return;
         }
@@ -321,19 +687,38 @@ impl<'s> Collector<'s> {
                 Kind::Variable => Kind::Default,
                 kind => kind,
             };
-            self.push(site, at, name.unwrap_or("default").to_owned(), kind);
+            self.push(site, at, name.unwrap_or("default").to_owned(), kind).value(value);
             return;
         };
         for property in &object.properties {
             let ObjectPropertyKind::ObjectProperty(p) = property else { continue };
             if let Expression::Identifier(id) = &p.value {
-                self.exported.insert(id.name.as_str());
+                self.exported.insert((id.name.as_str(), Via::Cjs));
                 continue;
             }
             let start = p.span.start;
-            let key = self.key(&p.key);
-            self.push(Site { at: start, ..site }, start, key, value_kind(&p.value));
+            let key = key_name(self.source, &p.key);
+            self.push(Site { at: start, ..site }, start, key, value_kind(&p.value)).value(&p.value);
         }
+    }
+
+    /// With CommonJS members on, `X.prototype.m = …` and `X.m = …`, for a function or class `X`
+    /// declared here, as `X`'s member `m`, counting where `X` does.
+    fn assigned_member(&mut self, target: &MemberExpression<'s>, value: &Expression<'s>, at: u32) {
+        if !self.rules.commonjs_members {
+            return;
+        }
+        let object = match target.object() {
+            Expression::StaticMemberExpression(m) if m.property.name == "prototype" => &m.object,
+            object => object,
+        };
+        let Expression::Identifier(owner) = object else { return };
+        let owner = owner.name.as_str();
+        let key = target.static_property_name().and_then(|name| name.as_str());
+        let (Some(&via), Some(key)) = (self.declared.get(owner), key) else { return };
+        let kind = if value.is_function() { Kind::Method } else { Kind::Property };
+        let site = Site { at, binding: Some(owner), via };
+        self.member(site, at, (owner, key), kind, None).value(value);
     }
 
     fn function(&mut self, f: &Function<'s>, site: Site<'s>, overload: Option<&'s str>) {
@@ -341,16 +726,19 @@ impl<'s> Collector<'s> {
         if f.body.is_none() {
             self.overload = Some(name);
         } else if overload == Some(name) {
-            return;
+            return self.skip(f.span.start, || name.to_owned(), OVERLOAD);
         }
-        self.push(site, f.span.start, name.to_owned(), Kind::Function);
+        let found = self.push(site, f.span.start, name.to_owned(), Kind::Function);
+        found.params = Some(params(&f.params));
+        found.shape = Shape::of(f);
     }
 
     fn class(&mut self, class: &Class<'s>, site: Site<'s>) {
         let class_name = class.id.as_ref().map_or("default", |id| id.name.as_str());
         // Decorators can come before `export`, and a doc before them attaches to the first one.
         let start = class.decorators.first().map_or(class.span.start, |d| d.span.start);
-        self.push(site, start, class_name.to_owned(), Kind::Class);
+        self.push(site, start, class_name.to_owned(), Kind::Class).shape =
+            Shape::generic(class.type_parameters.as_deref());
 
         // A getter and its setter are one property: the getter carries the doc.
         let getters: FxHashSet<String> = class
@@ -358,62 +746,131 @@ impl<'s> Collector<'s> {
             .body
             .iter()
             .filter_map(|e| match e {
-                ClassElement::MethodDefinition(m) if m.kind == MethodDefinitionKind::Get => Some(self.key(&m.key)),
+                ClassElement::MethodDefinition(m) if m.kind == MethodDefinitionKind::Get => {
+                    Some(key_name(self.source, &m.key))
+                }
                 _ => None,
             })
             .collect();
         let mut overload = None;
         for element in &class.body.body {
             let previous = overload.take();
-            let (start, key, kind) = match element {
+            let source = self.source;
+            let member = |key: &PropertyKey<'s>| {
+                let name = key.private_name().map_or_else(|| key_name(source, key), |name| format!("#{name}"));
+                format!("{class_name}.{name}")
+            };
+            let (start, key, kind, accessibility, overrides, method) = match element {
+                ClassElement::MethodDefinition(m) if m.kind.is_constructor() => {
+                    self.skip(m.span.start, || member(&m.key), "a constructor, which its class's doc covers");
+                    continue;
+                }
                 ClassElement::MethodDefinition(m) => {
-                    if m.kind.is_constructor() || is_private(&m.key, m.accessibility) {
+                    if is_private(&m.key, m.accessibility) {
+                        self.skip(m.span.start, || member(&m.key), "private");
                         continue;
                     }
-                    let key = self.key(&m.key);
+                    let key = key_name(self.source, &m.key);
                     if m.kind == MethodDefinitionKind::Set && getters.contains(&key) {
+                        self.skip(m.span.start, || member(&m.key), "a setter, whose getter carries the doc");
                         continue;
                     }
                     if m.value.body.is_none() {
                         overload = Some(key.clone());
                     } else if previous.as_ref() == Some(&key) {
+                        self.skip(m.span.start, || member(&m.key), OVERLOAD);
                         continue;
                     }
-                    let kind = if m.kind == MethodDefinitionKind::Method { Kind::Method } else { Kind::Accessor };
-                    (m.span.start, key, kind)
+                    let method = m.kind == MethodDefinitionKind::Method;
+                    let kind = if method { Kind::Method } else { Kind::Accessor };
+                    (m.span.start, key, kind, m.accessibility, m.r#override, method.then_some(&m.value))
                 }
-                ClassElement::PropertyDefinition(p) if !is_private(&p.key, p.accessibility) => {
-                    (p.span.start, self.key(&p.key), Kind::Property)
+                ClassElement::PropertyDefinition(p) if is_private(&p.key, p.accessibility) => {
+                    self.skip(p.span.start, || member(&p.key), "private");
+                    continue;
                 }
-                ClassElement::AccessorProperty(a) if !is_private(&a.key, a.accessibility) => {
-                    (a.span.start, self.key(&a.key), Kind::Accessor)
+                ClassElement::PropertyDefinition(p) => {
+                    (p.span.start, key_name(self.source, &p.key), Kind::Property, p.accessibility, p.r#override, None)
+                }
+                ClassElement::AccessorProperty(a) if is_private(&a.key, a.accessibility) => {
+                    self.skip(a.span.start, || member(&a.key), "private");
+                    continue;
+                }
+                ClassElement::AccessorProperty(a) => {
+                    (a.span.start, key_name(self.source, &a.key), Kind::Accessor, a.accessibility, a.r#override, None)
                 }
                 _ => continue,
             };
-            self.push(Site { at: start, ..site }, start, format!("{class_name}.{key}"), kind);
+            let found = self.push(Site { at: start, ..site }, start, format!("{class_name}.{key}"), kind);
+            found.protected = accessibility == Some(TSAccessibility::Protected);
+            found.overrides = overrides;
+            found.params = method.map(|m| params(&m.params));
+            found.shape = method.map_or_else(Shape::default, |m| Shape::of(m));
         }
     }
 
     fn interface(&mut self, interface: &TSInterfaceDeclaration<'s>, site: Site<'s>) {
         let name = interface.id.name.as_str();
-        self.push(site, interface.span.start, name.to_owned(), Kind::Interface);
-        for signature in &interface.body.body {
-            let (start, key, kind) = match signature {
-                TSSignature::TSPropertySignature(p) => (p.span.start, self.key(&p.key), Kind::Property),
-                TSSignature::TSMethodSignature(m) => (m.span.start, self.key(&m.key), Kind::Method),
+        self.push(site, interface.span.start, name.to_owned(), Kind::Interface).shape =
+            Shape::generic(interface.type_parameters.as_deref());
+        self.signatures(&interface.body.body, name, site, None);
+    }
+
+    /// The property and method signatures of an interface or object type, as members of `owner`,
+    /// which a matching `@property` in `parent` documents too.
+    fn signatures(&mut self, signatures: &[TSSignature<'s>], owner: &str, site: Site<'s>, parent: Option<&JSDoc>) {
+        for signature in signatures {
+            let (start, key, kind, method) = match signature {
+                TSSignature::TSPropertySignature(p) => {
+                    (p.span.start, key_name(self.source, &p.key), Kind::Property, None)
+                }
+                TSSignature::TSMethodSignature(m) => {
+                    (m.span.start, key_name(self.source, &m.key), Kind::Method, Some(m))
+                }
                 _ => continue,
             };
-            self.push(Site { at: start, ..site }, start, format!("{name}.{key}"), kind);
+            let found = self.member(site, start, (owner, &key), kind, parent);
+            found.params = method.map(|m| params(&m.params));
+            found.shape = method.map_or_else(Shape::default, |m| {
+                Shape::function(m.type_parameters.as_deref(), m.return_type.as_deref(), None)
+            });
         }
     }
 
-    /// A member's name, or for a computed key without one, the key as written (`[Symbol.iterator]`).
-    fn key(&self, key: &PropertyKey<'s>) -> String {
-        match key.static_name().as_ref().and_then(|name| name.as_str()) {
-            Some(name) => name.to_owned(),
-            None => format!("[{}]", key.span().source_text(self.source)),
+    /// The properties of an object literal whose block tags it `@enum`, `@namespace` or
+    /// `@lends X`, as members of `name` (or `X`), which a matching `@property` there documents too.
+    fn object(&mut self, object: &ObjectExpression<'s>, name: &str, parent: Option<JSDoc<'s>>, site: Site<'s>) {
+        let Some(parent) = parent.filter(|doc| ["enum", "namespace", "lends"].iter().any(|tag| doc::has_tag(doc, tag)))
+        else {
+            return;
+        };
+        let lends = doc::text(&parent, "lends").and_then(|text| text.split_whitespace().next().map(str::to_owned));
+        let owner = lends.as_deref().unwrap_or(name);
+        for property in &object.properties {
+            let ObjectPropertyKind::ObjectProperty(p) = property else { continue };
+            let (key, kind) =
+                (key_name(self.source, &p.key), if p.value.is_function() { Kind::Method } else { Kind::Property });
+            self.member(site, p.span.start, (owner, &key), kind, Some(&parent)).value(&p.value);
         }
     }
+}
+
+/// A member's name, or for a computed key without one, the key as written in `source`
+/// (`[Symbol.iterator]`).
+fn key_name(source: &str, key: &PropertyKey) -> String {
+    match key.static_name().as_ref().and_then(|name| name.as_str()) {
+        Some(name) => name.to_owned(),
+        None => format!("[{}]", key.span().source_text(source)),
+    }
+}
+
+/// Why an overload's implementation isn't an item.
+const OVERLOAD: &str = "an overload's implementation, whose signatures count instead";
+
+/// A JSDoc comment's block, past its `/**`, as oxc_jsdoc reads it.
+fn jsdoc<'s>(comment: &Comment, source: &'s str) -> JSDoc<'s> {
+    let span = Span::new(comment.content_span().start + 1, comment.content_span().end);
+    JSDoc::new(span.source_text(source), span)
 }
 
 /// `exports.name` or `module.exports.name`.
@@ -427,6 +884,22 @@ fn value_kind(value: &Expression) -> Kind {
         _ if value.is_function() => Kind::Function,
         Expression::ClassExpression(_) => Kind::Class,
         _ => Kind::Variable,
+    }
+}
+
+/// Each of a function's parameters' names, or `None` for a destructured one.
+fn params<'s>(params: &FormalParameters<'s>) -> Vec<Option<&'s str>> {
+    let name = |pattern: &oxc_ast::ast::BindingPattern<'s>| pattern.get_binding_identifier().map(|id| id.name.as_str());
+    let rest = params.rest.as_ref().map(|rest| name(&rest.rest.argument));
+    params.items.iter().map(|p| name(&p.pattern)).chain(rest).collect()
+}
+
+/// A function value's parameters, or `None` for a value that isn't a function.
+fn value_params<'s>(value: &Expression<'s>) -> Option<Vec<Option<&'s str>>> {
+    match value {
+        Expression::FunctionExpression(f) => Some(params(&f.params)),
+        Expression::ArrowFunctionExpression(f) => Some(params(&f.params)),
+        _ => None,
     }
 }
 
