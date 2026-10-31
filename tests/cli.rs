@@ -396,6 +396,26 @@ fn add_ignore_writes_a_comment_above_each_undocumented_item() {
 }
 
 #[test]
+fn add_ignore_covers_a_files_own_item_once() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("docov.json"), r#"{ "fileDocs": "require" }"#).unwrap();
+    fs::write(dir.path().join("a.js"), "export const a = 1;\n").unwrap();
+    fs::write(dir.path().join("bin.js"), "#!/usr/bin/env node\n/** Doc. */\nexport function c() {}\n").unwrap();
+    assert_eq!(docov(dir.path(), &["--add-ignore"]).2, "docov: added 2 docov-ignore-next-line comments\n");
+    assert_eq!(
+        fs::read_to_string(dir.path().join("a.js")).unwrap(),
+        "// docov-ignore-next-line\nexport const a = 1;\n"
+    );
+    let bin = "#!/usr/bin/env node\n// docov-ignore-next-line\n/** Doc. */\nexport function c() {}\n";
+    assert_eq!(fs::read_to_string(dir.path().join("bin.js")).unwrap(), bin);
+    assert_eq!(
+        docov(dir.path(), &["--report-unused-ignores"]),
+        (0, " 100.0%  1/1  bin.js\n 100.0%  1/1  total\n".into(), String::new())
+    );
+    assert_eq!(docov(dir.path(), &["--add-ignore"]).2, "docov: added 0 docov-ignore-next-line comments\n");
+}
+
+#[test]
 fn kinds_pick_what_counts_and_break_the_total_down() {
     let dir = tempfile::tempdir().unwrap();
     let source = "/** f */\nexport function f() {}\nexport class C { m() {} }\nexport const v = 1;\n";
@@ -562,10 +582,27 @@ fn overrides_change_exclude_and_threshold_for_their_files() {
     );
     assert_eq!((code, err), (1, wanted));
 
-    fs::write(dir.path().join("docov.json"), r#"{ "overrides": [{ "files": ["src"], "scope": "all" }] }"#).unwrap();
+    fs::write(dir.path().join("docov.json"), r#"{ "overrides": [{ "files": ["src"], "kinds": ["function"] }] }"#)
+        .unwrap();
     let (code, _, err) = docov(dir.path(), &[]);
     assert_eq!(code, 2);
-    assert!(err.contains("unknown field `scope`, expected one of `files`, `exclude`, `threshold`"), "{err}");
+    assert!(err.contains("unknown field `kinds`, expected one of `files`, `exclude`, `threshold`, `scope`"), "{err}");
+}
+
+#[test]
+fn an_overrides_scope_is_for_its_files_and_the_flag_wins() {
+    let dir = project();
+    fs::write(dir.path().join("src/d.ts"), "const d = 1;\n").unwrap();
+    fs::write(dir.path().join("docov.json"), r#"{ "overrides": [{ "files": ["src/d.ts"], "scope": "all" }] }"#)
+        .unwrap();
+    // `--explain` names the file as it's given.
+    let d = "src/d.ts";
+    let (code, out, _) = docov(dir.path(), &["--explain", d]);
+    let wanted = format!("{d}  scope all: set by overrides[0], for src/d.ts\n{d}:1:1  variable d  undocumented\n");
+    assert_eq!((code, out), (0, wanted));
+    let (code, out, _) = docov(dir.path(), &["--explain", d, "--scope", "exports"]);
+    let wanted = format!("{d}:1:1  variable d  left out: not exported by a way of exporting that counts\n");
+    assert_eq!((code, out), (0, wanted));
 }
 
 #[test]

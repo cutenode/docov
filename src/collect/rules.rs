@@ -11,6 +11,7 @@ use crate::{
     Kind, Scope,
     check::Checks,
     feature::{access::Access, exports::Exports, file_docs::FileDocs, inherit::Inherit, members::Members},
+    glob::Globs,
     public::Api,
 };
 
@@ -19,6 +20,10 @@ use crate::{
 pub struct Rules {
     /// Which declarations count.
     pub scope: Scope,
+    /// The override that set `scope`, by its index in `overrides`, with its globs, if one did, for
+    /// `--explain` to name. The scope itself is what changes a scan.
+    #[serde(skip)]
+    pub scope_set_by: Option<(usize, Globs)>,
     /// Whether a JSDoc block documents its item only when it describes it, not with tags alone.
     pub require_description: bool,
     /// The JSDoc tags, without their `@`, that take an item out of the total.

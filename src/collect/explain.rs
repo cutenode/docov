@@ -49,7 +49,7 @@ impl Collected<'_> {
         };
         if !rules.documents(found) {
             let line = self.lines.position(found.at as usize).0;
-            if let Some(ignore) = self.ignores.covering(line) {
+            if let Some(ignore) = self.ignores.covering(found.kind, line) {
                 let comment = if ignore.file { "docov-ignore-file" } else { "docov-ignore-next-line" };
                 let reason = ignore.reason.map(|reason| format!(" ({reason})")).unwrap_or_default();
                 return format!("ignored by the {comment} at {}:{}{reason}", ignore.line, ignore.column);

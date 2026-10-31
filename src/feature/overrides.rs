@@ -7,6 +7,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    Scope,
     feature::{Entry, Feature, threshold::Thresholds},
     glob::Globs,
     root::Root,
@@ -33,6 +34,9 @@ pub struct Override {
     /// In place of the top-level `threshold`, for these files.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub threshold: Option<Thresholds>,
+    /// In place of the top-level `scope`, for these files. `--scope` wins over it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope: Option<Scope>,
 }
 
 impl Overrides {
