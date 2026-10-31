@@ -2,7 +2,7 @@ name: Release
 
 # uppt (https://github.com/danielroe/uppt) runs releases. Each push to main opens or updates a draft
 # release PR from the conventional commits since the last tag, bumping npm/docov/package.json, and
-# cargo-pr bumps Cargo.toml on it to match. Merging the PR tags it and dispatches this workflow on
+# cargo-pr bumps the rest on it to match. Merging the PR tags it and dispatches this workflow on
 # the tag, which builds the binaries, then stages the npm packages (tools/npm-approve.sh approves
 # them) and publishes the crate alongside. Both registries use trusted publishing, so there are no
 # tokens here. tools/bootstrap-publishing.sh sets that up.
@@ -63,7 +63,8 @@ jobs:
             npm/docov
             npm/platforms/*
 
-  # uppt/pr only bumps package.json, so this brings Cargo.toml along on the release PR
+  # uppt/pr only bumps package.json, so this brings Cargo.toml, the pre-commit hook and the
+  # README's $schema URL along on the release PR
   cargo-pr:
     needs: pr
     runs-on: ubuntu-latest
