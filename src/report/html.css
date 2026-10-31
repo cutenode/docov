@@ -8,6 +8,7 @@
   --miss-edge: #cf222e;
   --hit: #dafbe1;
   --hit-edge: #1a7f37;
+  --warn: #9a6700;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -19,6 +20,7 @@
     --miss-edge: #f85149;
     --hit: #12301d;
     --hit-edge: #3fb950;
+    --warn: #d29922;
   }
 }
 * { box-sizing: border-box; }
@@ -40,4 +42,8 @@ table { border-collapse: collapse; width: 100%; }
 .source .miss { background: var(--miss); }
 .source .miss .ln { border-right: 3px solid var(--miss-edge); }
 .source .hit .ln { border-right: 3px solid var(--hit-edge); }
+.source .finding .note { color: var(--warn); }
 .missing { color: var(--muted); }
+.findings { margin: .5rem 0 0; padding-left: 1.25rem; font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; overflow-wrap: anywhere; }
+.findings .warning { color: var(--warn); }
+.findings .error { color: var(--miss-edge); }

@@ -4603,11 +4603,15 @@ fn descriptions_are_markdown(tc: TestCase) {
     assert_eq!(diagnose(&source, &on, Rules::default()), at_level(wanted, markdown_on), "{source}");
 }
 
-/// Doc check findings on counted items add to what `unix`, `github`, `markdown` and `sarif` write,
-/// after the rest, and change nothing else: a line each in `unix` and an annotation at its level in
-/// `github` (both read back whole), a bullet each folded away at the end of `markdown`, and in
-/// `sarif` a result each at its level and a rule for each check with a finding. An ignored item's
-/// findings are left out.
+/// Doc check findings on counted items add to what every format that lists problems writes, and
+/// change nothing else: a line each in `unix` and an annotation at its level in `github` (both read
+/// back whole), a bullet each folded away at the end of `markdown`, in `sarif` a result each at its
+/// level and a rule for each check with a finding, after the undocumented items an issue each in
+/// `gitlab` (major at `error`, fingerprinted by path, line, rule and message), a diagnostic each in
+/// `rdjson` and an error each in its file in `checkstyle`, in `junit` a failed test case after its
+/// item for each error and its item's output for the warnings, in `html` a mark and a note on its
+/// line and a list in its file's section, and in `json` its item's `diagnostics`. An ignored
+/// item's findings are left out.
 #[hegel::test(test_cases = 100)]
 fn formats_list_each_doc_check_finding(tc: TestCase) {
     use pulldown_cmark::{Event, Parser, Tag};
@@ -4717,4 +4721,180 @@ fn formats_list_each_doc_check_finding(tc: TestCase) {
             (&d.line.into(), &d.column.into())
         );
     }
+
+    let rule = |d: &check::Diagnostic| format!("docov/{}", d.rule);
+    let (before, after) = both("gitlab");
+    let (before, after): (serde_json::Value, serde_json::Value) =
+        (serde_json::from_str(&before).unwrap(), serde_json::from_str(&after).unwrap());
+    let (old, issues) = (before.as_array().unwrap(), after.as_array().unwrap());
+    assert_eq!((&issues[..old.len()], issues.len() - old.len()), (&old[..], found.len()));
+    let issues = &issues[old.len()..];
+    for (issue, (f, d)) in issues.iter().zip(&found) {
+        let severity = if d.severity == check::Level::Error { "major" } else { "minor" };
+        let read = (&issue["description"], &issue["check_name"], &issue["severity"]);
+        assert_eq!(read, (&d.message.as_str().into(), &rule(d).into(), &severity.into()));
+        let location = (&issue["location"]["path"], &issue["location"]["lines"]["begin"]);
+        assert_eq!(location, (&slash(&f.path).into(), &d.line.into()));
+        let fingerprint = issue["fingerprint"].as_str().unwrap();
+        assert!(fingerprint.len() == 16 && fingerprint.chars().all(|c| c.is_ascii_hexdigit()), "{fingerprint}");
+    }
+    let key = |(f, d): &(&FileReport, &check::Diagnostic)| (slash(&f.path), d.line, d.rule, d.message.clone());
+    for (a, a_found) in issues.iter().zip(&found) {
+        for (b, b_found) in issues.iter().zip(&found) {
+            assert_eq!(a["fingerprint"] == b["fingerprint"], key(a_found) == key(b_found));
+        }
+    }
+
+    let (before, after) = both("rdjson");
+    let (mut before, mut after): (serde_json::Value, serde_json::Value) =
+        (serde_json::from_str(&before).unwrap(), serde_json::from_str(&after).unwrap());
+    let (old, read) = (before["diagnostics"].take(), after["diagnostics"].take());
+    assert_eq!(before, after);
+    let (old, read) = (old.as_array().unwrap(), read.as_array().unwrap());
+    assert_eq!((&read[..old.len()], read.len() - old.len()), (&old[..], found.len()));
+    for (diagnostic, (f, d)) in read[old.len()..].iter().zip(&found) {
+        let start = &diagnostic["location"]["range"]["start"];
+        let severity = level(d).to_uppercase();
+        let read = (&diagnostic["message"], &diagnostic["severity"], &diagnostic["code"]["value"]);
+        assert_eq!(read, (&d.message.as_str().into(), &severity.into(), &rule(d).into()));
+        let location = (&diagnostic["location"]["path"], &start["line"], &start["column"]);
+        assert_eq!(location, (&slash(&f.path).into(), &d.line.into(), &d.column.into()));
+    }
+
+    // Each file's errors, as their attributes, split into those at undocumented items and the rest.
+    type Errors = Vec<[String; 5]>;
+    let checkstyle = |text: &str| -> Vec<(String, Errors, Errors)> {
+        let document = roxmltree::Document::parse(text).unwrap();
+        let files = document.root_element().children().filter(|n| n.has_tag_name("file"));
+        files
+            .map(|file| {
+                let errors = file.children().filter(|n| n.has_tag_name("error")).map(|e| {
+                    ["line", "column", "severity", "message", "source"].map(|a| e.attribute(a).unwrap().to_owned())
+                });
+                let (items, findings) = errors.partition(|e| e[4] == "docov/undocumented");
+                (file.attribute("name").unwrap().to_owned(), items, findings)
+            })
+            .collect()
+    };
+    let (before, after) = both("checkstyle");
+    let (before, after) = (checkstyle(&before), checkstyle(&after));
+    let wanted: Vec<_> = before
+        .into_iter()
+        .zip(&files)
+        .map(|((path, items, _), f)| {
+            let findings = f.counted().flat_map(|i| &i.facts.diagnostics).map(|d| {
+                [
+                    d.line.to_string(),
+                    d.column.to_string(),
+                    level(d).into(),
+                    d.message.clone(),
+                    format!("docov.{}", d.rule),
+                ]
+            });
+            (path, items, findings.collect())
+        })
+        .collect();
+    assert_eq!(after, wanted);
+
+    let junit = render("junit", &files);
+    let junit = roxmltree::Document::parse(&junit).unwrap();
+    let count = |node: roxmltree::Node, name| node.attribute(name).unwrap().parse::<usize>().unwrap();
+    let errors = |f: &FileReport| {
+        f.counted().flat_map(|i| &i.facts.diagnostics).filter(|d| d.severity == check::Level::Error).count()
+    };
+    let suites = junit.root_element();
+    let (totals, all_errors) = (Totals::of(&files), files.iter().map(errors).sum::<usize>());
+    let wanted = (totals.total + all_errors, totals.total - totals.documented + all_errors);
+    assert_eq!((count(suites, "tests"), count(suites, "failures")), wanted);
+    let suites: Vec<_> = suites.children().filter(|n| n.has_tag_name("testsuite")).collect();
+    assert_eq!(suites.len(), files.len());
+    for (suite, f) in suites.iter().zip(&files) {
+        let (totals, errors) = (f.totals(), errors(f));
+        let wanted = (totals.total + errors, totals.total - totals.documented + errors);
+        assert_eq!((count(*suite, "tests"), count(*suite, "failures")), wanted);
+        let read: Vec<_> = suite
+            .children()
+            .filter(|n| n.has_tag_name("testcase"))
+            .map(|case| {
+                let failure = case
+                    .children()
+                    .find(|n| n.has_tag_name("failure"))
+                    .map(|f| [f.attribute("message").unwrap(), f.attribute("type").unwrap()].map(String::from));
+                let out = case.children().find(|n| n.has_tag_name("system-out")).map(|o| o.text().unwrap().to_owned());
+                (case.attribute("name").unwrap().to_owned(), count(case, "line"), failure, out)
+            })
+            .collect();
+        let mut wanted = Vec::new();
+        for item in f.counted() {
+            let name = format!("{} {}", item.kind.as_str(), item.name);
+            let failure = (!item.documented).then(|| [format!("{name} is undocumented"), "undocumented".into()]);
+            let (errors, warnings): (Vec<_>, Vec<_>) =
+                item.facts.diagnostics.iter().partition(|d| d.severity == check::Level::Error);
+            let out: String = warnings
+                .iter()
+                .map(|d| format!("{}:{}:{}: {}: {}\n", slash(&f.path), d.line, d.column, d.rule, d.message))
+                .collect();
+            wanted.push((name.clone(), item.line, failure, (!out.is_empty()).then_some(out)));
+            for d in errors {
+                let failure = Some([d.message.clone(), d.rule.to_owned()]);
+                wanted.push((format!("{name}: {}", d.rule), d.line, failure, None));
+            }
+        }
+        assert_eq!(read, wanted);
+    }
+
+    // Some files are there to read, with lines past their findings or not, under names any OS takes.
+    let dir = tempfile::tempdir().unwrap();
+    let mut pages = files.clone();
+    for (f, file) in pages.iter_mut().enumerate() {
+        if tc.draw(gs::booleans()) {
+            file.path = dir.path().join(format!("m{f}.ts"));
+            fs::write(&file.path, "x <&>\n".repeat(tc.draw(gs::integers::<usize>().max_value(4)))).unwrap();
+        }
+    }
+    let page = render("html", &pages);
+    let html = roxmltree::Document::parse_with_options(
+        &page,
+        roxmltree::ParsingOptions { allow_dtd: true, ..Default::default() },
+    )
+    .unwrap();
+    let headings: Vec<_> = html.descendants().filter(|n| n.has_tag_name("h2")).collect();
+    let shown: Vec<&FileReport> = pages.iter().filter(|f| f.counted().next().is_some()).collect();
+    assert_eq!(headings.len(), shown.len());
+    let finding = |d: &check::Diagnostic| format!("{} {}: {}", level(d), d.rule, d.message);
+    for (heading, f) in headings.iter().zip(shown) {
+        let findings: Vec<&check::Diagnostic> = f.counted().flat_map(|i| &i.facts.diagnostics).collect();
+        let source = heading.next_sibling_element().unwrap();
+        let list = source.next_sibling_element().filter(|n| n.attribute("class") == Some("findings"));
+        let read: Vec<_> = list
+            .iter()
+            .flat_map(|l| l.children().filter(|n| n.has_tag_name("li")))
+            .map(|li| (li.attribute("class").unwrap().to_owned(), li.text().unwrap().to_owned()))
+            .collect();
+        let wanted: Vec<_> =
+            findings.iter().map(|d| (level(d).to_owned(), format!("{}:{} {}", d.line, d.column, finding(d)))).collect();
+        assert_eq!(read, wanted);
+        for (n, row) in source.descendants().filter(|n| n.has_tag_name("tr")).enumerate().map(|(i, r)| (i + 1, r)) {
+            let on: Vec<String> = findings.iter().filter(|d| d.line == n).map(|d| finding(d)).collect();
+            let items: Vec<&Item> = f.counted().filter(|i| i.line == n).collect();
+            let notes: Vec<String> =
+                items.iter().filter(|i| !i.documented).map(|i| format!("{} {}", i.kind.as_str(), i.name)).collect();
+            let mark = (!items.is_empty()).then_some(if notes.is_empty() { "hit" } else { "miss" });
+            let classes: Vec<&str> = mark.into_iter().chain((!on.is_empty()).then_some("finding")).collect();
+            assert_eq!(row.attribute("class").unwrap_or(""), classes.join(" "));
+            let note = row.children().filter(|c| c.has_tag_name("td")).nth(2).unwrap();
+            assert_eq!(note.text().unwrap_or(""), [notes, on].concat().join(", "));
+        }
+    }
+
+    let (before, after) = both("json");
+    let (before, mut after): (serde_json::Value, serde_json::Value) =
+        (serde_json::from_str(&before).unwrap(), serde_json::from_str(&after).unwrap());
+    let items = after["files"].as_array_mut().unwrap().iter_mut().flat_map(|f| f["items"].as_array_mut().unwrap());
+    for (read, item) in items.zip(files.iter().flat_map(|f| &f.items)) {
+        let shown = (!item.ignored() && !item.facts.diagnostics.is_empty())
+            .then(|| serde_json::to_value(&item.facts.diagnostics).unwrap());
+        assert_eq!(read.as_object_mut().unwrap().remove("diagnostics"), shown);
+    }
+    assert_eq!(after, before);
 }

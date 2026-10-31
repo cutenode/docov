@@ -113,9 +113,12 @@ fn undocumented(files: &[FileReport]) -> impl Iterator<Item = (&FileReport, &Ite
 /// What the doc checks found in each counted item, with its file, in the order of the files and
 /// their items.
 pub fn diagnostics(files: &[FileReport]) -> impl Iterator<Item = (&FileReport, &Diagnostic)> {
-    files
-        .iter()
-        .flat_map(|file| file.counted().flat_map(move |item| item.facts.diagnostics.iter().map(move |d| (file, d))))
+    files.iter().flat_map(|file| findings(file).map(move |d| (file, d)))
+}
+
+/// What the doc checks found in `file`'s counted items, in the order of its items.
+fn findings(file: &FileReport) -> impl Iterator<Item = &Diagnostic> {
+    file.counted().flat_map(|item| &item.facts.diagnostics)
 }
 
 /// A doc check finding's level, as SARIF and GitHub annotations name it.
@@ -123,13 +126,21 @@ fn severity(diagnostic: &Diagnostic) -> &'static str {
     if diagnostic.severity == Level::Error { "error" } else { "warning" }
 }
 
-/// `text` with what XML and HTML read as markup escaped, for text and attribute values alike.
+/// `text` with what XML and HTML read as markup escaped, for text and attribute values alike. Line
+/// breaks are character references, which an XML parser keeps in an attribute, where it would read
+/// a literal one as a space.
 fn escape(text: &str) -> String {
-    text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&#39;")
+    let text = text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+    text.replace('"', "&quot;").replace('\'', "&#39;").replace('\r', "&#13;").replace('\n', "&#10;")
 }
 
 /// The rule each undocumented item breaks, in formats that name one.
 const RULE: &str = "docov/undocumented";
+
+/// A doc check's rule, as formats that name rules name it next to [`RULE`]: `docov/require-param`.
+fn rule_id(check: &str) -> String {
+    format!("docov/{check}")
+}
 
 /// `value` as pretty JSON, ending in a newline, with its keys in order.
 fn json(value: Value) -> String {
