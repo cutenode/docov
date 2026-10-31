@@ -27,6 +27,8 @@ mod config_cli;
 mod fix;
 #[path = "props/lsp.rs"]
 mod lsp;
+#[path = "props/scope_overrides.rs"]
+mod scope_overrides;
 #[path = "props/unused.rs"]
 mod unused;
 
@@ -2815,8 +2817,8 @@ fn malformed_configs_fail_to_load_where_they_break(tc: TestCase) {
         (r#"{ "scope": "some" }"#, "unknown variant `some`, expected one of `exports`, `all`, `public`", 17),
         (r#"{ "threshold": { "global": "80" } }"#, "invalid type: string \"80\", expected f64", 31),
         (
-            r#"{ "overrides": [{ "files": ["a"], "scope": "all" }] }"#,
-            "unknown field `scope`, expected one of `files`, `exclude`, `threshold`",
+            r#"{ "overrides": [{ "files": ["a"], "kinds": [] }] }"#,
+            "unknown field `kinds`, expected one of `files`, `exclude`, `threshold`, `scope`",
             41,
         ),
         (r#"{ "overrides": [{ "exclude": [] }] }"#, "missing field `files`", 33),

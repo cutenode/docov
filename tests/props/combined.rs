@@ -561,9 +561,9 @@ fn the_cli_explains_by_the_effective_config(tc: TestCase) {
 /// `param-names` finds `b` on the block's third line.
 const CHECKED: &str = "/**\n * F.\n * @param b B.\n */\nexport function f{i}(a) {}\n";
 
-/// Each nested config's files go through its own doc checks: its `rules` in place of the root
-/// config's, as a key it sets always replaces the root's whole, and a `--rule` flag's level over
-/// both. Each config's gate fails on its own files' errors alone, a nested one's naming it.
+/// Each nested config's files go through its own doc checks: its `rules` merged by rule id over
+/// the root config's, and a `--rule` flag's level over both. Each config's gate fails on its own
+/// files' errors alone, a nested one's naming it.
 #[hegel::test(test_cases = 40)]
 fn doc_checks_go_by_each_nested_config(tc: TestCase) {
     let dir = tempfile::tempdir().unwrap();
@@ -606,11 +606,12 @@ fn doc_checks_go_by_each_nested_config(tc: TestCase) {
     let pkg = format!("{}: ", root.join("pkg").join("docov.json").display());
     let mut failures = Vec::new();
     for (g, count) in counts.into_iter().enumerate() {
-        let rules = if g == 1 { pkg_rules.as_ref().unwrap_or(&top_rules) } else { &top_rules };
+        let mut rules = top_rules.clone();
+        rules.extend(pkg_rules.clone().filter(|_| g == 1).unwrap_or_default());
         let mut wanted = Vec::new();
         for i in 0..count {
             for (id, line) in [("require-param", 5 * i + 1), ("param-names", 5 * i + 3)] {
-                wanted.extend(level(rules, id).map(|error| (line, id, error)));
+                wanted.extend(level(&rules, id).map(|error| (line, id, error)));
             }
         }
         wanted.sort_unstable();
