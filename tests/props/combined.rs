@@ -144,7 +144,7 @@ fn gates_go_by_the_file_that_wrote_them(tc: TestCase) {
 
     // What --write-baseline writes, and the items each file has, as paths from its folder.
     let written = plan(&["--write-baseline"]).unwrap().save_baselines(&reports).unwrap();
-    let real = |path: &Path| fs::canonicalize(path).unwrap();
+    let real = |path: &Path| dunce::canonicalize(path).unwrap();
     let default = if layout == Layout::Extends { "pkg/docov-baseline.json" } else { "docov-baseline.json" };
     let expected: Vec<&str> = match (layout, baseline) {
         (_, None) => vec![default],

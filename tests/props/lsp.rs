@@ -177,7 +177,7 @@ fn document(tc: &TestCase) -> String {
 #[hegel::test(test_cases = 30)]
 fn the_server_publishes_what_a_scan_of_the_buffer_finds(tc: TestCase) {
     let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().canonicalize().unwrap();
+    let root = dunce::canonicalize(dir.path()).unwrap();
     let scope = tc.draw(gs::sampled_from(vec![Scope::Exports, Scope::All]));
     // One of them, at least, is an error.
     let param = tc.draw(gs::sampled_from(vec!["off", "warn", "error"]));
@@ -268,7 +268,7 @@ fn the_server_publishes_what_a_scan_of_the_buffer_finds(tc: TestCase) {
 #[hegel::test(test_cases = 2)]
 fn the_server_says_what_it_can_not_do(tc: TestCase) {
     let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().canonicalize().unwrap();
+    let root = dunce::canonicalize(dir.path()).unwrap();
     let mut client =
         Client::start(json!({ "capabilities": {}, "workspaceFolders": [{ "uri": uri(&root), "name": "p" }] }));
     let file = uri(&root.join("a.ts"));
@@ -376,7 +376,7 @@ fn session(ending: u8, start: impl Fn() -> Client) {
 #[hegel::test(test_cases = 1)]
 fn the_binary_serves_on_stdio(tc: TestCase) {
     let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().canonicalize().unwrap();
+    let root = dunce::canonicalize(dir.path()).unwrap();
     let name = tc.draw(gs::sampled_from(vec!["a.ts", "a b.js"]));
     let file = uri(&root.join(name));
     let frame = |message: Value| {
@@ -556,7 +556,7 @@ fn kept_rules_follow_the_files_they_were_read_from(tc: TestCase) {
     }
     for watch in [false, true] {
         let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().canonicalize().unwrap();
+        let root = dunce::canonicalize(dir.path()).unwrap();
         let ws = root.join("ws");
         write(&root, "shared.json", SHARED);
         for (name, text) in [
@@ -636,7 +636,7 @@ fn kept_rules_stay_while_nothing_says_their_files_changed(tc: TestCase) {
     // Watching: no, yes, and refused.
     for (watch, accept) in [(false, false), (true, true), (true, false)] {
         let dir = tempfile::tempdir().unwrap();
-        let ws = dir.path().canonicalize().unwrap();
+        let ws = dunce::canonicalize(dir.path()).unwrap();
         let config = ws.join("docov.json");
         rewrite(&config, from, 40, None);
         let path = ws.join("src/lib.ts");
@@ -689,7 +689,7 @@ fn kept_rules_stay_while_nothing_says_their_files_changed(tc: TestCase) {
 fn rules_read_while_a_file_may_change_are_read_again(tc: TestCase) {
     let (from, to) = if tc.draw(gs::booleans()) { ("exports", "all") } else { ("all", "exports") };
     let dir = tempfile::tempdir().unwrap();
-    let ws = dir.path().canonicalize().unwrap();
+    let ws = dunce::canonicalize(dir.path()).unwrap();
     let config = ws.join("docov.json");
     let future = std::time::SystemTime::now() + Duration::from_secs(3600);
     rewrite(&config, from, 40, Some(future));
