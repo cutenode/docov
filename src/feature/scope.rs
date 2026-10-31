@@ -1,5 +1,6 @@
 //! `--scope` and `scope`: which declarations count.
 
+use clap::{ArgMatches, FromArgMatches};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -21,13 +22,16 @@ pub enum Scope {
     Exports,
     /// Every module-level declaration, exported or not.
     All,
+    /// What the package's entry points (package.json's `exports`, `main`, `module`, `types` and
+    /// `typings`) export, following re-exports through the module graph.
+    Public,
 }
 
 /// The flag.
 #[derive(clap::Args)]
 #[group(skip)]
 pub struct Flags {
-    /// Which declarations count [default: the config's, or exports]
+    /// Which declarations count, over the config's and its overrides' [default: the config's, or exports]
     #[arg(long, value_enum)]
     scope: Option<Scope>,
 }
@@ -40,6 +44,13 @@ pub struct Keys {
     scope: Scope,
 }
 
+impl Scope {
+    /// The scope `--scope` gives in `matches`, if it's given. It wins over every override's too.
+    pub fn flag(matches: &ArgMatches) -> Option<Self> {
+        Flags::from_arg_matches(matches).expect("the flags were added by `args`").scope
+    }
+}
+
 impl Feature for Scope {
     type Flags = Flags;
     type Keys = Keys;
@@ -50,5 +61,9 @@ impl Feature for Scope {
 
     fn rules(&self, rules: &mut Rules) {
         rules.scope = *self;
+    }
+
+    fn describe(&self) -> Option<serde_json::Value> {
+        Some(serde_json::to_value(self).expect("a scope serializes"))
     }
 }

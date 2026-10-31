@@ -6,7 +6,7 @@ use std::{borrow::Cow, fmt};
 use indexmap::IndexMap;
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{
-    Deserialize, Deserializer,
+    Deserialize, Deserializer, Serialize, Serializer,
     de::{self, MapAccess, Visitor, value::MapAccessDeserializer},
 };
 
@@ -91,12 +91,37 @@ impl Thresholds {
             }
         }
         for (globs, limit) in &self.paths {
-            let matched = reports.iter().filter(|r| globs.contain(&root.relative(&r.path), false)).map(|r| r.totals()).sum();
+            let inside = |r: &&&FileReport| root.inside(&r.path).is_some_and(|p| globs.contain(&p, false));
+            let matched = reports.iter().filter(inside).map(|r| r.totals()).sum();
             if let Some(failure) = limit.check(matched, "threshold") {
                 failures.push(format!("{globs}: {failure}"));
             }
         }
         failures
+    }
+}
+
+/// As docov.json has it: a number for a lone global threshold, else an object.
+impl Serialize for Limit {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match *self {
+            Self::Percent(percent) => serializer.serialize_f64(percent),
+            Self::Undocumented(most) => serializer.serialize_i64(-(most as i64)),
+        }
+    }
+}
+
+/// As docov.json has it: the global threshold alone as a number (or null), the rest as an object.
+impl Serialize for Thresholds {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        if self.per_file.is_none() && self.paths.is_empty() {
+            return self.global.serialize(serializer);
+        }
+        let mut map = IndexMap::new();
+        map.extend(self.global.map(|limit| ("global".to_owned(), limit)));
+        map.extend(self.per_file.map(|limit| ("perFile".to_owned(), limit)));
+        map.extend(self.paths.iter().map(|(globs, limit)| (globs.to_string(), *limit)));
+        map.serialize(serializer)
     }
 }
 
@@ -221,18 +246,23 @@ impl Feature for Threshold {
     }
 
     /// The top-level thresholds are for the files no override has a threshold for, and each
-    /// override's for the files it's the last one with a threshold for.
+    /// override's for the files it's the last one with a threshold for. Each key's globs are
+    /// relative to the folder of the file that wrote it.
     fn gate(&self, run: &Run) -> Vec<String> {
-        let overrides = run.settings.get::<Overrides>();
+        let (overrides, at) = (run.settings.get::<Overrides>(), run.root.of("overrides"));
         let mut groups: Vec<Vec<&FileReport>> = vec![Vec::new(); overrides.0.len() + 1];
         for report in run.reports {
-            let owner = overrides.last(&run.root.relative(&report.path), false, |o| o.threshold.as_ref());
+            let owner = at.inside(&report.path).and_then(|p| overrides.last(&p, false, |o| o.threshold.as_ref()));
             groups[owner.map_or(0, |(i, _)| i + 1)].push(report);
         }
-        let mut failures = self.0.check(None, &groups[0], run.root);
+        let mut failures = self.0.check(None, &groups[0], &run.root.of("threshold"));
         for (o, group) in overrides.0.iter().zip(&groups[1..]) {
-            failures.extend(o.threshold.iter().flat_map(|t| t.check(Some(&o.files), group, run.root)));
+            failures.extend(o.threshold.iter().flat_map(|t| t.check(Some(&o.files), group, &at)));
         }
         failures
+    }
+
+    fn describe(&self) -> Option<serde_json::Value> {
+        Some(serde_json::to_value(&self.0).expect("thresholds serialize"))
     }
 }

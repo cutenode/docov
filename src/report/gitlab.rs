@@ -4,27 +4,40 @@ use std::hash::Hasher;
 
 use serde_json::json;
 
-use crate::report::{Context, Format, RULE, json, message, slash, undocumented};
+use crate::{
+    check::Level,
+    report::{Context, Format, RULE, diagnostics, json, message, rule_id, slash, undocumented},
+};
 
 /// The format.
-pub const FORMAT: Format = Format { name: "gitlab", help: "A GitLab Code Quality report", render };
+pub const FORMAT: Format =
+    Format { name: "gitlab", help: "A GitLab Code Quality report: undocumented items and findings", render };
 
-/// An issue at each undocumented item:
+/// An issue at each undocumented item, then one at each doc check finding:
 /// https://docs.gitlab.com/ci/testing/code_quality/#code-quality-report-format
 fn render(context: &Context) -> String {
-    let issues: Vec<_> = undocumented(context.files)
-        .map(|(file, item)| {
-            let path = slash(&file.path);
-            json!({
-                "description": message(item),
-                "check_name": RULE,
-                "fingerprint": fingerprint(&[&path, item.kind.as_str(), &item.name]),
-                "severity": "minor",
-                "location": { "path": path, "lines": { "begin": item.line } },
-            })
+    let issue = |path: String, line: usize, description: &str, check: &str, severity: &str, fingerprint: String| {
+        json!({
+            "description": description,
+            "check_name": check,
+            "fingerprint": fingerprint,
+            "severity": severity,
+            "location": { "path": path, "lines": { "begin": line } },
         })
-        .collect();
-    json(&issues)
+    };
+    let items = undocumented(context.files).map(|(file, item)| {
+        let path = slash(&file.path);
+        let fingerprint = fingerprint(&[&path, item.kind.as_str(), &item.name]);
+        issue(path, item.line, &message(item), RULE, "minor", fingerprint)
+    });
+    // A finding has no name to keep it by, so its line and message stand in.
+    let findings = diagnostics(context.files).map(|(file, d)| {
+        let path = slash(&file.path);
+        let fingerprint = fingerprint(&[&path, &d.line.to_string(), d.rule, &d.message]);
+        let severity = if d.severity == Level::Error { "major" } else { "minor" };
+        issue(path, d.line, &d.message, &rule_id(d.rule), severity, fingerprint)
+    });
+    json(items.chain(findings).collect::<Vec<_>>().into())
 }
 
 /// A hash of an issue's parts that stays the same between runs and docov versions, which GitLab

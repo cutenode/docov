@@ -8,15 +8,39 @@ use std::{
 };
 
 use docov::feature::{
-    Feature, access::Access, add_ignore::AddIgnore, exports::Exports, inherit::Inherit,
-    report_unused_ignores::ReportUnusedIgnores,
+    Feature, access::Access, add_ignore::AddIgnore, commonjs_members::CommonjsMembers, complete::Complete,
+    examples::Examples, exports::Exports, file_docs::FileDocs, inherit::Inherit, members::Members,
+    release_tags::ReleaseTags, rules::DocChecks, sort::Sort, types::Types, virtual_types::VirtualTypes,
 };
 use docov::{
-    Context, FileReport, Item, Kind, Output, Rules, Scope, Totals, collect, collect::Ignore, config, feature, report,
-    rewrite, scan, scan_file,
+    Context, FileReport, Item, Kind, Output, Rules, Scope, Totals, check, collect, collect::Facts, collect::Ignore,
+    config, feature, report, rewrite, scan, scan_file,
 };
 use hegel::{TestCase, generators as gs};
 use oxc_span::SourceType;
+
+#[path = "props/combined.rs"]
+mod combined;
+#[path = "props/config_cli.rs"]
+mod config_cli;
+#[path = "props/fix.rs"]
+mod fix;
+#[path = "props/lsp.rs"]
+mod lsp;
+#[path = "props/scope_overrides.rs"]
+mod scope_overrides;
+#[path = "props/unused.rs"]
+mod unused;
+
+/// The docov binary, without the environment it reads to change its output: GitHub Actions'
+/// annotations and color. Properties that want them set them again.
+fn docov_command() -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_docov"));
+    for var in ["GITHUB_ACTIONS", "NO_COLOR", "CLICOLOR", "CLICOLOR_FORCE"] {
+        command.env_remove(var);
+    }
+    command
+}
 
 /// A generated module, and the items a scan of it should find.
 #[derive(Default)]
@@ -32,6 +56,11 @@ struct Module {
     file_ignore: Option<Ignore>,
     /// Whether its first comment says it's `@generated`.
     generated: bool,
+    /// How many declarations and blocks it has that a scan passes over.
+    skipped: usize,
+    /// Whether the comments just written end with a JSDoc block, empty or not, for the item after
+    /// them, which then gets no stub.
+    block: bool,
 }
 
 /// `docov-ignore-next-line` comments and comments that aren't quite, with the reason each one
@@ -67,6 +96,12 @@ struct Expected {
     protected: bool,
     /// Whether it's a TypeScript `override` member.
     overrides: bool,
+    /// For a function or method, its parameters' names.
+    params: Option<&'static [&'static str]>,
+    /// Whether a JSDoc block, empty or not, sits right before it.
+    block: bool,
+    /// Whether it's a function whose body returns a value.
+    returns: bool,
 }
 
 impl Expected {
@@ -107,7 +142,30 @@ impl Expected {
         let described = |b: Block| if self.item.kind == Kind::Class { b.class_described } else { b.described };
         let inherits = rules.inherit == Inherit::Override && self.overrides;
         let documented = inherits || self.doc.is_some_and(|b| !rules.require_description || described(b));
-        Some(Item { documented, ..self.item.clone() })
+        let doc = self.doc;
+        let facts = Facts {
+            has_description: doc.is_some_and(described),
+            has_example: doc.is_some_and(|b| b.example),
+            params_documented: self.params.map(|ps| ps.iter().all(|p| doc.is_some_and(|b| b.params.contains(p)))),
+            deprecated: tags.contains(&"deprecated"),
+            since: doc.and_then(|b| b.since).map(String::from),
+            params: self.params.map_or(0, <[_]>::len),
+            exported: self.via.is_some_and(counts),
+            release_tagged: ["public", "beta", "alpha", "internal"].iter().filter(|t| tags.contains(t)).count() == 1,
+            // The generated modules are TypeScript.
+            typed: None,
+            diagnostics: Vec::new(),
+            stub: (!documented && self.item.ignore.is_none() && !self.block).then(|| self.stub()),
+        };
+        Some(Item { documented, facts, ..self.item.clone() })
+    }
+
+    /// The stub `--fix` writes above it: a `@param` for each parameter and `@returns` if it returns.
+    fn stub(&self) -> collect::Stub {
+        let params = self.params.unwrap_or_default().iter().map(|p| format!(" * @param {p}\n"));
+        let tags: String = params.chain(self.returns.then(|| " * @returns\n".to_owned())).collect();
+        let text = if tags.is_empty() { "/** TODO */".to_owned() } else { format!("/**\n * TODO\n{tags} */") };
+        collect::Stub { line: self.item.line, text }
     }
 }
 
@@ -123,19 +181,42 @@ struct Block {
     tags: &'static [&'static str],
     /// The access level its tags give.
     access: Option<Access>,
+    /// Whether it has an `@example`.
+    example: bool,
+    /// Its `@since` text.
+    since: Option<&'static str>,
+    /// The parameters its `@param` tags name, leaving out dotted names.
+    params: &'static [&'static str],
 }
 
 const fn block(text: &'static str, described: bool, class_described: bool, tags: &'static [&'static str]) -> Block {
-    Block { text, described, class_described, tags, access: None }
+    Block { text, described, class_described, tags, access: None, example: false, since: None, params: &[] }
 }
 
 const fn access(text: &'static str, tags: &'static [&'static str], level: Access) -> Block {
     Block { access: Some(level), ..block(text, true, true, tags) }
 }
 
-const BLOCKS: [Block; 18] = [
+const BLOCKS: [Block; 22] = [
+    block("/** Docs.\n * @beta\n * @alpha\n */", true, true, &["beta", "alpha"]),
     block("/** Docs. */", true, true, &[]),
-    block("/**\n * Docs.\n * @param a The a.\n */", true, true, &["param"]),
+    Block { params: &["a"], ..block("/**\n * Docs.\n * @param a The a.\n */", true, true, &["param"]) },
+    Block {
+        example: true,
+        since: Some("1.2"),
+        params: &["a"],
+        ..block(
+            "/**\n * Docs.\n * @param {string} [a=1] The a.\n * @example\n * f()\n * @since 1.2\n */",
+            true,
+            true,
+            &["param", "example", "since"],
+        )
+    },
+    Block {
+        params: &["b"],
+        ..block("/** Docs.\n * @arg b Not a.\n * @param a.x Part of a.\n */", true, true, &["arg", "param"])
+    },
+    block("/** @since */", false, false, &["since"]),
     block("/** Mail me@example.com. */", true, true, &[]),
     block("/** @type {string} */", false, false, &["type"]),
     block("/** @deprecated */", false, false, &["deprecated"]),
@@ -210,11 +291,16 @@ impl Module {
     /// Writes ordinary comments and maybe a JSDoc block, and says which block it wrote.
     fn doc(&mut self, tc: &TestCase) -> Option<Block> {
         let noise = ["// note", "/* note */", "/** */", "/**\n *\n */", "/** @license MIT */"];
+        self.block = false;
         if tc.draw(gs::booleans()) {
-            self.write(tc.draw(gs::sampled_from(noise.to_vec())));
+            let noise = tc.draw(gs::sampled_from(noise.to_vec()));
+            self.skipped += usize::from(noise.contains("@license"));
+            self.block = noise.starts_with("/**") && !noise.contains("@license");
+            self.write(noise);
         }
         let doc = tc.draw(gs::booleans()).then(|| tc.draw(gs::sampled_from(BLOCKS.to_vec())));
         if let Some(block) = doc {
+            self.block = true;
             self.write(block.text);
         }
         if tc.draw(gs::booleans()) {
@@ -228,23 +314,33 @@ impl Module {
     fn expect(&mut self, via: Option<Via>, name: String, kind: Kind, doc: Option<Block>) {
         let line = self.line();
         let ignore = self.next_ignore.take().filter(|ignore| ignore.line + 1 == line);
-        let item = Item { name, kind, line, column: 1, documented: doc.is_some(), ignore };
-        self.expected.push(Expected { via, value: false, item, doc, protected: false, overrides: false });
+        let item = Item { name, kind, line, column: 1, documented: doc.is_some(), facts: Facts::default(), ignore };
+        let params = matches!(kind, Kind::Function | Kind::Method).then_some(&[][..]);
+        let (block, returns) = (self.block, false);
+        let (protected, overrides, value) = (false, false, false);
+        self.expected.push(Expected { via, value, item, doc, protected, overrides, params, block, returns });
     }
 
-    /// A statement that exports and declares nothing.
+    /// A statement that exports and declares nothing, and whether a scan passes over it.
     fn nothing(&mut self, tc: &TestCase) {
         let statements = vec![
-            "window.x.y = 1;",
-            "x = 1;",
-            "exports[key] = 1;",
-            "other.exports.y = 1;",
-            "z.w = a;",
-            "go();",
-            "export = { a: 1 };",
-            "if (x) {}",
+            ("window.x.y = 1;", false),
+            ("x = 1;", false),
+            ("exports[key] = 1;", false),
+            ("other.exports.y = 1;", false),
+            ("z.w = a;", false),
+            ("go();", false),
+            ("export = { a: 1 };", false),
+            ("if (x) {}", false),
+            ("export * from './x';", true),
+            ("export * as ns from './x';", true),
+            ("export { y, z as w } from './y';", true),
+            ("declare global { interface W {} }", true),
+            ("import fs = require('fs');", true),
         ];
-        self.write(tc.draw(gs::sampled_from(statements)));
+        let (statement, skipped) = tc.draw(gs::sampled_from(statements));
+        self.skipped += usize::from(skipped);
+        self.write(statement);
     }
 
     /// A CommonJS export of a value rather than a declaration.
@@ -301,6 +397,7 @@ impl Module {
                         }
                         2 => {
                             self.expect(Some(Via::Cjs), format!("a{i}_{j}"), Kind::Function, doc);
+                            self.expected.last_mut().unwrap().returns = true;
                             self.write(&format!("a{i}_{j}: () => 1,"));
                         }
                         // Exports a name nothing here declares.
@@ -311,6 +408,7 @@ impl Module {
             }
         }
         if tc.draw(gs::booleans()) {
+            self.skipped += 1;
             self.write(&format!("const r{i} = require('r{i}');"));
         }
         for expected in &mut self.expected[first..] {
@@ -383,14 +481,17 @@ impl Module {
         match kind {
             Kind::Function => {
                 self.expect(via, name.clone(), kind, doc);
+                self.expected.last_mut().unwrap().params = Some(&["a"]);
                 if export != Export::DefaultInline && tc.draw(gs::booleans()) {
                     // Only the signature counts; the implementation after it doesn't.
+                    self.skipped += 1;
                     self.write(&format!("{prefix}function {name}(a: string): void;"));
                 }
                 self.write(&format!("{prefix}function {name}(a: unknown) {{}}"));
             }
             Kind::Variable if tc.draw(gs::booleans()) => {
                 // Nothing to name: destructuring declares no item.
+                self.skipped += 1;
                 self.write(&format!("{prefix}const {{ d{i} }} = {{ d{i}: 1 }};"));
             }
             Kind::Variable => {
@@ -444,6 +545,7 @@ impl Module {
             self.write(&after);
         }
         if tc.draw(gs::weighted_booleans(0.2)) {
+            self.skipped += 1;
             self.write(&format!("declare module 'm{i}' {{ export function f(): void; }}"));
         }
     }
@@ -471,6 +573,7 @@ impl Module {
                 }
                 3 => {
                     item(self, format!("g{j}"), Kind::Accessor);
+                    self.skipped += 1;
                     self.write(&format!("get g{j}() {{ return 1; }}\nset g{j}(v) {{}}"));
                 }
                 4 => {
@@ -487,10 +590,13 @@ impl Module {
                 }
                 7 => {
                     item(self, format!("v{j}"), Kind::Method);
+                    self.expected.last_mut().unwrap().params = Some(&["a"]);
+                    self.skipped += 1;
                     self.write(&format!("v{j}(a: string): void;\nv{j}(a: unknown) {{}}"));
                 }
                 8 if !constructed => {
                     constructed = true;
+                    self.skipped += 1;
                     self.write("constructor() {}");
                 }
                 9 => {
@@ -503,7 +609,12 @@ impl Module {
                     self.expected.last_mut().unwrap().overrides = true;
                     self.write(&format!("override u{j}() {{}}"));
                 }
-                _ => self.write(&format!("#h{j} = 1;\nprivate q{j} = 1;\nprivate r{j}() {{}}")),
+                _ => {
+                    self.skipped += 4;
+                    self.write(&format!(
+                        "#h{j} = 1;\nprivate q{j} = 1;\nprivate r{j}() {{}}\nprivate accessor w{j} = 1;\nstatic {{}}"
+                    ));
+                }
             }
         }
     }
@@ -564,12 +675,9 @@ fn scans_find_what_modules_declare(tc: TestCase) {
     assert!(error.offset >= source.len() && error.offset <= broken.len(), "{error:?}");
 }
 
-/// The rules decide which of a generated module's items count and which are documented, the way
-/// the model says.
-#[hegel::test(test_cases = 300)]
-fn rules_decide_what_counts_and_what_is_documented(tc: TestCase) {
-    let Module { source, expected, generated, .. } = Module::generate(&tc);
-    let rules = Rules {
+/// Rules with every filter drawn, for a generated module.
+fn drawn_rules(tc: &TestCase) -> Rules {
+    Rules {
         scope: tc.draw(gs::sampled_from(vec![Scope::Exports, Scope::All])),
         require_description: tc.draw(gs::booleans()),
         exclude_tags: tc
@@ -594,7 +702,17 @@ fn rules_decide_what_counts_and_what_is_documented(tc: TestCase) {
             .into_iter()
             .map(|re| regex::Regex::new(re).unwrap())
             .collect(),
-    };
+        // The settings that add items of their own have properties of their own.
+        ..Rules::default()
+    }
+}
+
+/// The rules decide which of a generated module's items count and which are documented, the way
+/// the model says.
+#[hegel::test(test_cases = 300)]
+fn rules_decide_what_counts_and_what_is_documented(tc: TestCase) {
+    let Module { source, expected, generated, .. } = Module::generate(&tc);
+    let rules = drawn_rules(&tc);
     // And each rule for what's documented with nothing left out, for the filters not to hide.
     let mut all = vec![rules];
     for (require_description, inherit) in [(false, Inherit::Tag), (true, Inherit::Tag), (true, Inherit::Override)] {
@@ -679,6 +797,14 @@ fn reports(tc: &TestCase, ignores: bool) -> Vec<FileReport> {
                     line: i / 2 + 1,
                     column: 1,
                     documented: drawn[1] % 2 == 0,
+                    facts: Facts {
+                        has_example: drawn[2] / 2 % 2 == 0,
+                        params: i % 3,
+                        exported: drawn[1] / 2 % 2 == 0,
+                        release_tagged: (drawn[0] + drawn[1]) % 3 == 0,
+                        typed: (drawn[2] % 3 != 0).then_some(drawn[0] % 2 == 0),
+                        ..Facts::default()
+                    },
                     // The comment on the line before, the same for the items that share a line.
                     ignore: (ignores && drawn[2] % 2 == 0).then(|| Ignore {
                         reason: (i / 2 % 2 == 1).then(|| "why".into()),
@@ -688,6 +814,7 @@ fn reports(tc: &TestCase, ignores: bool) -> Vec<FileReport> {
                     }),
                 })
                 .collect(),
+            ..Default::default()
         })
         .collect()
 }
@@ -732,6 +859,11 @@ impl Drawn {
             threshold: self.threshold,
             text: self.text,
             base: None,
+            packages: None,
+            color: false,
+            sort: Sort::Position,
+            examples: false,
+            metrics: &[],
         }
     }
 }
@@ -1405,6 +1537,11 @@ fn formats_agree_on_totals(tc: TestCase) {
             threshold: None,
             text: report::Text::default(),
             base: None,
+            packages: None,
+            color: false,
+            sort: Sort::Position,
+            examples: false,
+            metrics: &[],
         };
         let length = format.render(&context).len();
         let room = tc.draw(gs::integers::<usize>().max_value(length + 1));
@@ -1448,16 +1585,790 @@ fn formats_agree_on_totals(tc: TestCase) {
     }
 }
 
-/// `files` in the format named `name`, with nothing else to report.
-fn render(name: &str, files: &[FileReport]) -> String {
-    report::format(name).unwrap().render(&Context {
+/// What to report of `files`, with nothing else to report.
+fn plain(files: &[FileReport]) -> Context<'_> {
+    Context {
         files,
         failures: &[],
         now: UNIX_EPOCH,
         threshold: None,
         text: report::Text::default(),
         base: None,
-    })
+        packages: None,
+        color: false,
+        sort: Sort::Position,
+        examples: false,
+        metrics: &[],
+    }
+}
+
+/// `files` in the format named `name`, with nothing else to report.
+fn render(name: &str, files: &[FileReport]) -> String {
+    report::format(name).unwrap().render(&plain(files))
+}
+
+/// Why `feature`'s gate fails a scan of `files`, with the default settings and the current folder
+/// as the config's.
+fn gate(feature: &impl Feature, files: &[FileReport]) -> Vec<String> {
+    let settings = settings(tempfile::tempdir().unwrap().path(), "{}", &[]);
+    let root = docov::root::Root::new(Path::new(""));
+    feature.gate(&docov::feature::Run { reports: files, root: &root, settings: &settings })
+}
+
+/// The text report's line right after its total, where a metric's goes.
+fn metric_line(context: &Context) -> Option<String> {
+    let text = report::format("text").unwrap().render(context);
+    text.lines().skip_while(|line| !line.ends_with("  total")).nth(1).map(String::from)
+}
+
+/// `--sort priority` lists each file's undocumented items with exported functions and methods
+/// first, more parameters before fewer, then classes, then the rest, each group in file order, and
+/// changes nothing else. The JSON report has each item's facts.
+#[hegel::test(test_cases = 100)]
+fn priority_puts_exported_functions_with_more_parameters_first(tc: TestCase) {
+    let mut files = reports(&tc, true);
+    // The kinds that sort apart, so a file often has several of each.
+    for item in files.iter_mut().flat_map(|f| &mut f.items) {
+        let at = ALL_KINDS.iter().position(|k| *k == item.kind).unwrap();
+        item.kind = [Kind::Function, Kind::Method, Kind::Class, Kind::Variable][at % 4];
+    }
+    let text = report::format("text").unwrap().render(&Context { sort: Sort::Priority, ..plain(&files) });
+    let mut wanted = Vec::new();
+    for file in &files {
+        let undocumented = file.items.iter().filter(|i| !i.documented && i.ignore.is_none());
+        let tier = |i: &&Item| match i.kind {
+            Kind::Function | Kind::Method if i.facts.exported => i.facts.params,
+            Kind::Class => 100,
+            _ => 101,
+        };
+        let mut tiers: Vec<_> = undocumented.collect();
+        // Fewer parameters sort later: a tier for each count, highest first.
+        tiers.sort_by_key(|i| match tier(i) {
+            n @ 0..100 => 99 - n,
+            n => n,
+        });
+        wanted.extend(
+            tiers
+                .iter()
+                .map(|i| format!("         {}:{}:1  {} {}", file.path.display(), i.line, i.kind.as_str(), i.name)),
+        );
+    }
+    let listed: Vec<&str> = text.lines().filter(|l| l.starts_with("         ")).collect();
+    assert_eq!(listed, wanted);
+    let lines = |text: &str| text.lines().filter(|l| !l.starts_with("         ")).map(String::from).collect::<Vec<_>>();
+    assert_eq!(lines(&text), lines(&render("text", &files)));
+
+    let json: serde_json::Value = serde_json::from_str(&render("json", &files)).unwrap();
+    let shown = json["files"].as_array().unwrap().iter().flat_map(|f| f["items"].as_array().unwrap().clone());
+    let facts = files.iter().flat_map(|f| &f.items).map(|i| serde_json::json!([i.facts.has_example, i.facts.since]));
+    assert!(shown.map(|i| serde_json::json!([i["hasExample"], i["since"]])).eq(facts));
+}
+
+/// Example coverage is the share of counted items with an `@example`. The JSON report has it for
+/// each file and in all, `--examples` puts it on each of the text report's lines and changes
+/// nothing else, and its threshold fails the scan under it.
+#[hegel::test(test_cases = 100)]
+fn examples_are_a_second_metric(tc: TestCase) {
+    let files = reports(&tc, true);
+    let of = |f: &FileReport| {
+        let counted: Vec<_> = f.items.iter().filter(|i| i.documented || i.ignore.is_none()).collect();
+        Totals { documented: counted.iter().filter(|i| i.facts.has_example).count(), total: counted.len() }
+    };
+    let all = files
+        .iter()
+        .map(of)
+        .fold(Totals::default(), |a, b| Totals { documented: a.documented + b.documented, total: a.total + b.total });
+    let json: serde_json::Value = serde_json::from_str(&render("json", &files)).unwrap();
+    let shown = |v: &serde_json::Value| (v["withExamples"].as_u64(), v["examplesPercent"].as_f64());
+    let wanted = |t: Totals| (Some(t.documented as u64), Some(t.percent()));
+    assert_eq!(shown(&json), wanted(all));
+    assert!(json["files"].as_array().unwrap().iter().map(shown).eq(files.iter().map(|f| wanted(of(f)))));
+
+    let text = report::format("text").unwrap().render(&Context { examples: true, ..plain(&files) });
+    let mut figures = files.iter().filter(|f| of(f).total > 0).map(of).chain([all]);
+    let plain: Vec<String> = text
+        .lines()
+        .map(|line| {
+            if line.starts_with("         ") {
+                return line.to_owned();
+            }
+            let t = figures.next().unwrap();
+            let figure = format!("  examples {}/{}  ", t.documented, t.total);
+            assert!(line.contains(&figure), "{line}");
+            line.replacen(&figure, "  ", 1)
+        })
+        .collect();
+    assert_eq!(plain, render("text", &files).lines().collect::<Vec<_>>());
+
+    let threshold = tc.draw(gs::optional(gs::integers::<u8>().max_value(100))).map(f64::from);
+    let percent = all.percent();
+    let failure = threshold
+        .filter(|&t| percent < t)
+        .map(|t| format!("{percent:.1}% with examples, under the {t}% examples threshold"));
+    assert_eq!(gate(&Examples { text: false, threshold }, &files), Vec::from_iter(failure));
+}
+
+/// A function's parameters are documented when each has an `@param` (or `@arg`, or `@argument`)
+/// with its name, or for a destructured one, any at its place. Dotted names document parts.
+#[hegel::test(test_cases = 100)]
+fn parameters_are_documented_by_name_or_place(tc: TestCase) {
+    let params = tc.draw(gs::vecs(gs::sampled_from(vec!["a", "b", "{ c }", "[d]"])).max_size(3));
+    let rest = tc.draw(gs::sampled_from(vec!["", "...e", "...{ length }"]));
+    let tags = tc.draw(gs::vecs(gs::sampled_from(vec!["a", "b", "e", "[b=1]", "a.x", "z"])).max_size(4));
+    let tag = tc.draw(gs::sampled_from(vec!["param", "arg", "argument", "returns"]));
+    let documented = tc.draw(gs::booleans());
+    let doc: String = tags.iter().map(|name| format!(" * @{tag} {{string}} {name} Docs.\n")).collect();
+    let mut list: Vec<&str> = params.clone();
+    list.extend(Some(rest).filter(|r| !r.is_empty()));
+    let source = format!(
+        "{}export function f({}) {{}}\nexport class C {{ m({}) {{}} }}\n",
+        if documented { format!("/**\n{doc} */\n") } else { String::new() },
+        list.join(", "),
+        list.join(", "),
+    );
+    let names: Vec<&str> = if documented && tag != "returns" {
+        tags.iter()
+            .filter(|n| !n.contains('.'))
+            .map(|n| n.trim_matches(['[', ']']).split('=').next().unwrap())
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let wanted = list.iter().enumerate().all(|(i, p)| match p.trim_start_matches("...") {
+        name if name.starts_with(['{', '[']) => i < names.len(),
+        name => names.contains(&name),
+    });
+    let items = scan(&source, SourceType::ts(), &Rules::default()).unwrap();
+    let facts: Vec<_> = items.iter().map(|i| (i.facts.params_documented, i.facts.params)).collect();
+    // The class has no JSDoc, so its method's parameters are documented only when it has none.
+    assert_eq!(facts, [(Some(wanted), list.len()), (None, 0), (Some(list.is_empty()), list.len())], "{source}");
+}
+
+/// With `"fileDocs": "require"`, each file is an item at its start, named by its `@module` or its
+/// path, documented when its first JSDoc block is about the file and says something. That block
+/// then documents nothing else, while a first block that isn't about the file still documents what
+/// follows it. Off, files aren't items.
+#[hegel::test(test_cases = 100)]
+fn files_are_items_documented_by_a_block_about_them(tc: TestCase) {
+    // A first block, whether it documents what follows it today, whether it's about the file and
+    // says something, and its `@module` name.
+    let (first, documents, about, module) = tc.draw(gs::sampled_from(vec![
+        ("", false, None, None),
+        ("/** @file Helpers. */", true, Some(true), None),
+        ("/** @file */", true, Some(false), None),
+        ("/**\n * Helpers.\n * @fileoverview\n */", true, Some(true), None),
+        ("/** @overview Helpers. */", true, Some(true), None),
+        ("/** @module util/strings The strings. */", true, Some(true), Some("util/strings")),
+        ("/** @module */", true, Some(false), None),
+        ("/** @packageDocumentation The package. */", true, Some(true), None),
+        ("/**\n * @file Helpers.\n * @license MIT\n */", false, Some(true), None),
+        ("/** Docs. */", true, None, None),
+        ("/** @license MIT */", false, None, None),
+    ]));
+    let ignored = tc.draw(gs::booleans());
+    let source = format!("{first}\nexport const a = 1;\n{}", if ignored { "/* docov-ignore-file */\n" } else { "" });
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("m.ts");
+    fs::write(&path, &source).unwrap();
+    let a = |documented| (String::from("a"), Kind::Variable, documented);
+    let summary = |items: Vec<Item>| items.into_iter().map(|i| (i.name, i.kind, i.documented)).collect::<Vec<_>>();
+
+    let off = Rules::default();
+    assert_eq!(summary(scan(&source, SourceType::ts(), &off).unwrap()), [a(documents)]);
+    let on = Rules { file_docs: FileDocs::Require, ..Rules::default() };
+    let items = scan(&source, SourceType::ts(), &on).unwrap();
+    let file = &items[0];
+    assert_eq!((file.line, file.column, file.ignored()), (1, 1, ignored && about != Some(true)), "{source}");
+    assert_eq!(file.kind.as_str(), "module");
+    let file = (module.unwrap_or_default().to_owned(), Kind::Module, about == Some(true));
+    assert_eq!(summary(items), [file.clone(), a(documents && about.is_none())], "{source}");
+    let named = module.map_or(path.display().to_string(), String::from);
+    assert_eq!(summary(scan_file(&path, &on).unwrap().items)[0], (named, Kind::Module, file.2));
+}
+
+/// With `"virtual": true`, a JavaScript file's `@typedef` and `@callback` blocks with a name are
+/// items of kind `type`, where the block is, documented when they have a description, and they no
+/// longer document the declaration after them. In TypeScript, or off, they're ordinary blocks.
+#[hegel::test(test_cases = 100)]
+fn comment_types_are_items_in_javascript(tc: TestCase) {
+    let mut source = String::new();
+    // Each item, by whether types count: (name, kind, line, documented).
+    let (mut plain, mut typed) = (Vec::new(), Vec::new());
+    for i in 0..tc.draw(gs::integers::<usize>().max_value(4)) {
+        // A block, whether it names a type, and whether it describes it.
+        let (block, declares, described) = tc.draw(gs::sampled_from(vec![
+            ("/** @typedef {Object} T */", true, false),
+            ("/**\n * A shape.\n * @typedef {Object} T\n * @property {number} x\n */", true, true),
+            ("/** @typedef {string} T - An id. */", true, true),
+            ("/** @callback T */", true, false),
+            ("/**\n * @callback T\n * Called back.\n */", true, true),
+            ("/** @typedef */", false, false),
+            ("/** Docs. */", false, true),
+        ]));
+        let line = source.matches('\n').count() + 1;
+        source.push_str(&block.replace(" T", &format!(" T{i}")));
+        source.push('\n');
+        if declares {
+            typed.push((format!("T{i}"), Kind::Type, line, described));
+        }
+        if tc.draw(gs::booleans()) {
+            let line = source.matches('\n').count() + 1;
+            source.push_str(&format!("exports.v{i} = 1;\n"));
+            plain.push((format!("v{i}"), Kind::Variable, line, true));
+            typed.push((format!("v{i}"), Kind::Variable, line, !declares));
+        }
+    }
+    let types = tc.draw(gs::booleans());
+    let (name, source_type) = tc.draw(gs::sampled_from(vec![
+        ("mjs", SourceType::mjs()),
+        ("cjs", SourceType::cjs()),
+        ("jsx", SourceType::jsx()),
+        ("ts", SourceType::ts()),
+    ]));
+    let rules = Rules { virtual_types: types, ..Rules::default() };
+    let items = scan(&source, source_type, &rules).unwrap();
+    let found: Vec<_> = items.iter().map(|i| (i.name.clone(), i.kind, i.line, i.documented)).collect();
+    let wanted = if types && name != "ts" { typed } else { plain };
+    assert_eq!(found, wanted, "{name}: {source}");
+    assert!(items.iter().all(|i| i.facts.exported));
+}
+
+/// With `"members": "all"`, enum members, the members of a type alias's object type and the
+/// properties of an object literal tagged `@enum`, `@namespace` or `@lends X` count as members of
+/// their parent (or of `X`), documented by a block of their own or a matching `@property` in the
+/// parent's. They count where their parent does. By default only the parents count.
+#[hegel::test(test_cases = 100)]
+fn every_member_counts_when_asked(tc: TestCase) {
+    let mut module = Module::default();
+    // Each item's (name, kind, line, documented), whether it's a member, and whether it's exported.
+    let mut wanted = Vec::new();
+    for i in 0..tc.draw(gs::integers::<usize>().max_value(3)) {
+        let exported = tc.draw(gs::booleans());
+        let (shape, tag) = tc.draw(gs::sampled_from(vec![
+            ("enum", None),
+            ("type", None),
+            ("const", None),
+            ("const", Some("@enum {number}")),
+            ("const", Some("@namespace")),
+            ("const", Some("@lends Lent")),
+            ("const", Some("@readonly")),
+        ]));
+        let listed = tc.draw(gs::vecs(gs::sampled_from(vec!["a", "b", "c"])).max_size(2));
+        let parent_doc = tag.is_some() || tc.draw(gs::booleans());
+        if parent_doc {
+            module.write("/**\n * Parent.");
+            if let Some(tag) = tag {
+                module.write(&format!(" * {tag}"));
+            }
+            for name in &listed {
+                module.write(&format!(" * @property {{number}} {name} Docs."));
+            }
+            module.write(" */");
+        }
+        let name = format!("P{i}");
+        let kind = [("enum", Kind::Enum), ("type", Kind::Type), ("const", Kind::Variable)];
+        let kind = kind.iter().find(|(s, _)| *s == shape).unwrap().1;
+        wanted.push(((name.clone(), kind, module.line(), parent_doc), false, exported));
+        let (open, close) = match shape {
+            "type" => (" = {", "};"),
+            "const" => (" = {", "};"),
+            _ => (" {", "}"),
+        };
+        module.write(&format!("{}{shape} {name}{open}", if exported { "export " } else { "" }));
+        let owner = if tag == Some("@lends Lent") { "Lent".to_owned() } else { name.clone() };
+        let counts = shape != "const" || tag.is_some_and(|tag| tag != "@readonly");
+        for (j, key) in ["a", "b", "c"].into_iter().enumerate().take(tc.draw(gs::integers::<usize>().max_value(3))) {
+            let own = tc.draw(gs::booleans());
+            if own {
+                module.write("/** Docs. */");
+            }
+            let (text, kind) = match (shape, j) {
+                ("enum", _) => (format!("{key},"), Kind::Property),
+                ("type", 2) => (format!("{key}(): void;"), Kind::Method),
+                ("type", _) => (format!("{key}: number;"), Kind::Property),
+                (_, 2) => (format!("{key}() {{}},"), Kind::Method),
+                _ => (format!("{key}: 1,"), Kind::Property),
+            };
+            let documented = own || (parent_doc && listed.contains(&key));
+            if counts {
+                wanted.push(((format!("{owner}.{key}"), kind, module.line(), documented), true, exported));
+            }
+            module.write(&text);
+        }
+        // A spread has no member to count.
+        if shape == "const" && tc.draw(gs::booleans()) {
+            module.write("...rest,");
+        }
+        module.write(close);
+    }
+    let source = module.source;
+    for (members, scope) in
+        [(Members::Classes, Scope::Exports), (Members::All, Scope::Exports), (Members::All, Scope::All)]
+    {
+        let rules = Rules { members, scope, ..Rules::default() };
+        let items = scan(&source, SourceType::ts(), &rules).unwrap();
+        let found: Vec<_> = items.into_iter().map(|i| (i.name, i.kind, i.line, i.documented)).collect();
+        let counts =
+            |member: bool, exported: bool| (members == Members::All || !member) && (scope == Scope::All || exported);
+        let expected: Vec<_> =
+            wanted.iter().filter(|(_, m, e)| counts(*m, *e)).map(|(item, _, _)| item.clone()).collect();
+        assert_eq!(found, expected, "{members:?} {scope:?}: {source}");
+    }
+}
+
+/// With `"commonjsMembers": true`, `X.prototype.m = …` and `X.m = …` at the top level are members
+/// of `X` when it's a function or class declared there, counting where `X` does, and in a CommonJS
+/// file `this.a = …` exports `a`. Off, none of them are items.
+#[hegel::test(test_cases = 100)]
+fn commonjs_assignments_add_members_when_asked(tc: TestCase) {
+    let (ext, source_type) = tc.draw(gs::sampled_from(vec![
+        ("cjs", SourceType::cjs()),
+        ("js", SourceType::from_path("m.js").unwrap()),
+        ("mjs", SourceType::mjs()),
+    ]));
+    let mut module = Module::default();
+    // Each item's (name, kind, line, documented), whether it's new with the setting, and whether
+    // it's exported.
+    let mut wanted = Vec::new();
+    for i in 0..tc.draw(gs::integers::<usize>().max_value(3)) {
+        let (declaration, kind) = tc.draw(gs::sampled_from(vec![
+            ("function X() {}", Kind::Function),
+            ("class X {}", Kind::Class),
+            ("const X = {};", Kind::Variable),
+        ]));
+        let name = format!("X{i}");
+        let declaration = declaration.replace('X', &name);
+        // How it's exported: not at all, inline (only in an ES module), or with `exports.X = X`.
+        let export = tc.draw(gs::integers::<u8>().max_value(if ext == "mjs" { 2 } else { 1 }));
+        let doc = module.doc(&tc).is_some();
+        wanted.push(((name.clone(), kind, module.line(), doc), false, export > 0));
+        module.write(&format!("{}{declaration}", if export == 2 { "export " } else { "" }));
+        if export == 1 {
+            module.write(&format!("exports.{name} = {name};"));
+        }
+        for j in 0..tc.draw(gs::integers::<usize>().max_value(3)) {
+            let (text, member_kind) = tc.draw(gs::sampled_from(vec![
+                ("X.prototype.m = function (a) {};", Kind::Method),
+                ("X.m = () => {};", Kind::Method),
+                ("X.prototype.m = 1;", Kind::Property),
+                ("X.m = other;", Kind::Property),
+                ("X.prototype[k] = 1;", Kind::Property),
+                ("X.prototype.constructor.m = 1;", Kind::Property),
+                ("Y.m = 1;", Kind::Property),
+            ]));
+            let doc = module.doc(&tc).is_some();
+            let member = kind != Kind::Variable && !text.contains(['[', 'Y']) && !text.contains("constructor");
+            if member {
+                wanted.push(((format!("{name}.m{j}"), member_kind, module.line(), doc), true, export > 0));
+            }
+            module.write(&text.replace('X', &name).replace(".m ", &format!(".m{j} ")));
+        }
+        if tc.draw(gs::booleans()) {
+            let doc = module.doc(&tc).is_some();
+            if ext != "mjs" {
+                wanted.push(((format!("t{i}"), Kind::Variable, module.line(), doc), true, true));
+            }
+            module.write(&format!("this.t{i} = 1;"));
+        }
+    }
+    let source = module.source;
+    for (on, scope) in [(false, Scope::Exports), (true, Scope::Exports), (true, Scope::All)] {
+        let rules = Rules { commonjs_members: on, scope, ..Rules::default() };
+        let items = scan(&source, source_type, &rules).unwrap();
+        let found: Vec<_> = items.into_iter().map(|i| (i.name, i.kind, i.line, i.documented)).collect();
+        let counts = |new: bool, exported: bool| (on || !new) && (scope == Scope::All || exported);
+        let expected: Vec<_> =
+            wanted.iter().filter(|(_, n, e)| counts(*n, *e)).map(|(item, _, _)| item.clone()).collect();
+        assert_eq!(found, expected, "{ext} {on} {scope:?}: {source}");
+    }
+}
+
+/// Release-tag coverage is the share of counted top-level exports with exactly one of `@public`,
+/// `@beta`, `@alpha` and `@internal`. With `--release-tags` (or a threshold) the JSON report has it
+/// and the text report gets a line of it, and its threshold fails the scan under it.
+#[hegel::test(test_cases = 100)]
+fn release_tags_are_a_metric_when_asked(tc: TestCase) {
+    let files = reports(&tc, true);
+    let over = |i: &&Item| (i.documented || i.ignore.is_none()) && i.facts.exported && !i.kind.is_member();
+    let of = |f: &FileReport| {
+        let over: Vec<_> = f.items.iter().filter(over).collect();
+        Totals { documented: over.iter().filter(|i| i.facts.release_tagged).count(), total: over.len() }
+    };
+    let all = files
+        .iter()
+        .map(of)
+        .fold(Totals::default(), |a, b| Totals { documented: a.documented + b.documented, total: a.total + b.total });
+    let threshold = tc.draw(gs::optional(gs::integers::<u8>().max_value(100))).map(f64::from);
+    let on = threshold.is_some() || tc.draw(gs::booleans());
+    let feature = ReleaseTags { on, threshold };
+
+    let metrics = Vec::from_iter(feature.metric());
+    let context = Context { metrics: &metrics, ..plain(&files) };
+    let json: serde_json::Value = serde_json::from_str(&report::format("json").unwrap().render(&context)).unwrap();
+    let shown = |v: &serde_json::Value| (v["releaseTagged"].as_u64(), v["releaseTagsPercent"].as_f64());
+    let wanted = |t: Totals| if on { (Some(t.documented as u64), Some(t.percent())) } else { (None, None) };
+    assert_eq!(shown(&json), wanted(all));
+    assert!(json["files"].as_array().unwrap().iter().map(shown).eq(files.iter().map(|f| wanted(of(f)))));
+
+    let line = format!("{:>6.1}%  {}/{}  release tags", all.percent(), all.documented, all.total);
+    assert_eq!(metric_line(&context), on.then_some(line));
+    assert_eq!(report::format("lcov").unwrap().render(&context), render("lcov", &files));
+
+    let percent = all.percent();
+    let failure = threshold
+        .filter(|&t| percent < t)
+        .map(|t| format!("{percent:.1}% with release tags, under the {t}% release tags threshold"));
+    assert_eq!(gate(&feature, &files), Vec::from_iter(failure));
+}
+
+/// Type coverage is over JavaScript functions and methods: one is typed when its JSDoc gives each
+/// `@param` (or `@arg`, or `@argument`) a `{type}`, and its `@returns` one when it has one. Other
+/// items, and TypeScript, aren't counted for it. With `--types` (or a threshold) the JSON report
+/// has it and the text report gets a line of it, and its threshold fails the scan under it.
+#[hegel::test(test_cases = 100)]
+fn javascript_functions_are_typed_by_their_tags(tc: TestCase) {
+    let tags = tc.draw(
+        gs::vecs(gs::sampled_from(vec![
+            ("@param {string} a Docs.", true),
+            ("@param a Docs.", false),
+            ("@argument {number} b", true),
+            ("@arg b", false),
+            ("@returns {number} Docs.", true),
+            ("@return Docs.", false),
+            ("@since 1.2", true),
+        ]))
+        .max_size(3),
+    );
+    let documented = tc.draw(gs::booleans());
+    let doc: String = tags.iter().map(|(tag, _)| format!(" * {tag}\n")).collect();
+    let source = format!(
+        "{}export function f(a, b) {{}}\nexport class C {{ m() {{}} }}\nexport const v = 1;\n",
+        if documented { format!("/**\n * Docs.\n{doc} */\n") } else { String::new() }
+    );
+    let typed = documented && tags.iter().all(|(_, typed)| *typed);
+    let (name, source_type) = tc.draw(gs::sampled_from(vec![
+        ("mjs", SourceType::mjs()),
+        ("jsx", SourceType::jsx()),
+        ("cjs", SourceType::cjs()),
+        ("ts", SourceType::ts()),
+    ]));
+    let source = if name == "cjs" { source.replace("export ", "") } else { source };
+    let rules = Rules { scope: Scope::All, ..Rules::default() };
+    let items = scan(&source, source_type, &rules).unwrap();
+    let found: Vec<_> = items.iter().map(|i| i.facts.typed).collect();
+    let wanted = if name == "ts" { vec![None; 4] } else { vec![Some(typed), None, Some(false), None] };
+    assert_eq!(found, wanted, "{name}: {source}");
+
+    let files = vec![FileReport { path: PathBuf::from(format!("m.{name}")), items, ..Default::default() }];
+    let all = Totals {
+        documented: wanted.iter().filter(|t| **t == Some(true)).count(),
+        total: wanted.iter().filter(|t| t.is_some()).count(),
+    };
+    let threshold = tc.draw(gs::optional(gs::integers::<u8>().max_value(100))).map(f64::from);
+    let on = threshold.is_some() || tc.draw(gs::booleans());
+    let feature = Types { on, threshold };
+    let metrics = Vec::from_iter(feature.metric());
+    let context = Context { metrics: &metrics, ..plain(&files) };
+    let json: serde_json::Value = serde_json::from_str(&report::format("json").unwrap().render(&context)).unwrap();
+    let shown = (json["typed"].as_u64(), json["typesPercent"].as_f64());
+    assert_eq!(shown, if on { (Some(all.documented as u64), Some(all.percent())) } else { (None, None) });
+
+    let line = format!("{:>6.1}%  {}/{}  types", all.percent(), all.documented, all.total);
+    assert_eq!(metric_line(&context), on.then_some(line));
+    assert_eq!(report::format("lcov").unwrap().render(&context), render("lcov", &files));
+    let percent = all.percent();
+    let failure =
+        threshold.filter(|&t| percent < t).map(|t| format!("{percent:.1}% with types, under the {t}% types threshold"));
+    assert_eq!(gate(&feature, &files), Vec::from_iter(failure));
+}
+
+/// What a generated index re-exports from module `k`: nothing it can resolve, a name, or all of
+/// the module's names (but `default`, through `export *`).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum Wanted {
+    Name(String),
+    All,
+    AllButDefault,
+}
+
+/// The declarations a model of the generated package reaches: `(module, name)` for each, and
+/// each module reached at all.
+fn reach(
+    stars: &[Option<usize>],
+    defaults: &[Option<String>],
+    start: Vec<(usize, Wanted)>,
+) -> (Vec<(usize, String)>, Vec<usize>) {
+    let (mut found, mut modules, mut seen, mut work) = (Vec::new(), Vec::new(), Vec::new(), start);
+    while let Some((k, wanted)) = work.pop() {
+        if seen.contains(&(k, wanted.clone())) {
+            continue;
+        }
+        seen.push((k, wanted.clone()));
+        modules.push(k);
+        let own = [format!("f{k}_0"), format!("f{k}_1")];
+        match wanted {
+            Wanted::Name(name) if name == "default" => found.extend(defaults[k].clone().map(|d| (k, d))),
+            Wanted::Name(name) if own.contains(&name) => found.push((k, name)),
+            Wanted::Name(name) => work.extend(stars[k].map(|next| (next, Wanted::Name(name)))),
+            every => {
+                found.extend(own.map(|name| (k, name)));
+                if every == Wanted::All {
+                    found.extend(defaults[k].clone().map(|d| (k, d)));
+                }
+                work.extend(stars[k].map(|next| (next, Wanted::AllButDefault)));
+            }
+        }
+    }
+    found.sort();
+    found.dedup();
+    modules.sort();
+    modules.dedup();
+    (found, modules)
+}
+
+/// A generated package: modules that declare functions, a default and a CommonJS export, some
+/// re-exporting the next with `export *`, and an index that re-exports them every way there is,
+/// named in package.json directly, through tsconfig's `outDir`, or through a declaration file.
+/// The public scope counts exactly what the model says its entry points reach, each in its own
+/// file. An entry point with no source, a package.json that isn't JSON, or none at all fails the
+/// load, naming the culprit.
+#[hegel::test(test_cases = 60)]
+fn the_public_scope_counts_what_entry_points_reach(tc: TestCase) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let n = tc.draw(gs::integers::<usize>().min_value(1).max_value(3));
+    let (mut stars, mut defaults) = (vec![None; n], Vec::new());
+    for (i, star) in stars.iter_mut().enumerate() {
+        // Its default export, and the item that is.
+        let (default, item) = tc.draw(gs::sampled_from(vec![
+            ("export default function dI() {}", Some("dI")),
+            ("export default class dI {}", Some("dI")),
+            ("function dI() {}\nexport default dI;", Some("dI")),
+            ("export default 1;", Some("default")),
+            ("", None),
+        ]));
+        defaults.push(item.map(|d| d.replace('I', &i.to_string())));
+        let mut text = format!(
+            "export function f{i}_0() {{}}\nexport function f{i}_1() {{}}\n{}\nfunction hidden{i}() {{}}\nexports.c{i} = 1;\n",
+            default.replace('I', &i.to_string())
+        );
+        if i + 1 < n && tc.draw(gs::booleans()) {
+            text.push_str(&format!("export * from './m{}.js';\n", i + 1));
+            *star = Some(i + 1);
+        }
+        write(root, &format!("src/m{i}.ts"), &text);
+    }
+    let mut index = String::from("export const own = 1;\nexports.cjs = 1;\n");
+    let mut wanted = Vec::new();
+    let mut written = Vec::new();
+    for _ in 0..tc.draw(gs::integers::<usize>().max_value(4)) {
+        let (way, k, j) = (
+            tc.draw(gs::integers::<u8>().max_value(8)),
+            tc.draw(gs::integers::<usize>().max_value(n - 1)),
+            tc.draw(gs::integers::<usize>().max_value(2)),
+        );
+        if written.contains(&(way, k, j)) {
+            continue;
+        }
+        written.push((way, k, j));
+        // A name from module k, or from one after it, which only `export *` there finds. f{m}_2
+        // is no module's.
+        let m = (k + tc.draw(gs::integers::<usize>().max_value(1))).min(n - 1);
+        let f = format!("f{m}_{j}");
+        let (text, want) = match way {
+            0 => (format!("export * from './m{k}';"), Some(Wanted::AllButDefault)),
+            1 => (format!("export {{ {f} as e{k}_{j} }} from './m{k}.js';"), Some(Wanted::Name(f))),
+            2 => (format!("export {{ default as d{k} }} from './m{k}';"), Some(Wanted::Name("default".into()))),
+            3 => (format!("export * as ns{k} from './m{k}';"), Some(Wanted::All)),
+            4 => (
+                format!("import {{ {f} as g{k}_{j} }} from './m{k}.js';\nexport {{ g{k}_{j} }};"),
+                Some(Wanted::Name(f)),
+            ),
+            5 => (format!("import dd{k} from './m{k}';\nexport {{ dd{k} }};"), Some(Wanted::Name("default".into()))),
+            6 => (format!("import * as all{k} from './m{k}';\nexport {{ all{k} }};"), Some(Wanted::All)),
+            // What resolves to nothing, or to what isn't a module it can read.
+            7 => (
+                format!(
+                    "export * from './missing{k}';\nexport {{ x{k} }} from './missing{k}';\nimport {{ z{k} }} from './missing{k}';\nexport * from './data.json';\nexport * from './latin1.js';\nexport * from '\\uD800';"
+                ),
+                None,
+            ),
+            _ => (format!("import {{ f{k}_0 as unused{k} }} from './m{k}';"), None),
+        };
+        index.push_str(&text);
+        index.push('\n');
+        wanted.extend(want.map(|w| (k, w)));
+    }
+    write(root, "src/index.ts", &index);
+    write(root, "src/data.json", "{}");
+    fs::write(root.join("src/latin1.js"), b"// caf\xe9\n").unwrap();
+
+    // How package.json names the index, the tsconfig.json that goes with it, and whether the index
+    // is found.
+    let (manifest, tsconfig, found) = tc.draw(gs::sampled_from(vec![
+        (r#"{ "main": "./src/index.ts" }"#, None, true),
+        (r#"{ "exports": ["./src/index.ts", null] }"#, Some("{"), true),
+        (
+            r#"{ "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" }, "./*": "./dist/*.js" } }"#,
+            Some(r#"{ "compilerOptions": { "outDir": "dist", "rootDir": "src" } }"#),
+            true,
+        ),
+        (r#"{ "module": "lib/index.js" }"#, Some("// built\n{ \"compilerOptions\": { \"outDir\": \"./lib\", }, }"), true),
+        (r#"{ "typings": "./types/index.d.ts", "main": "./src/index.ts" }"#, None, false),
+    ]));
+    write(root, "package.json", manifest);
+    if let Some(tsconfig) = tsconfig {
+        write(root, "tsconfig.json", tsconfig);
+    }
+    // From the package's folder, or from a path under it.
+    let from_path = tc.draw(gs::booleans());
+    let (start, paths) =
+        if from_path { (root.join("nowhere"), vec![root.join("src")]) } else { (root.to_owned(), vec![]) };
+    let api = docov::public::Api::load(&start, &paths);
+    if !found {
+        let errors = api.unwrap_err();
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("entry point ./types/index.d.ts has no source file"), "{errors:?}");
+        return;
+    }
+    let rules = Rules { scope: Scope::Public, public: Some(std::sync::Arc::new(api.unwrap())), ..Rules::default() };
+    let mut counted = Vec::new();
+    for i in 0..n {
+        let report = scan_file(&root.join(format!("src/m{i}.ts")), &rules).unwrap();
+        counted.extend(report.items.into_iter().map(|item| (i, item.name)));
+    }
+    let index_items = scan_file(&root.join("src/index.ts"), &rules).unwrap().items;
+    assert_eq!(index_items.iter().map(|i| i.name.as_str()).collect::<Vec<_>>(), ["own", "cjs"]);
+    let explained = collect::explain(&root.join("src/index.ts"), &rules).unwrap();
+    assert!(explained[..2].iter().all(|line| line.ends_with("  undocumented")), "{explained:?}");
+    let (mut names, modules) = reach(&stars, &defaults, wanted);
+    names.extend(modules.iter().map(|&k| (k, format!("c{k}"))));
+    names.sort();
+    counted.sort();
+    assert_eq!(counted, names, "{index}");
+    // Scanned without its path, a file has nothing reached.
+    let source = fs::read_to_string(root.join("src/index.ts")).unwrap();
+    assert_eq!(scan(&source, SourceType::ts(), &rules).unwrap(), []);
+}
+
+/// The public scope's load fails without a package.json, or with one that isn't JSON, and from
+/// the command line its errors exit 2, while a package it can load is counted.
+#[hegel::test(test_cases = 5)]
+fn the_public_scope_needs_a_package(tc: TestCase) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(root, "src/index.ts", "/** A. */\nexport const a = 1;\nexport const b = 1;\n");
+    write(root, "src/other.ts", "export const c = 1;\n");
+    let docov = |args: &[&str]| docov_command().args(args).current_dir(root).output().unwrap();
+    let broken = tc.draw(gs::booleans());
+    if broken {
+        let errors = docov::public::Api::load(&root.join("src"), &[root.join("src")]).unwrap_err();
+        assert_eq!(errors, ["the public scope needs a package.json"]);
+        write(root, "package.json", "{ main: 1 }");
+        let errors = docov::public::Api::load(root, &[]).unwrap_err();
+        assert!(
+            errors[0].starts_with(&format!("{}: key must be a string", root.join("package.json").display())),
+            "{errors:?}"
+        );
+        let out = docov(&["--scope", "public"]);
+        assert_eq!((out.status.code(), out.stdout.is_empty()), (Some(2), true));
+        fs::write(root.join("package.json"), b"{ \"main\": \"caf\xe9\" }").unwrap();
+        let errors = docov::public::Api::load(root, &[]).unwrap_err();
+        assert!(errors[0].contains("stream did not contain valid UTF-8"), "{errors:?}");
+        return;
+    }
+    write(root, "package.json", r#"{ "main": "./src/index.ts" }"#);
+    let out = docov(&["--scope", "public", "--format", "json"]);
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!((out.status.code(), &json["documented"], &json["total"]), (Some(0), &1.into(), &2.into()));
+}
+
+/// `--explain` has a line for every item a generated module declares, in its order and at its
+/// place, saying whether it counts and is documented as the rules decide, and a line for each
+/// declaration and block the scan passed over. A file skipped as generated has one line, saying
+/// so, and a file that can't be read fails, naming it.
+#[hegel::test(test_cases = 100)]
+fn explain_says_why_each_item_counts_and_what_was_passed_over(tc: TestCase) {
+    let module = Module::generate(&tc);
+    let mut rules = drawn_rules(&tc);
+    // Without the package's entry points, nothing is reached.
+    if tc.draw(gs::weighted_booleans(0.1)) {
+        rules.scope = Scope::Public;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("m.ts");
+    fs::write(&path, &module.source).unwrap();
+    let lines = collect::explain(&path, &rules).unwrap();
+    let at = |line: usize, column: usize| format!("{}:{line}:{column}  ", path.display());
+    if module.generated && rules.skip_generated {
+        assert_eq!(lines, [format!("{}skipped the file: its first comment says it's @generated", at(1, 1))]);
+        return;
+    }
+    // Unused `docov-ignore` comments have properties of their own.
+    let lines: Vec<_> = lines.into_iter().filter(|line| !line.contains("  unused docov-ignore")).collect();
+    let (skips, items): (Vec<_>, Vec<_>) = lines.iter().partition(|line| line.contains("  skipped "));
+    assert_eq!(skips.len(), module.skipped, "{}", lines.join("\n"));
+    assert_eq!(items.len(), module.expected.len(), "{}", lines.join("\n"));
+    for (line, expected) in items.iter().zip(&module.expected) {
+        let item = &expected.item;
+        let what = format!("{}{} {}  ", at(item.line, item.column), item.kind.as_str(), item.name);
+        let status = line.strip_prefix(&what).unwrap_or_else(|| panic!("{line} isn't {what}"));
+        let wanted = match expected.by(&rules) {
+            None => "left out: ",
+            _ if rules.scope == Scope::Public => "left out: not reached",
+            Some(item) if item.documented => "documented",
+            Some(item) if item.ignored() => "ignored by the docov-ignore",
+            Some(_) => "undocumented",
+        };
+        assert!(status.starts_with(wanted), "{line}: {wanted}");
+    }
+    assert!(matches!(collect::explain(&dir.path().join("gone.ts"), &rules), Err(collect::Error::Read { .. })));
+    fs::write(&path, format!("{}export function (", module.source)).unwrap();
+    assert!(matches!(collect::explain(&path, &rules), Err(collect::Error::Syntax { .. })));
+
+    // What only a file's own item and the members of `"members": "all"` say.
+    let source = "/** @file Helpers. */\n\n/**\n * Colors.\n * @property Red The red one.\n */\nexport enum Color {\n  Red,\n}\n";
+    fs::write(&path, source).unwrap();
+    let rules =
+        Rules { file_docs: FileDocs::Require, members: Members::All, require_description: true, ..Rules::default() };
+    assert_eq!(
+        collect::explain(&path, &rules).unwrap(),
+        [
+            format!("{}module {}  documented by the block at 1:1", at(1, 1), path.display()),
+            format!("{}enum Color  documented by the block at 3:1", at(7, 1)),
+            format!("{}property Color.Red  documented by a matching @property in its parent's block", at(8, 3)),
+        ]
+    );
+}
+
+/// From the command line, `--explain FILE` writes its lines in place of a report and exits 0, and
+/// a file it can't read, or output it can't write, exits 2.
+#[hegel::test(test_cases = 3)]
+fn explain_runs_from_the_command_line(tc: TestCase) {
+    let dir = tempfile::tempdir().unwrap();
+    let documented = tc.draw(gs::booleans());
+    let doc = if documented { "/** A. */\n" } else { "" };
+    write(dir.path(), "a.ts", &format!("{doc}export const a = 1;\nexport * from './b';\n"));
+    let docov = |args: &[&str]| {
+        let mut command = docov_command();
+        command.args(args).current_dir(dir.path());
+        command
+    };
+    let out = docov(&["--explain", "a.ts", "--threshold", "100"]).output().unwrap();
+    let line = if documented {
+        "a.ts:2:1  variable a  documented by the block at 1:1"
+    } else {
+        "a.ts:1:1  variable a  undocumented"
+    };
+    let skipped =
+        format!("a.ts:{}:1  skipped *: a re-export, which counts in its own file", if documented { 3 } else { 2 });
+    assert_eq!((out.status.code(), String::from_utf8(out.stdout).unwrap()), (Some(0), format!("{line}\n{skipped}\n")));
+    let out = docov(&["--explain", "gone.ts"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8(out.stderr).unwrap().contains("gone.ts"));
+    let (reader, writer) = std::io::pipe().unwrap();
+    drop(reader);
+    assert_eq!(docov(&["--explain", "a.ts"]).stdout(writer).output().unwrap().status.code(), Some(2));
 }
 
 /// An undocumented item under a `docov-ignore` is out of every format's totals and of the text
@@ -1498,16 +2409,27 @@ fn ignored_items_are_out_of_the_totals(tc: TestCase) {
 }
 
 /// Every registered format but json reports ignored items as if they weren't there, leaving them
-/// out of what it lists, the lines it counts and its totals, whatever else it reports, and so does
-/// a `--compare` base's json report. json lists them too, marked, and is otherwise the same.
+/// out of what it lists, the lines it counts, its totals and its metrics, whatever else it reports
+/// and however it orders them, and so does a `--compare` base's json report. json lists them too,
+/// marked, and is otherwise the same.
 #[hegel::test(test_cases = 100)]
 fn every_format_leaves_ignored_items_out(tc: TestCase) {
     let mut drawn = Drawn::draw(&tc);
     drawn.files = reports(&tc, true);
     let flag = || tc.draw(gs::booleans());
     drawn.text = report::Text { omit_covered: flag(), quiet: flag(), by_kind: flag() };
+    let sort = tc.draw(gs::sampled_from(vec![Sort::Position, Sort::Priority]));
+    let metrics: Vec<_> =
+        [ReleaseTags { on: flag(), threshold: None }.metric(), Types { on: flag(), threshold: None }.metric()]
+            .into_iter()
+            .flatten()
+            .collect();
+    let examples = flag();
     let counted = |files: &[FileReport]| -> Vec<FileReport> {
-        files.iter().map(|f| FileReport { path: f.path.clone(), items: f.counted().cloned().collect() }).collect()
+        files
+            .iter()
+            .map(|f| FileReport { path: f.path.clone(), items: f.counted().cloned().collect(), ..Default::default() })
+            .collect()
     };
     let without_ignored = counted(&drawn.files);
     assert_eq!(Totals::of(&without_ignored), Totals::of(&drawn.files));
@@ -1519,7 +2441,8 @@ fn every_format_leaves_ignored_items_out(tc: TestCase) {
     };
     let compared = flag();
     let bases = compared.then(|| (base(&old), base(&counted(&old))));
-    let context = Context { base: bases.as_ref().map(|(all, _)| all), ..drawn.context() };
+    let base = bases.as_ref().map(|(all, _)| all);
+    let context = Context { base, sort, examples, metrics: &metrics, ..drawn.context() };
     let without = Context { files: &without_ignored, base: bases.as_ref().map(|(_, shown)| shown), ..context };
     for format in report::FORMATS {
         let (all, shown) = (format.render(&context), format.render(&without));
@@ -1533,32 +2456,6 @@ fn every_format_leaves_ignored_items_out(tc: TestCase) {
         }
         assert_eq!(json, serde_json::from_str::<serde_json::Value>(&shown).unwrap());
     }
-}
-
-/// With `--report-unused-ignores`, each `docov-ignore-next-line` whose items are all documented
-/// fails the scan, once, at the comment. Off, or with none, nothing does.
-#[hegel::test(test_cases = 100)]
-fn unused_ignores_fail_the_scan(tc: TestCase) {
-    let files = reports(&tc, true);
-    let mut wanted = Vec::new();
-    for file in &files {
-        // Each comment's line, and whether all its items are documented.
-        let mut comments: Vec<(usize, bool)> = Vec::new();
-        for item in &file.items {
-            let Some(ignore) = item.ignore.as_ref().filter(|i| !i.file) else { continue };
-            match comments.last_mut() {
-                Some((line, all)) if *line == ignore.line => *all &= item.documented,
-                _ => comments.push((ignore.line, item.documented)),
-            }
-        }
-        let unused = comments.iter().filter(|(_, all)| *all);
-        wanted.extend(unused.map(|(line, _)| format!("{}:{line}:1: unused docov-ignore", file.path.display())));
-    }
-    let settings = settings(tempfile::tempdir().unwrap().path(), "{}", &[]);
-    let root = docov::root::Root::new(Path::new(""));
-    let run = docov::feature::Run { reports: &files, root: &root, settings: &settings };
-    assert_eq!(ReportUnusedIgnores(false).gate(&run), Vec::<String>::new());
-    assert_eq!(ReportUnusedIgnores(true).gate(&run), wanted);
 }
 
 /// The totals by kind add up to the total, one per kind there is, in order. The JSON report has
@@ -1596,6 +2493,11 @@ fn totals_by_kind_add_up(tc: TestCase) {
             threshold: None,
             text,
             base: None,
+            packages: None,
+            color: false,
+            sort: Sort::Position,
+            examples: false,
+            metrics: &[],
         })
     };
     let line: Vec<String> = kinds.iter().map(|(k, t)| format!("{} {}/{}", k.as_str(), t.documented, t.total)).collect();
@@ -1666,7 +2568,7 @@ enum Settings {
 fn the_cli_counts_the_project_and_fails_by_the_threshold(tc: TestCase) {
     let dir = tempfile::tempdir().unwrap();
     if tc.draw(gs::weighted_booleans(0.05)) {
-        let out = Command::new(env!("CARGO_BIN_EXE_docov")).arg("--print-schema").output().unwrap();
+        let out = docov_command().arg("--print-schema").output().unwrap();
         let schema: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
         assert_eq!((out.status.code(), schema["title"].as_str()), (Some(0), Some("Config")));
         return;
@@ -1786,12 +2688,10 @@ fn the_cli_counts_the_project_and_fails_by_the_threshold(tc: TestCase) {
 
     let cwd = dir.path().join(if from_sub { "sub" } else { "" });
     fs::create_dir_all(&cwd).unwrap();
-    let mut command = Command::new(env!("CARGO_BIN_EXE_docov"));
+    let mut command = docov_command();
     command.args(&args).current_dir(cwd);
     if github_actions {
         command.env("GITHUB_ACTIONS", "true");
-    } else {
-        command.env_remove("GITHUB_ACTIONS");
     }
     // A pipe whose reader has gone (`docov | head` after head exits): writes to it fail.
     let unwritable = tc.draw(gs::weighted_booleans(0.1));
@@ -1854,7 +2754,7 @@ fn each_bad_input_fails_naming_itself(tc: TestCase) {
     }
     write(dir.path(), "README.md", "not code");
     let fails_naming = |args: &[&str], culprit: &str| {
-        let out = Command::new(env!("CARGO_BIN_EXE_docov")).args(args).current_dir(dir.path()).output().unwrap();
+        let out = docov_command().args(args).current_dir(dir.path()).output().unwrap();
         let (stdout, stderr) = (String::from_utf8(out.stdout).unwrap(), String::from_utf8(out.stderr).unwrap());
         assert_eq!((out.status.code(), stdout.as_str()), (Some(2), ""), "{args:?} {stderr}");
         assert!(stderr.contains(culprit), "{culprit}: {stderr}");
@@ -1895,12 +2795,7 @@ fn each_bad_input_fails_naming_itself(tc: TestCase) {
     for format in ["text", "json", "lcov"] {
         let (reader, writer) = std::io::pipe().unwrap();
         drop(reader);
-        let out = Command::new(env!("CARGO_BIN_EXE_docov"))
-            .args(["--format", format])
-            .current_dir(dir.path())
-            .stdout(writer)
-            .output()
-            .unwrap();
+        let out = docov_command().args(["--format", format]).current_dir(dir.path()).stdout(writer).output().unwrap();
         let stderr = String::from_utf8(out.stderr).unwrap();
         assert_eq!(out.status.code(), Some(2), "{format}: {stderr}");
         assert!(stderr.starts_with("docov: "), "{format}: {stderr}");
@@ -1919,11 +2814,11 @@ fn malformed_configs_fail_to_load_where_they_break(tc: TestCase) {
         ("{ 1: 2 }", "key must be a string", 3),
         (r#"{ "paths": [1 }"#, "expected `,` or `]`", 15),
         (r#"{ "paths": 1 }"#, "invalid type: integer `1`, expected a sequence", 12),
-        (r#"{ "scope": "some" }"#, "unknown variant `some`, expected `exports` or `all`", 17),
+        (r#"{ "scope": "some" }"#, "unknown variant `some`, expected one of `exports`, `all`, `public`", 17),
         (r#"{ "threshold": { "global": "80" } }"#, "invalid type: string \"80\", expected f64", 31),
         (
-            r#"{ "overrides": [{ "files": ["a"], "scope": "all" }] }"#,
-            "unknown field `scope`, expected one of `files`, `exclude`, `threshold`",
+            r#"{ "overrides": [{ "files": ["a"], "kinds": [] }] }"#,
+            "unknown field `kinds`, expected one of `files`, `exclude`, `threshold`, `scope`",
             41,
         ),
         (r#"{ "overrides": [{ "exclude": [] }] }"#, "missing field `files`", 33),
@@ -1936,6 +2831,7 @@ fn malformed_configs_fail_to_load_where_they_break(tc: TestCase) {
         (r#"{ "threshold": -0.5 }"#, "expected a number from 0 to 100, or a negative whole number", 19),
         (r#"{ "threshold": { "perFile": 101 } }"#, "expected a number from 0 to 100, or a negative whole number", 33),
         (r#"{ "threshold": { "[z": 1 } }"#, "error parsing glob '[z': unclosed character class; missing ']'", 26),
+        (r#"{ "typesThreshold": true }"#, "invalid type: boolean `true`, expected f64", 24),
     ]));
     let path = dir.path().join("docov.json");
     // A threshold's glob that globset reads but can't build, like the walk's.
@@ -2099,8 +2995,32 @@ fn rules_come_from_flags_over_the_config(tc: TestCase) {
         run.keys.insert("exports".into(), keys.clone());
     }
 
+    let examples = tc.draw(gs::booleans());
+    if examples {
+        run.args.push("--examples".into());
+    }
+    let examples_threshold =
+        run.set(&tc, "examplesThreshold", vec![0.0, 50.5], |t| vec!["--examples-threshold".into(), t.to_string()]);
+    let release_tags = tc.draw(gs::booleans());
+    if release_tags {
+        run.args.push("--release-tags".into());
+    }
+    let release_threshold = run
+        .set(&tc, "releaseTagsThreshold", vec![10.0, 90.0], |t| vec!["--release-tags-threshold".into(), t.to_string()]);
+    let types = tc.draw(gs::booleans());
+    if types {
+        run.args.push("--types".into());
+    }
+    let types_threshold =
+        run.set(&tc, "typesThreshold", vec![20.0], |t| vec!["--types-threshold".into(), t.to_string()]);
+    let sort = tc.draw(gs::sampled_from(vec![Sort::Position, Sort::Priority]));
+    run.args.extend(["--sort".into(), if sort == Sort::Priority { "priority" } else { "position" }.into()]);
     let ignore_deprecated = run.set(&tc, "ignoreDeprecated", vec![false, true], |_| vec![]);
     let skip_generated = run.set(&tc, "skipGenerated", vec![false, true], |_| vec![]);
+    let file_docs = run.set(&tc, "fileDocs", vec![FileDocs::Off, FileDocs::Require], |_| vec![]);
+    let virtual_types = run.set(&tc, "virtual", vec![false, true], |_| vec![]);
+    let members = run.set(&tc, "members", vec![Members::Classes, Members::All], |_| vec![]);
+    let commonjs_members = run.set(&tc, "commonjsMembers", vec![false, true], |_| vec![]);
 
     let settings = run.settings(dir.path());
     let rules = settings.rules();
@@ -2109,10 +3029,24 @@ fn rules_come_from_flags_over_the_config(tc: TestCase) {
         (ignore_deprecated.unwrap_or_default(), skip_generated.unwrap_or_default())
     );
     assert_eq!(rules.exports, exports.map_or(Exports::default(), |(_, e)| e));
+    assert_eq!(rules.file_docs, file_docs.unwrap_or_default());
+    assert_eq!(*settings.get::<VirtualTypes>(), VirtualTypes(virtual_types.unwrap_or_default()));
+    assert_eq!(rules.virtual_types, virtual_types.unwrap_or_default());
+    assert_eq!(rules.members, members.unwrap_or_default());
+    assert_eq!(*settings.get::<CommonjsMembers>(), CommonjsMembers(commonjs_members.unwrap_or_default()));
+    assert_eq!(rules.commonjs_members, commonjs_members.unwrap_or_default());
     assert_eq!(rules.inherit, inherit.unwrap_or_default());
     assert_eq!(rules.access, access);
     let patterns: Vec<&str> = rules.ignore_names.iter().map(regex::Regex::as_str).collect();
     assert_eq!(patterns, names.unwrap_or_default());
+    assert_eq!(*settings.get::<Sort>(), sort);
+    assert_eq!(settings.get::<Examples>().text, examples);
+    let release_tags = ReleaseTags { on: release_tags || release_threshold.is_some(), threshold: release_threshold };
+    assert_eq!(*settings.get::<ReleaseTags>(), release_tags);
+    let types = Types { on: types || types_threshold.is_some(), threshold: types_threshold };
+    assert_eq!(*settings.get::<Types>(), types);
+    assert_eq!(settings.metrics().len(), usize::from(release_tags.on) + usize::from(types.on));
+    assert_eq!(*settings.get::<Examples>(), Examples { text: examples, threshold: examples_threshold });
     assert_eq!(rules.kinds, kinds);
     assert_eq!(*settings.get::<Scope>(), scope.unwrap_or_default());
     assert_eq!(rules.scope, scope.unwrap_or_default());
@@ -2185,9 +3119,17 @@ fn adding_ignores_covers_every_undocumented_item(tc: TestCase) {
     assert_eq!(AddIgnore(None).edit(std::slice::from_ref(&after)), None);
 
     // An undocumented item in a file that's gone, or can't be written.
-    let item = Item { name: "a".into(), kind: Kind::Variable, line: 1, column: 1, documented: false, ignore: None };
-    let gone = FileReport { path: dir.path().join("gone.ts"), items: vec![item.clone()] };
-    let locked = FileReport { path: dir.path().join("locked.ts"), items: vec![item] };
+    let item = Item {
+        name: "a".into(),
+        kind: Kind::Variable,
+        line: 1,
+        column: 1,
+        documented: false,
+        facts: Facts::default(),
+        ignore: None,
+    };
+    let gone = FileReport { path: dir.path().join("gone.ts"), items: vec![item.clone()], ..Default::default() };
+    let locked = FileReport { path: dir.path().join("locked.ts"), items: vec![item], ..Default::default() };
     fs::write(&locked.path, "export const a = 1;\n").unwrap();
     let mut permissions = fs::metadata(&locked.path).unwrap().permissions();
     permissions.set_readonly(true);
@@ -2207,8 +3149,7 @@ fn add_ignore_runs_from_the_command_line(tc: TestCase) {
     for f in 0..count {
         write(dir.path(), &format!("f{f}.ts"), "export const a = 1;\n");
     }
-    let docov =
-        |args: &[&str]| Command::new(env!("CARGO_BIN_EXE_docov")).args(args).current_dir(dir.path()).output().unwrap();
+    let docov = |args: &[&str]| docov_command().args(args).current_dir(dir.path()).output().unwrap();
     let out = docov(&["--add-ignore=legacy"]);
     let message = format!("docov: added {count} docov-ignore-next-line comment{}\n", if count == 1 { "" } else { "s" });
     assert_eq!(
@@ -2413,7 +3354,9 @@ fn overrides_exclude_by_the_last_match(tc: TestCase) {
     let settings = settings(dir.path(), &json.to_string(), &[]);
     let root = docov::root::Root::new(dir.path());
     let overrides_setting = settings.get::<docov::feature::overrides::Overrides>().clone();
-    let excluder = overrides_setting.excluder(docov::glob::Globs::new(text(&exclude)).unwrap(), root);
+    let top =
+        docov::walk::Exclude { root: dir.path().to_owned(), globs: docov::glob::Globs::new(text(&exclude)).unwrap() };
+    let excluder = overrides_setting.excluder(vec![top], &root);
     let found = docov::walk::files(&[dir.path().to_path_buf()], excluder).unwrap();
     let found: Vec<String> =
         found.iter().map(|p| p.strip_prefix(dir.path()).unwrap().to_str().unwrap().replace('\\', "/")).collect();
@@ -2571,7 +3514,10 @@ fn gates_leave_ignored_items_out(tc: TestCase) {
         }
     }
     let shown = |files: &[FileReport]| -> Vec<FileReport> {
-        files.iter().map(|f| FileReport { path: f.path.clone(), items: f.counted().cloned().collect() }).collect()
+        files
+            .iter()
+            .map(|f| FileReport { path: f.path.clone(), items: f.counted().cloned().collect(), ..Default::default() })
+            .collect()
     };
     // Baseline entries for any of the items, ignored or documented ones too.
     let all: Vec<(&FileReport, &Item)> = files.iter().flat_map(|f| f.items.iter().map(move |i| (f, i))).collect();
@@ -2605,7 +3551,7 @@ fn gates_leave_ignored_items_out(tc: TestCase) {
 fn the_cli_writes_a_baseline_and_gates_by_it(tc: TestCase) {
     let dir = tempfile::tempdir().unwrap();
     let run = |args: &[&str]| {
-        let out = Command::new(env!("CARGO_BIN_EXE_docov")).args(args).current_dir(dir.path()).output().unwrap();
+        let out = docov_command().args(args).current_dir(dir.path()).output().unwrap();
         (out.status.code().unwrap(), String::from_utf8(out.stdout).unwrap(), String::from_utf8(out.stderr).unwrap())
     };
     let undocumented = tc.draw(gs::integers::<usize>().min_value(1).max_value(3));
@@ -2921,17 +3867,1018 @@ fn git_narrows_to_changed_files_and_lines(tc: TestCase) {
         assert!(error.starts_with("git rev-parse --show-cdup: ") && error.contains("not a git repository"), "{error}");
     }
     assert!(diff.added(&root).unwrap_err().contains("not a git repository"));
-    let out = Command::new(env!("CARGO_BIN_EXE_docov"))
-        .args(["--diff-threshold", "100"])
-        .current_dir(dir.path())
-        .output()
-        .unwrap();
+    let out = docov_command().args(["--diff-threshold", "100"]).current_dir(dir.path()).output().unwrap();
     let stderr = String::from_utf8(out.stderr).unwrap();
     assert_eq!(out.status.code(), Some(2), "{stderr}");
     assert!(stderr.contains("not a git repository"), "{stderr}");
-    let out =
-        Command::new(env!("CARGO_BIN_EXE_docov")).arg("--staged").env("PATH", "").current_dir(&repo).output().unwrap();
+    let out = docov_command().arg("--staged").env("PATH", "").current_dir(&repo).output().unwrap();
     let stderr = String::from_utf8(out.stderr).unwrap();
     assert_eq!(out.status.code(), Some(2), "{stderr}");
     assert!(stderr.starts_with("docov: git rev-parse --show-cdup: "), "{stderr}");
+}
+
+/// What the doc checks `on` (each rule id and its docov.json setting) find in `source`, a
+/// TypeScript module scanned by `rules`: each finding's line, column, rule and message, and whether
+/// it's an error.
+fn diagnose(
+    source: &str,
+    on: &[(&str, serde_json::Value)],
+    mut rules: Rules,
+) -> Vec<(usize, usize, &'static str, String, bool)> {
+    let settings: Vec<(&str, check::Setting)> =
+        on.iter().map(|(id, value)| (*id, check::Setting::parse(id, value).unwrap())).collect();
+    let Some(checks) = check::Checks::new(settings.iter().map(|(id, setting)| (*id, setting))) else {
+        assert!(settings.iter().all(|(_, setting)| setting.level == check::Level::Off));
+        return Vec::new();
+    };
+    rules.checks = Some(std::sync::Arc::new(checks));
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("m.ts");
+    fs::write(&path, source).unwrap();
+    let mut found: Vec<_> =
+        scan_file(&path, &rules).unwrap().items.into_iter().flat_map(|i| i.facts.diagnostics).collect();
+    found.sort();
+    found
+        .into_iter()
+        .map(|d| {
+            assert_ne!(d.severity, check::Level::Off);
+            (d.line, d.column, d.rule, d.message, d.severity == check::Level::Error)
+        })
+        .collect()
+}
+
+/// A level for a rule, drawn, as docov.json writes it, and whether it's on and an error.
+fn level(tc: &TestCase) -> (serde_json::Value, Option<bool>) {
+    let (name, on) = tc.draw(gs::sampled_from(vec![("off", None), ("warn", Some(false)), ("error", Some(true))]));
+    let value = if tc.draw(gs::booleans()) { serde_json::json!(name) } else { serde_json::json!([name]) };
+    (value, on)
+}
+
+/// `findings`, each at `level`, or none when it's off, in the order diagnostics sort in.
+fn at_level(
+    findings: Vec<(usize, usize, &'static str, String)>,
+    level: Option<bool>,
+) -> Vec<(usize, usize, &'static str, String, bool)> {
+    let Some(error) = level else { return Vec::new() };
+    let mut all: Vec<_> = findings.into_iter().map(|(l, c, r, m)| (l, c, r, m, error)).collect();
+    all.sort();
+    all
+}
+
+/// `require-param` finds each parameter with no matching `@param` (by name, or for a destructured
+/// one, by place), unless the block has `@inheritdoc`, and `param-names` each `@param` whose name,
+/// or a dotted name's root, is no parameter's, nor the name of the `@param` at a destructured
+/// one's place. Only counted functions and methods with a block are checked.
+#[hegel::test(test_cases = 100)]
+fn parameters_and_their_tags_match(tc: TestCase) {
+    let mut params: Vec<&str> = Vec::new();
+    for param in tc.draw(gs::vecs(gs::sampled_from(vec!["a", "b", "{ c }", "[d]"])).max_size(3)) {
+        if !params.contains(&param) {
+            params.push(param);
+        }
+    }
+    params.extend(tc.draw(gs::optional(gs::sampled_from(vec!["...e", "...{ length }"]))));
+    let tags = tc.draw(
+        gs::vecs(gs::sampled_from(vec!["a", "b", "c", "e", "z", "[b=1]", "a.x", "z.y", "opts", "opts.v"])).max_size(4),
+    );
+    let kind = tc.draw(gs::sampled_from(vec!["param", "arg", "argument"]));
+    let inherits = tc.draw(gs::booleans());
+    let ((require, require_on), (names, names_on)) = (level(&tc), level(&tc));
+    let doc: String = tags.iter().map(|name| format!(" * @{kind} {{string}} {name} Docs.\n")).collect();
+    let source = format!(
+        "/**\n * Docs.\n{doc}{} */\nexport function f({}) {{}}\n/** Docs. */\nfunction hidden(z) {{}}\nexport function bare(q) {{}}\n/** @param a Not a function's. */\nexport const v = 1;\n",
+        if inherits { " * @inheritDoc\n" } else { "" },
+        params.join(", "),
+    );
+
+    let name = |tag: &str| tag.trim_matches(['[', ']']).split('=').next().unwrap().to_owned();
+    let tops: Vec<String> = tags.iter().filter(|t| !t.contains('.')).map(|t| name(t)).collect();
+    let mut wanted = Vec::new();
+    let destructured = |p: &str| p.trim_start_matches("...").starts_with(['{', '[']);
+    for (i, param) in params.iter().enumerate() {
+        let own = param.trim_start_matches("...");
+        let documented = if destructured(param) { i < tops.len() } else { tops.iter().any(|t| t == own) };
+        if !documented && !inherits {
+            let what = if destructured(param) { format!("parameter {}", i + 1) } else { format!("`{own}`") };
+            wanted.push((1, 1, "require-param", format!("missing @param for {what}")));
+        }
+    }
+    let mut found = at_level(wanted, require_on);
+    let roots: Vec<String> = params
+        .iter()
+        .filter(|p| !destructured(p))
+        .map(|p| p.trim_start_matches("...").to_owned())
+        .chain(
+            tops.iter()
+                .enumerate()
+                .filter(|(i, _)| params.get(*i).is_some_and(|p| destructured(p)))
+                .map(|(_, t)| t.clone()),
+        )
+        .collect();
+    let stale =
+        tags.iter().enumerate().filter(|(_, t)| !roots.contains(&name(t).split('.').next().unwrap().to_owned()));
+    let stale = stale.map(|(i, t)| {
+        (i + 3, 15 + kind.len(), "param-names", format!("@param `{}` doesn't match a parameter", name(t)))
+    });
+    found.extend(at_level(stale.collect(), names_on));
+    found.sort();
+    let on = [("require-param", require), ("param-names", names)];
+    assert_eq!(diagnose(&source, &on, Rules::default()), found, "{source}");
+}
+
+/// Each rule's level comes from `--rule ID=LEVEL` over docov.json's `rules`, with none on unless
+/// one of them turns it on. The gate fails the scan when a finding is at `error`, and passes with
+/// warnings alone.
+#[hegel::test(test_cases = 50)]
+fn rule_levels_come_from_flags_over_the_config(tc: TestCase) {
+    let dir = tempfile::tempdir().unwrap();
+    let mut run = Run::default();
+    let mut keys = serde_json::Map::new();
+    let mut wanted: Vec<(&str, check::Level)> = Vec::new();
+    let levels = vec![check::Level::Off, check::Level::Warn, check::Level::Error];
+    let named = |level: check::Level| serde_json::to_value(level).unwrap().as_str().unwrap().to_owned();
+    for id in check::ids() {
+        let from_key = tc.draw(gs::optional(gs::sampled_from(levels.clone())));
+        let from_flag = tc.draw(gs::optional(gs::sampled_from(levels.clone())));
+        if let Some(level) = from_key {
+            let value =
+                if tc.draw(gs::booleans()) { named(level).into() } else { serde_json::json!([named(level), {}]) };
+            keys.insert(id.to_owned(), value);
+        }
+        if let Some(level) = from_flag {
+            run.args.extend(["--rule".to_owned(), format!("{id}={}", named(level))]);
+        }
+        wanted.extend(from_flag.or(from_key).filter(|&level| level != check::Level::Off).map(|level| (id, level)));
+    }
+    if !keys.is_empty() || tc.draw(gs::booleans()) {
+        run.keys.insert("rules".into(), keys.into());
+    }
+    let settings = run.settings(dir.path());
+    let checks = settings.get::<DocChecks>().0.clone();
+    let mut levels: Vec<_> = checks.iter().flat_map(|c| c.levels()).collect();
+    levels.sort();
+    wanted.sort();
+    assert_eq!(levels, wanted);
+    let rules = settings.rules();
+    assert_eq!(rules.checks.is_some(), !wanted.is_empty());
+    assert_eq!(format!("{:?}", rules.checks), format!("{:?}", checks));
+
+    let path = dir.path().join("m.ts");
+    fs::write(&path, "/** Docs. */\nexport function f(a) {}\n").unwrap();
+    let reports = vec![scan_file(&path, &rules).unwrap()];
+    let found: Vec<_> = report::diagnostics(&reports).map(|(_, d)| (d.rule, d.severity)).collect();
+    assert_eq!(found, wanted.iter().filter(|(id, _)| *id == "require-param").copied().collect::<Vec<_>>());
+    let failure =
+        wanted.contains(&("require-param", check::Level::Error)).then(|| "the doc checks found 1 error".to_owned());
+    assert_eq!(settings.gates(&reports, &docov::root::Root::new(dir.path())), Vec::from_iter(failure));
+}
+
+/// A `rules` key or `--rule` flag that names no rule, or gives a rule a level or options it
+/// doesn't have, fails to load, naming what's wrong.
+#[hegel::test(test_cases = 30)]
+fn bad_rule_settings_fail_naming_the_rule(tc: TestCase) {
+    let dir = tempfile::tempdir().unwrap();
+    let known = check::ids().collect::<Vec<_>>().join(", ");
+    let unknown = format!("unknown rule `nope`, expected one of {known}");
+    let level = "param-names: expected \"off\", \"warn\" or \"error\", or [level, options]";
+    let (text, message) = tc.draw(gs::sampled_from(vec![
+        (r#"{ "rules": { "nope": "warn" } }"#, unknown.clone()),
+        (r#"{ "rules": { "param-names": "loud" } }"#, level.to_owned()),
+        (r#"{ "rules": { "param-names": [] } }"#, level.to_owned()),
+        (r#"{ "rules": { "param-names": ["warn", {}, 1] } }"#, level.to_owned()),
+        (
+            r#"{ "rules": { "param-names": ["warn", { "x": 1 }] } }"#,
+            "param-names: unknown field `x`, there are no fields".to_owned(),
+        ),
+        (r#"{ "rules": [] }"#, "invalid type: sequence, expected a map".to_owned()),
+    ]));
+    let path = dir.path().join("docov.json");
+    fs::write(&path, text).unwrap();
+    match config::Config::load(Some(&path)) {
+        Err(config::Error::Parse { source, .. }) => {
+            assert!(source.to_string().starts_with(&format!("{message} at line 1 column ")), "{source}");
+        }
+        other => panic!("{other:?}"),
+    }
+    let (flag, message) = tc.draw(gs::sampled_from(vec![
+        ("param-names", "expected ID=LEVEL".to_owned()),
+        ("nope=warn", unknown),
+        ("param-names=loud", "param-names: expected off, warn or error".to_owned()),
+    ]));
+    assert_eq!(check::flag(flag), Err(message));
+    assert_eq!(check::flag("param-names=warn"), Ok(("param-names".to_owned(), check::Level::Warn)));
+}
+
+/// Complete coverage is over every counted item: one is complete when it's documented and, for a
+/// function or method, each parameter has a matching `@param`. With `--complete` (or a threshold)
+/// the JSON report has it and the text report gets a line of it, and its threshold fails the scan
+/// under it.
+#[hegel::test(test_cases = 100)]
+fn complete_items_are_a_metric_when_asked(tc: TestCase) {
+    let mut files = reports(&tc, true);
+    for item in files.iter_mut().flat_map(|f| f.items.iter_mut()) {
+        item.facts.params_documented = tc.draw(gs::optional(gs::booleans()));
+    }
+    let of = |f: &FileReport| {
+        let over: Vec<_> = f.items.iter().filter(|i| i.documented || i.ignore.is_none()).collect();
+        let complete = over.iter().filter(|i| i.documented && i.facts.params_documented != Some(false)).count();
+        Totals { documented: complete, total: over.len() }
+    };
+    let all = files
+        .iter()
+        .map(of)
+        .fold(Totals::default(), |a, b| Totals { documented: a.documented + b.documented, total: a.total + b.total });
+    let threshold = tc.draw(gs::optional(gs::integers::<u8>().max_value(100))).map(f64::from);
+    let on = threshold.is_some() || tc.draw(gs::booleans());
+    let feature = Complete { on, threshold };
+
+    let metrics = Vec::from_iter(feature.metric());
+    let context = Context { metrics: &metrics, ..plain(&files) };
+    let json: serde_json::Value = serde_json::from_str(&report::format("json").unwrap().render(&context)).unwrap();
+    let shown = |v: &serde_json::Value| (v["complete"].as_u64(), v["completePercent"].as_f64());
+    let wanted = |t: Totals| if on { (Some(t.documented as u64), Some(t.percent())) } else { (None, None) };
+    assert_eq!(shown(&json), wanted(all));
+    assert!(json["files"].as_array().unwrap().iter().map(shown).eq(files.iter().map(|f| wanted(of(f)))));
+
+    let line = format!("{:>6.1}%  {}/{}  complete", all.percent(), all.documented, all.total);
+    assert_eq!(metric_line(&context), on.then_some(line));
+    assert_eq!(report::format("lcov").unwrap().render(&context), render("lcov", &files));
+
+    let percent = all.percent();
+    let failure = threshold
+        .filter(|&t| percent < t)
+        .map(|t| format!("{percent:.1}% with complete, under the {t}% complete threshold"));
+    assert_eq!(gate(&feature, &files), Vec::from_iter(failure));
+}
+
+/// Tag lines a generated block has, past its description, and the tags they give.
+const RETURN_TAGS: [(&str, &str); 6] = [
+    ("", ""),
+    (" * @returns The thing.\n", "returns"),
+    (" * @return The thing.\n", "returns"),
+    (" * @yields A thing.\n", "yields"),
+    (" * @yield A thing.\n", "yields"),
+    (" * @inheritDoc\n", "inherits"),
+];
+
+/// `require-returns` finds a function or method whose own body returns a value (`return x;`, or an
+/// arrow function's expression body, past the functions and classes inside it) with no `@returns`
+/// or `@return`, unless its return type is `void`, `undefined` or `Promise<void>` or its block has
+/// `@inheritdoc`. `require-yields` finds a generator that yields a value with no `@yields` or
+/// `@yield`.
+#[hegel::test(test_cases = 100)]
+fn returned_and_yielded_values_are_documented(tc: TestCase) {
+    let ((returns_level, returns_on), (yields_level, yields_on)) = (level(&tc), level(&tc));
+    // Each statement, whether it returns a value, and whether it yields one.
+    let statements = vec![
+        ("return 1;", true, false),
+        ("return;", false, false),
+        ("return undefined;", false, false),
+        ("return void 0;", false, false),
+        ("if (x) { return x; }", true, false),
+        ("const g = () => 1;", false, false),
+        ("function inner() { return 1; }", false, false),
+        ("class K { m() { return 1; } }", false, false),
+        ("yield 1;", false, true),
+        ("yield;", false, false),
+        ("const h = function* () { yield 1; };", false, false),
+    ];
+    let annotations = vec![
+        ("", false),
+        (": void", true),
+        (": undefined", true),
+        (": Promise<void>", true),
+        (": number", false),
+        (": Promise<number>", false),
+        (": Array<void>", false),
+    ];
+    let mut source = String::new();
+    let mut wanted = Vec::new();
+    for owner in ["function", "method", "arrow"] {
+        let generator = owner != "arrow" && tc.draw(gs::booleans());
+        let body = tc.draw(gs::vecs(gs::sampled_from(statements.clone())).max_size(3));
+        let body: Vec<_> = body.into_iter().filter(|(text, _, _)| generator || !text.starts_with("yield")).collect();
+        let (annotation, void) = tc.draw(gs::sampled_from(annotations.clone()));
+        let (tag, gives) = tc.draw(gs::sampled_from(RETURN_TAGS.to_vec()));
+        let indent = if owner == "method" { "  " } else { "" };
+        let line = source.matches('\n').count() + usize::from(owner == "method") + 1;
+        if owner == "method" {
+            source += "export class C {\n";
+        }
+        source += &format!("{indent}/**\n{indent} * Docs.\n{tag}{indent} */\n");
+        let star = if generator { "*" } else { "" };
+        let text = body.iter().map(|(t, _, _)| *t).collect::<Vec<_>>().join(" ");
+        let returns = match owner {
+            "function" => {
+                source += &format!("export function{star} f(x){annotation} {{ {text} }}\n");
+                body.iter().any(|(_, r, _)| *r)
+            }
+            "method" => {
+                source += &format!("  {star}m(x){annotation} {{ {text} }}\n}}\n");
+                body.iter().any(|(_, r, _)| *r)
+            }
+            _ => {
+                let expressions =
+                    vec![("1", true), ("undefined", false), ("void 0", false), ("{ return 2; }", true), ("{}", false)];
+                let (expression, returns) = tc.draw(gs::sampled_from(expressions));
+                source += &format!("exports.g = (x){annotation} => {expression};\n");
+                returns
+            }
+        };
+        let column = indent.len() + 1;
+        if returns && !void && !matches!(gives, "returns" | "inherits") {
+            wanted.extend(returns_on.map(|e| (line, column, "require-returns", "missing @returns".to_owned(), e)));
+        }
+        if body.iter().any(|(_, _, y)| *y) && !matches!(gives, "yields" | "inherits") {
+            wanted.extend(yields_on.map(|e| (line, column, "require-yields", "missing @yields".to_owned(), e)));
+        }
+    }
+    wanted.sort();
+    let on = [("require-returns", returns_level), ("require-yields", yields_level)];
+    assert_eq!(diagnose(&source, &on, Rules::default()), wanted, "{source}");
+}
+
+/// `require-throws` finds an exported function or method whose own body throws (outside a `try`
+/// with a `catch`, and past the functions inside it) with no `@throws` or `@exception`, unless its
+/// block has `@inheritdoc`.
+#[hegel::test(test_cases = 100)]
+fn thrown_errors_are_documented(tc: TestCase) {
+    let (throws_level, throws_on) = level(&tc);
+    // Each statement, and whether it throws.
+    let statements = vec![
+        ("throw new Error('no');", true),
+        ("if (x) { throw x; }", true),
+        ("try { throw x; } catch { }", false),
+        ("try { throw x; } finally { }", true),
+        ("try { } catch (e) { throw e; }", true),
+        ("try { } finally { throw x; }", true),
+        ("try { try { throw x; } finally { } } catch { }", false),
+        ("function inner() { throw x; }", false),
+        ("const g = () => { throw x; };", false),
+        ("return 1;", false),
+    ];
+    let tags = vec![
+        ("", false),
+        (" * @throws {Error} When it fails.\n", true),
+        (" * @exception When it fails.\n", true),
+        (" * @inheritdoc\n", true),
+    ];
+    let mut source = String::new();
+    let mut wanted = Vec::new();
+    for (owner, exported) in [("f", true), ("g", false), ("C", true), ("h", true)] {
+        let body = tc.draw(gs::vecs(gs::sampled_from(statements.clone())).max_size(3));
+        let (tag, documented) = tc.draw(gs::sampled_from(tags.clone()));
+        let text = body.iter().map(|(t, _)| *t).collect::<Vec<_>>().join(" ");
+        let (mut line, mut column) = (source.matches('\n').count() + 1, 1);
+        match owner {
+            "C" => {
+                source += &format!("export class C {{\n  /**\n   * Docs.\n{tag}   */\n  m(x) {{ {text} }}\n}}\n");
+                (line, column) = (line + 1, 3);
+            }
+            "h" => source += &format!("/**\n * Docs.\n{tag} */\nexports.h = (x) => {{ {text} }};\n"),
+            name => {
+                let export = if exported { "export " } else { "" };
+                source += &format!("/**\n * Docs.\n{tag} */\n{export}function {name}(x) {{ {text} }}\n");
+            }
+        }
+        if exported && !documented && body.iter().any(|(_, throws)| *throws) {
+            wanted.push((line, column, "require-throws", "missing @throws".to_owned()));
+        }
+    }
+    let on = [("require-throws", throws_level)];
+    assert_eq!(diagnose(&source, &on, Rules::from(Scope::All)), at_level(wanted, throws_on), "{source}");
+}
+
+/// `require-template` finds each type parameter of a function, method, class, interface, interface
+/// method or type alias with no `@template` naming it, where one tag can name several
+/// (`@template T, U`) after a constraint (`@template {string} K`), or with a default
+/// (`@template [T=string]`), unless its block has `@inheritdoc`.
+#[hegel::test(test_cases = 100)]
+fn type_parameters_are_documented(tc: TestCase) {
+    let (template_level, template_on) = level(&tc);
+    let names = ["T", "U", "K"];
+    // Each tag line, and the names it gives.
+    let tags = vec![
+        (" * @template T\n", vec!["T"]),
+        (" * @template T, U Two of them.\n", vec!["T", "U"]),
+        (" * @template T,U\n", vec!["T", "U"]),
+        (" * @template {string} K The key.\n", vec!["K"]),
+        (" * @template [T=string]\n", vec!["T"]),
+        (" * @template\n", vec![]),
+        (" * @inheritDoc\n", names.to_vec()),
+    ];
+    let mut source = String::new();
+    let mut wanted = Vec::new();
+    for owner in ["function", "class", "method", "interface", "signature", "type"] {
+        let mut unique: Vec<&str> = Vec::new();
+        for param in tc.draw(gs::vecs(gs::sampled_from(names.to_vec())).max_size(3)) {
+            if !unique.contains(&param) {
+                unique.push(param);
+            }
+        }
+        let given = tc.draw(gs::vecs(gs::sampled_from(tags.clone())).max_size(2));
+        let generics = if unique.is_empty() { String::new() } else { format!("<{}>", unique.join(", ")) };
+        let block = format!("/**\n * Docs.\n{} */\n", given.iter().map(|(text, _)| *text).collect::<String>());
+        let member = matches!(owner, "method" | "signature");
+        let indented: String = block.lines().map(|l| format!("  {l}\n")).collect();
+        let line = source.matches('\n').count() + 1 + usize::from(member);
+        source += &match owner {
+            "function" => format!("{block}export function f{generics}() {{}}\n"),
+            "class" => format!("{block}export class C{generics} {{}}\n"),
+            "method" => format!("export class D {{\n{indented}  m{generics}() {{}}\n}}\n"),
+            "interface" => format!("{block}export interface I{generics} {{}}\n"),
+            "signature" => format!("export interface J {{\n{indented}  m{generics}(): void;\n}}\n"),
+            _ => format!("{block}export type A{generics} = 1;\n"),
+        };
+        let column = if member { 3 } else { 1 };
+        for param in unique.iter().filter(|p| !given.iter().any(|(_, names)| names.contains(p))) {
+            wanted.push((line, column, "require-template", format!("missing @template for `{param}`")));
+        }
+    }
+    let on = [("require-template", template_level)];
+    assert_eq!(diagnose(&source, &on, Rules::default()), at_level(wanted, template_on), "{source}");
+}
+
+/// `empty-tag-description` finds each `@param`, `@returns`, `@throws` and `@yields` tag (or one of
+/// their other names) that says nothing past its type and name, except a `@returns` of a function
+/// that returns nothing, by its return type or the tag's.
+#[hegel::test(test_cases = 100)]
+fn tags_have_descriptions(tc: TestCase) {
+    let (empty_level, empty_on) = level(&tc);
+    let (annotation, void) = tc.draw(gs::sampled_from(vec![("", false), (": void", true), (": number", false)]));
+    // Each tag line, its name, what it names, whether it says nothing, and whether it's a
+    // `@returns` of nothing by its type.
+    let tags = vec![
+        ("@param {string} a The a.", "param", None, false, false),
+        ("@param {string} a", "param", Some("a"), true, false),
+        ("@arg b", "arg", Some("b"), true, false),
+        ("@argument", "argument", None, true, false),
+        ("@returns {number} The count.", "returns", None, false, false),
+        ("@returns {number}", "returns", None, true, false),
+        ("@return", "return", None, true, false),
+        ("@returns {void}", "returns", None, true, true),
+        ("@returns {Promise<void>}", "returns", None, true, true),
+        ("@throws {Error}", "throws", None, true, false),
+        ("@exception When it fails.", "exception", None, false, false),
+        ("@yields", "yields", None, true, false),
+        ("@yield {number} A number.", "yield", None, false, false),
+        ("@since", "since", None, true, false),
+    ];
+    let drawn = tc.draw(gs::vecs(gs::sampled_from(tags)).max_size(4));
+    let lines: String = drawn.iter().map(|(text, ..)| format!(" * {text}\n")).collect();
+    let source = format!("/**\n * Docs.\n{lines} */\nexport function f(a, b){annotation} {{}}\n");
+    let wanted = drawn.iter().enumerate().filter_map(|(i, (_, kind, name, empty, nothing))| {
+        let counts = *kind != "since" && !(matches!(*kind, "returns" | "return") && (void || *nothing));
+        let name = name.map(|n| format!(" `{n}`")).unwrap_or_default();
+        (counts && *empty).then(|| (i + 3, 4, "empty-tag-description", format!("@{kind}{name} has no description")))
+    });
+    let on = [("empty-tag-description", empty_level)];
+    assert_eq!(diagnose(&source, &on, Rules::default()), at_level(wanted.collect(), empty_on), "{source}");
+}
+
+/// `informative-docs` finds a description whose words, without case and past filler words like
+/// "the" and "gets", are all words of its item's own name, split at camelCase, digits and
+/// separators.
+#[hegel::test(test_cases = 100)]
+fn descriptions_say_more_than_the_name(tc: TestCase) {
+    let (informative_level, informative_on) = level(&tc);
+    let (name, words) = tc.draw(gs::sampled_from(vec![
+        ("userName", vec!["user", "name", "User", "NAME", "user-name", "userName", "user_name"]),
+        ("HTTPServer", vec!["http", "server", "HTTP", "Server"]),
+        ("getValue2", vec!["get", "value", "2", "value2"]),
+        ("id", vec!["id", "ID"]),
+    ]));
+    let filler = ["the", "a", "an", "this", "gets", "sets", "returns", "The"];
+    let pool: Vec<&str> = words.iter().copied().chain(filler).collect();
+    let mut description = tc.draw(gs::vecs(gs::sampled_from(pool)).max_size(4));
+    let extra = tc.draw(gs::booleans());
+    if extra {
+        description.push("cached");
+    }
+    let text = description.join(" ");
+    let member = tc.draw(gs::booleans());
+    // A block with no description has nothing to check.
+    let described = tc.draw(gs::weighted_booleans(0.9));
+    let source = if member {
+        format!("export class C {{\n  /** {text}. */\n  {name}() {{}}\n}}\n")
+    } else if described {
+        format!("/**\n * {text}.\n * @since 1\n */\nexport function {name}() {{}}\n")
+    } else {
+        format!("/**\n * @since 1\n */\nexport function {name}() {{}}\n")
+    };
+    // A description of punctuation alone says no more than the name, too.
+    let (line, column) = if member { (2, 7) } else { (2, 4) };
+    let message = format!("the description only restates the name `{name}`");
+    let wanted =
+        Vec::from_iter((!extra && (member || described)).then_some((line, column, "informative-docs", message)));
+    let on = [("informative-docs", informative_level)];
+    assert_eq!(diagnose(&source, &on, Rules::default()), at_level(wanted, informative_on), "{source}");
+}
+
+/// `valid-link` finds each `{@link}`, `{@linkcode}` or `{@linkplain}` that isn't closed, has an
+/// unescaped `{` inside or no target, or whose target is a plain name or namepath whose first part
+/// the file doesn't declare or import (nor a block declare as a type, nor a JavaScript, browser or
+/// Node.js global define), and each `@see` with no text or whose lone word is such a name. Escaped
+/// links and links in code spans are left be, as are URLs and other targets.
+#[hegel::test(test_cases = 100)]
+fn links_are_well_formed_and_resolve(tc: TestCase) {
+    let (link_level, link_on) = level(&tc);
+    let (default, named) = tc.draw(gs::sampled_from(vec![
+        ("export default function main() {}", Some("main")),
+        ("export default class Main {}", Some("Main")),
+        ("export default 1;", None),
+    ]));
+    let prelude = format!(
+        "import {{ Thing }} from './thing';\nimport * as ns from './ns';\nimport req = require('req');\n\
+         const {{ dest }} = ns;\nexport interface Shape {{}}\nexport type Alias = 1;\nexport enum Color {{}}\n\
+         export namespace Space {{}}\ndeclare module 'm' {{}}\n{default}\nns.call();\n\
+         /** @typedef {{object}} Opt */\nexport function f() {{}}\nexport class K {{}}\n"
+    );
+    let unresolved = |name: &str| format!("`{name}` isn't declared or imported in this file");
+    let undeclared = |name: &str| (named != Some(name)).then(|| (0, unresolved(name)));
+    // Each link, and where in it the finding is and what it says, if it has one.
+    let links: Vec<(&str, Option<(usize, String)>)> = vec![
+        ("{@link Thing}", None),
+        ("{@linkcode ns.x}", None),
+        ("{@linkplain dest}", None),
+        ("{@link Shape#area}", None),
+        ("{@link Alias}", None),
+        ("{@link Color~red}", None),
+        ("{@link Space}", None),
+        ("{@link req}", None),
+        ("{@link Opt}", None),
+        ("{@link K.m()}", None),
+        ("{@link Array}", None),
+        ("{@link document}", None),
+        ("{@link process}", None),
+        ("{@link f|the function}", None),
+        ("{@link Thing more text}", None),
+        ("{@link https://x.dev}", None),
+        ("{@link module:a/b}", None),
+        ("{@link main}", undeclared("main")),
+        ("{@link Main}", undeclared("Main")),
+        ("{@link Nope}", Some((0, unresolved("Nope")))),
+        ("{@linkcode Nope.x|text}", Some((0, unresolved("Nope.x")))),
+        ("{@link}", Some((0, "{@link} has no target".into()))),
+        ("{@linkplain  }", Some((0, "{@linkplain} has no target".into()))),
+        ("{@link Thing", Some((0, "{@link} isn't closed".into()))),
+        ("{@link {a}}", Some((7, "an unescaped `{` in {@link}".into()))),
+        ("{@link a\\{b}", None),
+        ("\\{@link Nope}", None),
+        ("`{@link Nope}`", None),
+    ];
+    let sees: Vec<(&str, Option<(usize, String)>)> = vec![
+        ("@see Thing", None),
+        ("@see https://x.dev", None),
+        ("@see the docs for more", None),
+        ("@see Nope", Some((0, unresolved("Nope")))),
+        ("@see", Some((0, "@see has no text".into()))),
+        ("@see {@link Nope}", Some((5, unresolved("Nope")))),
+    ];
+    let drawn = tc.draw(gs::vecs(gs::sampled_from(links)).max_size(4));
+    let see = tc.draw(gs::optional(gs::sampled_from(sees)));
+    let mut source = prelude;
+    let mut wanted = Vec::new();
+    for (i, (link, finding)) in drawn.iter().enumerate() {
+        let line = source.matches('\n').count() + 2;
+        source += &format!("/**\n * See {link}.\n */\nexport const v{i} = 1;\n");
+        wanted.extend(finding.clone().map(|(at, message)| (line, 8 + at, "valid-link", message)));
+    }
+    if let Some((tag, finding)) = see {
+        let line = source.matches('\n').count() + 3;
+        source += &format!("/**\n * Docs.\n * {tag}\n */\nexport const seen = 1;\n");
+        wanted.extend(finding.map(|(at, message)| (line, 4 + at, "valid-link", message)));
+    }
+    let on = [("valid-link", link_level)];
+    assert_eq!(diagnose(&source, &on, Rules::from(Scope::All)), at_level(wanted, link_on), "{source}");
+}
+
+/// `summary-sentence` finds a summary, a description's first sentence (up to a `.`, `!` or `?`
+/// with a space after it, or else its first paragraph), that's longer than `maxLength` characters
+/// (120 by default) or, with `period` on (the default), doesn't end with one of those.
+#[hegel::test(test_cases = 100)]
+fn summaries_are_short_sentences(tc: TestCase) {
+    let (summary_level, summary_on) = level(&tc);
+    let length = tc.draw(gs::optional(gs::sampled_from(vec![10, 50, 120])));
+    let period = tc.draw(gs::optional(gs::booleans()));
+    let mut options = serde_json::Map::new();
+    options.extend(length.map(|l| ("maxLength".to_owned(), l.into())));
+    options.extend(period.map(|p| ("period".to_owned(), p.into())));
+    let level = summary_level.as_str().or_else(|| summary_level[0].as_str()).unwrap().to_owned();
+    let setting =
+        if options.is_empty() && tc.draw(gs::booleans()) { level.into() } else { serde_json::json!([level, options]) };
+
+    let words = tc.draw(gs::integers::<usize>().min_value(1).max_value(30));
+    let wrap = tc.draw(gs::integers::<usize>().max_value(words - 1));
+    let end = tc.draw(gs::sampled_from(vec![".", "!", "?", "", ":"]));
+    let second = tc.draw(gs::sampled_from(vec!["", " More here."]));
+    let paragraph = tc.draw(gs::sampled_from(vec!["", "\n *\n * Another paragraph."]));
+    let described = tc.draw(gs::weighted_booleans(0.9));
+    let first = vec!["word"; words];
+    let text = format!("{}\n * {}{end}{second}{paragraph}", first[..wrap].join(" "), first[wrap..].join(" "));
+    let source = if described {
+        format!("/**\n * {text}\n * @since 1\n */\nexport const a = 1;\n")
+    } else {
+        "/**\n * @since 1\n */\nexport const a = 1;\n".to_owned()
+    };
+    let summary = if [".", "!", "?"].contains(&end) || second.is_empty() {
+        format!("{}{end}", first.join(" "))
+    } else {
+        format!("{}{end}{second}", first.join(" "))
+    };
+    let (max, period) = (length.unwrap_or(120), period.unwrap_or(true));
+    let (line, column) = if wrap == 0 { (3, 4) } else { (2, 4) };
+    let mut wanted = Vec::new();
+    if described && summary.len() > max {
+        wanted.push((
+            line,
+            column,
+            "summary-sentence",
+            format!("the summary is {} characters, over {max}", summary.len()),
+        ));
+    }
+    if described && period && !summary.ends_with(['.', '!', '?']) {
+        wanted.push((line, column, "summary-sentence", "the summary doesn't end with a period".to_owned()));
+    }
+    let on = [("summary-sentence", setting)];
+    assert_eq!(diagnose(&source, &on, Rules::default()), at_level(wanted, summary_on), "{source}");
+}
+
+/// `doc-markdown` finds each word of a description that looks like code (`snake_case`, `a::b`,
+/// `camelCase`, `PascalCase`) outside code spans, code blocks and inline tags, unless it's a URL,
+/// path or address or in the allowlist (a default one, and the option's), and each lazy
+/// continuation line: one in a list item that's indented less than the item's text.
+#[hegel::test(test_cases = 100)]
+fn descriptions_are_markdown(tc: TestCase) {
+    let (markdown_level, markdown_on) = level(&tc);
+    let allow = tc.draw(gs::booleans());
+    let level = markdown_level.as_str().or_else(|| markdown_level[0].as_str()).unwrap().to_owned();
+    let setting = if allow { serde_json::json!([level, { "allowlist": ["MyThing"] }]) } else { markdown_level };
+    // Each word, and where in it a word that looks like code starts, if it has one.
+    let words: Vec<(&str, Option<usize>)> = vec![
+        ("plain", None),
+        ("fooBar", Some(0)),
+        ("snake_case", Some(0)),
+        ("a::b", Some(0)),
+        ("`fooBar`", None),
+        ("`a b`", None),
+        ("JavaScript", None),
+        ("MyThing", (!allow).then_some(0)),
+        ("https://x.dev/aB", None),
+        ("src/fooBar.ts", None),
+        ("me@fooBar.dev", None),
+        ("{@link fooBar}", None),
+        ("(fooBar).", Some(1)),
+        ("**boldWord**", Some(2)),
+        ("_emphasis_", None),
+        ("2D", None),
+    ];
+    // Each line's list marker, if it's a list item, its indentation if it isn't, its word, and
+    // whether it's blank (0), a fence (1) or text.
+    let count = tc.draw(gs::integers::<usize>().max_value(6));
+    let drawn: Vec<_> = (0..count)
+        .map(|_| {
+            let marker = tc.draw(gs::sampled_from(vec![Some("- "), Some("1. "), Some("* "), None, None, None]));
+            let indent = tc.draw(gs::sampled_from(vec![0, 2, 4]));
+            (marker, indent, tc.draw(gs::sampled_from(words.clone())), tc.draw(gs::integers::<u8>().max_value(9)))
+        })
+        .collect();
+    let mut lines = vec!["Docs.".to_owned()];
+    let mut wanted = Vec::new();
+    let (mut item, mut fenced) = (None::<usize>, false);
+    for (marker, indent, (word, code), shape) in drawn {
+        // The block's first line is `/**`, and its description starts on the next.
+        let line = lines.len() + 2;
+        let text = match (marker, shape) {
+            (_, 0) => {
+                item = None;
+                lines.push(String::new());
+                continue;
+            }
+            (_, 1) => {
+                fenced = !fenced;
+                lines.push("```".into());
+                continue;
+            }
+            (Some(marker), _) => format!("{marker}{word}"),
+            (None, _) => format!("{}{word}", " ".repeat(indent)),
+        };
+        lines.push(text.clone());
+        if fenced {
+            continue;
+        }
+        match marker {
+            Some(marker) => item = Some(marker.len()),
+            None if item.is_some_and(|text| indent < text) => {
+                wanted.push((line, 4, "doc-markdown", "a lazy continuation line in a list item: indent it".to_owned()));
+            }
+            None => {}
+        }
+        if let Some(at) = code {
+            let start = text.len() - word.len() + at;
+            let code = word[at..].trim_end_matches(['*', ')', '.']);
+            wanted.push((line, 4 + start, "doc-markdown", format!("`{code}` is code, so put it in backticks")));
+        }
+    }
+    let block: String =
+        lines.iter().map(|l| if l.is_empty() { " *\n".to_owned() } else { format!(" * {l}\n") }).collect();
+    let source = format!("/**\n{block} * @since 1\n */\nexport const a = 1;\n");
+    let on = [("doc-markdown", setting)];
+    assert_eq!(diagnose(&source, &on, Rules::default()), at_level(wanted, markdown_on), "{source}");
+}
+
+/// Doc check findings on counted items add to what every format that lists problems writes, and
+/// change nothing else: a line each in `unix` and an annotation at its level in `github` (both read
+/// back whole), a bullet each folded away at the end of `markdown`, in `sarif` a result each at its
+/// level and a rule for each check with a finding, after the undocumented items an issue each in
+/// `gitlab` (major at `error`, fingerprinted by path, line, rule and message), a diagnostic each in
+/// `rdjson` and an error each in its file in `checkstyle`, in `junit` a failed test case after its
+/// item for each error and its item's output for the warnings, in `html` a mark and a note on its
+/// line and a list in its file's section, and in `json` its item's `diagnostics`. An ignored
+/// item's findings are left out.
+#[hegel::test(test_cases = 100)]
+fn formats_list_each_doc_check_finding(tc: TestCase) {
+    use pulldown_cmark::{Event, Parser, Tag};
+    let plain_files = reports(&tc, true);
+    let mut files = plain_files.clone();
+    let ids: Vec<&'static str> = check::ids().collect();
+    let messages = vec!["missing @param for `a`", "50% of it, then\nmore", "**bold** <b> & |pipe|"];
+    for item in files.iter_mut().flat_map(|f| &mut f.items) {
+        let count = tc.draw(gs::integers::<usize>().max_value(2));
+        item.facts.diagnostics = (0..count)
+            .map(|_| check::Diagnostic {
+                line: item.line,
+                column: tc.draw(gs::integers::<usize>().min_value(1).max_value(9)),
+                rule: tc.draw(gs::sampled_from(ids.clone())),
+                severity: tc.draw(gs::sampled_from(vec![check::Level::Warn, check::Level::Error])),
+                message: tc.draw(gs::sampled_from(messages.clone())).to_owned(),
+            })
+            .collect();
+    }
+    let found: Vec<(&FileReport, &check::Diagnostic)> = files
+        .iter()
+        .flat_map(|f| {
+            f.items.iter().filter(|i| !i.ignored()).flat_map(move |i| i.facts.diagnostics.iter().map(move |d| (f, d)))
+        })
+        .collect();
+    let slash = |path: &Path| path.display().to_string().replace(std::path::MAIN_SEPARATOR, "/");
+    let level = |d: &check::Diagnostic| if d.severity == check::Level::Error { "error" } else { "warning" };
+    let both = |name: &str| (render(name, &plain_files), render(name, &files));
+
+    let (before, after) = both("unix");
+    let lines: Vec<String> = found
+        .iter()
+        .map(|(f, d)| format!("{}:{}:{}: {}: {}\n", f.path.display(), d.line, d.column, d.rule, d.message))
+        .collect();
+    assert_eq!(after, before + &lines.concat());
+
+    let (before, after) = both("github");
+    let added = after.strip_prefix(&before).unwrap();
+    let read: Vec<String> = added
+        .lines()
+        .map(|line| {
+            let (command, message) = line.strip_prefix("::").unwrap().split_once("::").unwrap();
+            let (name, properties) = command.split_once(' ').unwrap();
+            let properties: Vec<String> = properties.split(',').map(unescape_github).collect();
+            format!("{name} {} {}", properties.join(" "), unescape_github(message))
+        })
+        .collect();
+    let wanted: Vec<String> = found
+        .iter()
+        .map(|(f, d)| {
+            let path = slash(&f.path);
+            format!("{} file={path} line={} col={} title=docov/{} {}", level(d), d.line, d.column, d.rule, d.message)
+        })
+        .collect();
+    assert_eq!(read, wanted, "{after}");
+
+    let (before, after) = both("markdown");
+    let added = after.strip_prefix(&before).unwrap();
+    assert_eq!(added.is_empty(), found.is_empty());
+    let (mut bullets, mut html) = (Vec::new(), String::new());
+    for event in Parser::new(added) {
+        match event {
+            Event::Html(text) => html.push_str(&text),
+            Event::Start(Tag::Item) => bullets.push(String::new()),
+            Event::Code(text) | Event::Text(text) => bullets.last_mut().unwrap().push_str(&text),
+            Event::Start(_) | Event::End(_) => {}
+            other => panic!("{other:?}"),
+        }
+    }
+    let summary = format!("<details>\n<summary>Doc checks: {} found</summary>\n</details>\n", found.len());
+    assert_eq!(html, if found.is_empty() { String::new() } else { summary });
+    let wanted: Vec<String> = found
+        .iter()
+        .map(|(f, d)| {
+            let message = d.message.replace('\n', " ");
+            format!("{}:{}:{} {} {}: {message}", slash(&f.path), d.line, d.column, level(d), d.rule)
+        })
+        .collect();
+    assert_eq!(bullets, wanted, "{added}");
+
+    let (before, after) = both("sarif");
+    let (before, after): (serde_json::Value, serde_json::Value) =
+        (serde_json::from_str(&before).unwrap(), serde_json::from_str(&after).unwrap());
+    let rules = after["runs"][0]["tool"]["driver"]["rules"].as_array().unwrap();
+    let mut with: Vec<&str> = ids.iter().copied().filter(|id| found.iter().any(|(_, d)| d.rule == *id)).collect();
+    with.dedup();
+    let rule_ids: Vec<String> = rules.iter().map(|r| r["id"].as_str().unwrap().to_owned()).collect();
+    let wanted_ids: Vec<String> =
+        std::iter::once("docov/undocumented".to_owned()).chain(with.iter().map(|id| format!("docov/{id}"))).collect();
+    assert_eq!(rule_ids, wanted_ids);
+    assert_eq!(&rules[0], &before["runs"][0]["tool"]["driver"]["rules"][0]);
+    let results = after["runs"][0]["results"].as_array().unwrap();
+    let old = before["runs"][0]["results"].as_array().unwrap();
+    assert_eq!(&results[..old.len()], &old[..]);
+    assert_eq!(results.len() - old.len(), found.len());
+    for (result, (f, d)) in results[old.len()..].iter().zip(&found) {
+        let index = result["ruleIndex"].as_u64().unwrap() as usize;
+        assert_eq!(rules[index]["id"], result["ruleId"]);
+        assert_eq!(result["ruleId"], format!("docov/{}", d.rule));
+        assert!(!rules[index]["shortDescription"]["text"].as_str().unwrap().is_empty());
+        assert_eq!((result["level"].as_str(), result["message"]["text"].as_str()), (Some(level(d)), Some(&*d.message)));
+        let location = &result["locations"][0]["physicalLocation"];
+        let uri = location["artifactLocation"]["uri"].as_str().unwrap();
+        assert_eq!(percent_encoding::percent_decode_str(uri).decode_utf8().unwrap(), slash(&f.path));
+        assert_eq!(
+            (&location["region"]["startLine"], &location["region"]["startColumn"]),
+            (&d.line.into(), &d.column.into())
+        );
+    }
+
+    let rule = |d: &check::Diagnostic| format!("docov/{}", d.rule);
+    let (before, after) = both("gitlab");
+    let (before, after): (serde_json::Value, serde_json::Value) =
+        (serde_json::from_str(&before).unwrap(), serde_json::from_str(&after).unwrap());
+    let (old, issues) = (before.as_array().unwrap(), after.as_array().unwrap());
+    assert_eq!((&issues[..old.len()], issues.len() - old.len()), (&old[..], found.len()));
+    let issues = &issues[old.len()..];
+    for (issue, (f, d)) in issues.iter().zip(&found) {
+        let severity = if d.severity == check::Level::Error { "major" } else { "minor" };
+        let read = (&issue["description"], &issue["check_name"], &issue["severity"]);
+        assert_eq!(read, (&d.message.as_str().into(), &rule(d).into(), &severity.into()));
+        let location = (&issue["location"]["path"], &issue["location"]["lines"]["begin"]);
+        assert_eq!(location, (&slash(&f.path).into(), &d.line.into()));
+        let fingerprint = issue["fingerprint"].as_str().unwrap();
+        assert!(fingerprint.len() == 16 && fingerprint.chars().all(|c| c.is_ascii_hexdigit()), "{fingerprint}");
+    }
+    let key = |(f, d): &(&FileReport, &check::Diagnostic)| (slash(&f.path), d.line, d.rule, d.message.clone());
+    for (a, a_found) in issues.iter().zip(&found) {
+        for (b, b_found) in issues.iter().zip(&found) {
+            assert_eq!(a["fingerprint"] == b["fingerprint"], key(a_found) == key(b_found));
+        }
+    }
+
+    let (before, after) = both("rdjson");
+    let (mut before, mut after): (serde_json::Value, serde_json::Value) =
+        (serde_json::from_str(&before).unwrap(), serde_json::from_str(&after).unwrap());
+    let (old, read) = (before["diagnostics"].take(), after["diagnostics"].take());
+    assert_eq!(before, after);
+    let (old, read) = (old.as_array().unwrap(), read.as_array().unwrap());
+    assert_eq!((&read[..old.len()], read.len() - old.len()), (&old[..], found.len()));
+    for (diagnostic, (f, d)) in read[old.len()..].iter().zip(&found) {
+        let start = &diagnostic["location"]["range"]["start"];
+        let severity = level(d).to_uppercase();
+        let read = (&diagnostic["message"], &diagnostic["severity"], &diagnostic["code"]["value"]);
+        assert_eq!(read, (&d.message.as_str().into(), &severity.into(), &rule(d).into()));
+        let location = (&diagnostic["location"]["path"], &start["line"], &start["column"]);
+        assert_eq!(location, (&slash(&f.path).into(), &d.line.into(), &d.column.into()));
+    }
+
+    // Each file's errors, as their attributes, split into those at undocumented items and the rest.
+    type Errors = Vec<[String; 5]>;
+    let checkstyle = |text: &str| -> Vec<(String, Errors, Errors)> {
+        let document = roxmltree::Document::parse(text).unwrap();
+        let files = document.root_element().children().filter(|n| n.has_tag_name("file"));
+        files
+            .map(|file| {
+                let errors = file.children().filter(|n| n.has_tag_name("error")).map(|e| {
+                    ["line", "column", "severity", "message", "source"].map(|a| e.attribute(a).unwrap().to_owned())
+                });
+                let (items, findings) = errors.partition(|e| e[4] == "docov/undocumented");
+                (file.attribute("name").unwrap().to_owned(), items, findings)
+            })
+            .collect()
+    };
+    let (before, after) = both("checkstyle");
+    let (before, after) = (checkstyle(&before), checkstyle(&after));
+    let wanted: Vec<_> = before
+        .into_iter()
+        .zip(&files)
+        .map(|((path, items, _), f)| {
+            let findings = f.counted().flat_map(|i| &i.facts.diagnostics).map(|d| {
+                [
+                    d.line.to_string(),
+                    d.column.to_string(),
+                    level(d).into(),
+                    d.message.clone(),
+                    format!("docov.{}", d.rule),
+                ]
+            });
+            (path, items, findings.collect())
+        })
+        .collect();
+    assert_eq!(after, wanted);
+
+    let junit = render("junit", &files);
+    let junit = roxmltree::Document::parse(&junit).unwrap();
+    let count = |node: roxmltree::Node, name| node.attribute(name).unwrap().parse::<usize>().unwrap();
+    let errors = |f: &FileReport| {
+        f.counted().flat_map(|i| &i.facts.diagnostics).filter(|d| d.severity == check::Level::Error).count()
+    };
+    let suites = junit.root_element();
+    let (totals, all_errors) = (Totals::of(&files), files.iter().map(errors).sum::<usize>());
+    let wanted = (totals.total + all_errors, totals.total - totals.documented + all_errors);
+    assert_eq!((count(suites, "tests"), count(suites, "failures")), wanted);
+    let suites: Vec<_> = suites.children().filter(|n| n.has_tag_name("testsuite")).collect();
+    assert_eq!(suites.len(), files.len());
+    for (suite, f) in suites.iter().zip(&files) {
+        let (totals, errors) = (f.totals(), errors(f));
+        let wanted = (totals.total + errors, totals.total - totals.documented + errors);
+        assert_eq!((count(*suite, "tests"), count(*suite, "failures")), wanted);
+        let read: Vec<_> = suite
+            .children()
+            .filter(|n| n.has_tag_name("testcase"))
+            .map(|case| {
+                let failure = case
+                    .children()
+                    .find(|n| n.has_tag_name("failure"))
+                    .map(|f| [f.attribute("message").unwrap(), f.attribute("type").unwrap()].map(String::from));
+                let out = case.children().find(|n| n.has_tag_name("system-out")).map(|o| o.text().unwrap().to_owned());
+                (case.attribute("name").unwrap().to_owned(), count(case, "line"), failure, out)
+            })
+            .collect();
+        let mut wanted = Vec::new();
+        for item in f.counted() {
+            let name = format!("{} {}", item.kind.as_str(), item.name);
+            let failure = (!item.documented).then(|| [format!("{name} is undocumented"), "undocumented".into()]);
+            let (errors, warnings): (Vec<_>, Vec<_>) =
+                item.facts.diagnostics.iter().partition(|d| d.severity == check::Level::Error);
+            let out: String = warnings
+                .iter()
+                .map(|d| format!("{}:{}:{}: {}: {}\n", slash(&f.path), d.line, d.column, d.rule, d.message))
+                .collect();
+            wanted.push((name.clone(), item.line, failure, (!out.is_empty()).then_some(out)));
+            for d in errors {
+                let failure = Some([d.message.clone(), d.rule.to_owned()]);
+                wanted.push((format!("{name}: {}", d.rule), d.line, failure, None));
+            }
+        }
+        assert_eq!(read, wanted);
+    }
+
+    // Some files are there to read, with lines past their findings or not, under names any OS takes.
+    let dir = tempfile::tempdir().unwrap();
+    let mut pages = files.clone();
+    for (f, file) in pages.iter_mut().enumerate() {
+        if tc.draw(gs::booleans()) {
+            file.path = dir.path().join(format!("m{f}.ts"));
+            fs::write(&file.path, "x <&>\n".repeat(tc.draw(gs::integers::<usize>().max_value(4)))).unwrap();
+        }
+    }
+    let page = render("html", &pages);
+    let html = roxmltree::Document::parse_with_options(
+        &page,
+        roxmltree::ParsingOptions { allow_dtd: true, ..Default::default() },
+    )
+    .unwrap();
+    let headings: Vec<_> = html.descendants().filter(|n| n.has_tag_name("h2")).collect();
+    let shown: Vec<&FileReport> = pages.iter().filter(|f| f.counted().next().is_some()).collect();
+    assert_eq!(headings.len(), shown.len());
+    let finding = |d: &check::Diagnostic| format!("{} {}: {}", level(d), d.rule, d.message);
+    for (heading, f) in headings.iter().zip(shown) {
+        let findings: Vec<&check::Diagnostic> = f.counted().flat_map(|i| &i.facts.diagnostics).collect();
+        let source = heading.next_sibling_element().unwrap();
+        let list = source.next_sibling_element().filter(|n| n.attribute("class") == Some("findings"));
+        let read: Vec<_> = list
+            .iter()
+            .flat_map(|l| l.children().filter(|n| n.has_tag_name("li")))
+            .map(|li| (li.attribute("class").unwrap().to_owned(), li.text().unwrap().to_owned()))
+            .collect();
+        let wanted: Vec<_> =
+            findings.iter().map(|d| (level(d).to_owned(), format!("{}:{} {}", d.line, d.column, finding(d)))).collect();
+        assert_eq!(read, wanted);
+        for (n, row) in source.descendants().filter(|n| n.has_tag_name("tr")).enumerate().map(|(i, r)| (i + 1, r)) {
+            let on: Vec<String> = findings.iter().filter(|d| d.line == n).map(|d| finding(d)).collect();
+            let items: Vec<&Item> = f.counted().filter(|i| i.line == n).collect();
+            let notes: Vec<String> =
+                items.iter().filter(|i| !i.documented).map(|i| format!("{} {}", i.kind.as_str(), i.name)).collect();
+            let mark = (!items.is_empty()).then_some(if notes.is_empty() { "hit" } else { "miss" });
+            let classes: Vec<&str> = mark.into_iter().chain((!on.is_empty()).then_some("finding")).collect();
+            assert_eq!(row.attribute("class").unwrap_or(""), classes.join(" "));
+            let note = row.children().filter(|c| c.has_tag_name("td")).nth(2).unwrap();
+            assert_eq!(note.text().unwrap_or(""), [notes, on].concat().join(", "));
+        }
+    }
+
+    let (before, after) = both("json");
+    let (before, mut after): (serde_json::Value, serde_json::Value) =
+        (serde_json::from_str(&before).unwrap(), serde_json::from_str(&after).unwrap());
+    let items = after["files"].as_array_mut().unwrap().iter_mut().flat_map(|f| f["items"].as_array_mut().unwrap());
+    for (read, item) in items.zip(files.iter().flat_map(|f| &f.items)) {
+        let shown = (!item.ignored() && !item.facts.diagnostics.is_empty())
+            .then(|| serde_json::to_value(&item.facts.diagnostics).unwrap());
+        assert_eq!(read.as_object_mut().unwrap().remove("diagnostics"), shown);
+    }
+    assert_eq!(after, before);
 }

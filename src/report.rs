@@ -11,8 +11,15 @@ use std::{
 
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
-use crate::{FileReport, Item, Kind};
+use crate::{
+    FileReport, Item, Kind,
+    check::{Diagnostic, Level},
+    feature::{color::Styled, sort::Sort},
+    metric::Metric,
+    packages::Package,
+};
 
 include!(concat!(env!("OUT_DIR"), "/formats.rs"));
 
@@ -60,12 +67,22 @@ pub struct Context<'a> {
     pub failures: &'a [String],
     /// When the scan ran, for formats that say.
     pub now: SystemTime,
-    /// The global threshold, when it is a percentage, which badges are colored by.
+    /// The global threshold, when it is a percentage, which badges and `--color` color by.
     pub threshold: Option<f64>,
     /// How much `text` shows.
     pub text: Text,
     /// The earlier report `--compare` names, which `markdown` shows the change from.
     pub base: Option<&'a Base>,
+    /// Each workspace package's totals, with `--by-package`, which `text` and `json` add.
+    pub packages: Option<&'a [Package]>,
+    /// Whether `text` is colored on stdout, which drops the colors where they don't belong.
+    pub color: bool,
+    /// The order of each file's undocumented items in `text`.
+    pub sort: Sort,
+    /// Whether `text`'s lines say how many of their items have an `@example`.
+    pub examples: bool,
+    /// The metrics past coverage and examples that `text` and `json` add, from the features.
+    pub metrics: &'a [Metric],
 }
 
 /// How much `text` shows.
@@ -93,17 +110,56 @@ fn undocumented(files: &[FileReport]) -> impl Iterator<Item = (&FileReport, &Ite
     files.iter().flat_map(|file| file.counted().filter(|item| !item.documented).map(move |item| (file, item)))
 }
 
-/// `text` with what XML and HTML read as markup escaped, for text and attribute values alike.
+/// What the doc checks found in each counted item, with its file, in the order of the files and
+/// their items.
+pub fn diagnostics(files: &[FileReport]) -> impl Iterator<Item = (&FileReport, &Diagnostic)> {
+    files.iter().flat_map(|file| findings(file).map(move |d| (file, d)))
+}
+
+/// What the doc checks found in `file`'s counted items, in the order of its items.
+fn findings(file: &FileReport) -> impl Iterator<Item = &Diagnostic> {
+    file.counted().flat_map(|item| &item.facts.diagnostics)
+}
+
+/// A doc check finding's level, as SARIF and GitHub annotations name it.
+fn severity(diagnostic: &Diagnostic) -> &'static str {
+    if diagnostic.severity == Level::Error { "error" } else { "warning" }
+}
+
+/// `text` with what XML and HTML read as markup escaped, for text and attribute values alike. Line
+/// breaks are character references, which an XML parser keeps in an attribute, where it would read
+/// a literal one as a space.
 fn escape(text: &str) -> String {
-    text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&#39;")
+    let text = text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+    text.replace('"', "&quot;").replace('\'', "&#39;").replace('\r', "&#13;").replace('\n', "&#10;")
 }
 
 /// The rule each undocumented item breaks, in formats that name one.
 const RULE: &str = "docov/undocumented";
 
-/// `value` as pretty JSON, ending in a newline.
-fn json(value: &impl Serialize) -> String {
-    serde_json::to_string_pretty(value).expect("a report serializes") + "\n"
+/// A doc check's rule, as formats that name rules name it next to [`RULE`]: `docov/require-param`.
+fn rule_id(check: &str) -> String {
+    format!("docov/{check}")
+}
+
+/// `value` as pretty JSON, ending in a newline, with its keys in order.
+fn json(value: Value) -> String {
+    serde_json::to_string_pretty(&sorted(value)).expect("a report serializes") + "\n"
+}
+
+/// `value` with every object's keys in order, whether or not serde_json keeps them in the order
+/// they were added (a dependency turns that on for the whole build), so what docov prints from a
+/// JSON value doesn't change with the build.
+pub(crate) fn sorted(value: Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let mut entries: Vec<_> = map.into_iter().map(|(key, value)| (key, sorted(value))).collect();
+            entries.sort_by(|a, b| a.0.cmp(&b.0));
+            Value::Object(entries.into_iter().collect())
+        }
+        Value::Array(values) => Value::Array(values.into_iter().map(sorted).collect()),
+        value => value,
+    }
 }
 
 /// A line record for each line with counted items, hit when they're all documented. Items come
@@ -251,7 +307,13 @@ pub fn write(outputs: &[Output], context: &Context, stdout: &mut dyn Write) -> R
     for output in outputs {
         let text = output.format.render(context);
         let Some(path) = &output.path else {
-            stdout.write_all(text.as_bytes()).map_err(|e| e.to_string())?;
+            let styled = context.color && output.format.name == text::FORMAT.name;
+            let written = if styled {
+                Styled::new(&mut *stdout, context.threshold).write_all(text.as_bytes())
+            } else {
+                stdout.write_all(text.as_bytes())
+            };
+            written.map_err(|e| e.to_string())?;
             continue;
         };
         let failed = |e: io::Error| format!("{}: {e}", path.display());

@@ -3,11 +3,9 @@
 use std::path::PathBuf;
 
 use rustc_hash::FxHashSet;
-use schemars::JsonSchema;
-use serde::Deserialize;
 
 use crate::{
-    feature::{Entry, Feature},
+    feature::{Entry, Feature, NoKeys},
     git,
     root::Root,
 };
@@ -57,19 +55,24 @@ pub struct Flags {
     staged: bool,
 }
 
-/// No keys: which files changed is up to each run.
-#[derive(Debug, Default, PartialEq, Deserialize, JsonSchema)]
-pub struct Keys {}
 
 impl Feature for Changed {
     type Flags = Flags;
-    type Keys = Keys;
+    type Keys = NoKeys;
 
-    fn new(flags: Flags, _: Keys) -> Self {
+    fn new(flags: Flags, _: NoKeys) -> Self {
         match (flags.changed, flags.staged) {
             (true, _) => Self::Since(flags.since),
             (_, true) => Self::Staged,
             _ => Self::All,
         }
+    }
+
+    fn describe(&self) -> Option<serde_json::Value> {
+        Some(match self {
+            Self::All => "all".into(),
+            Self::Since(since) => serde_json::json!({ "since": since }),
+            Self::Staged => "staged".into(),
+        })
     }
 }

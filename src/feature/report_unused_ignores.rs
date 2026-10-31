@@ -1,16 +1,21 @@
-//! `--report-unused-ignores` and `reportUnusedIgnores`: a `docov-ignore-next-line` over documented
-//! items alone fails the scan.
+//! `--report-unused-ignores` and `reportUnusedIgnores`: a `docov-ignore` comment that changes
+//! nothing fails the scan.
 
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use crate::feature::{Entry, Feature, Run};
+use crate::{
+    Rules,
+    collect::Ignore,
+    feature::{Entry, Feature, Run},
+};
 
 pub(crate) fn entry() -> Entry {
     Entry::of::<ReportUnusedIgnores>()
 }
 
-/// Whether a `docov-ignore-next-line` that covers only documented items fails the scan.
+/// Whether a `docov-ignore` comment that changes nothing fails the scan: one that covers no item, or
+/// only documented ones or ones another comment covers too.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ReportUnusedIgnores(pub bool);
 
@@ -18,7 +23,7 @@ pub struct ReportUnusedIgnores(pub bool);
 #[derive(clap::Args)]
 #[group(skip)]
 pub struct Flags {
-    /// Fail on a docov-ignore-next-line whose items are documented anyway
+    /// Fail on a docov-ignore comment that changes nothing
     #[arg(long)]
     report_unused_ignores: bool,
 }
@@ -27,7 +32,7 @@ pub struct Flags {
 #[derive(Debug, Default, PartialEq, Deserialize, JsonSchema)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Keys {
-    /// Fail on a docov-ignore-next-line whose items are documented anyway.
+    /// Fail on a docov-ignore comment that changes nothing.
     report_unused_ignores: bool,
 }
 
@@ -39,25 +44,21 @@ impl Feature for ReportUnusedIgnores {
         Self(flags.report_unused_ignores || keys.report_unused_ignores)
     }
 
+    fn rules(&self, rules: &mut Rules) {
+        rules.unused_ignores = self.0;
+    }
+
     fn gate(&self, run: &Run) -> Vec<String> {
-        if !self.0 {
-            return Vec::new();
-        }
         let mut unused = Vec::new();
         for report in run.reports {
-            let covered: Vec<_> = report
-                .items
-                .iter()
-                .filter_map(|i| i.ignore.as_ref().filter(|ignore| !ignore.file).map(|ignore| (ignore, i.documented)))
-                .collect();
-            // A comment's items are on the line after it, so they're next to each other.
-            for items in covered.chunk_by(|a, b| a.0 == b.0) {
-                if items.iter().all(|(_, documented)| *documented) {
-                    let (path, ignore) = (report.path.display(), items[0].0);
-                    unused.push(format!("{path}:{}:{}: unused docov-ignore", ignore.line, ignore.column));
-                }
-            }
+            let path = report.path.display();
+            let line = |ignore: &Ignore| format!("{path}:{}:{}: unused docov-ignore", ignore.line, ignore.column);
+            unused.extend(report.unused_ignores.iter().map(line));
         }
         unused
+    }
+
+    fn describe(&self) -> Option<serde_json::Value> {
+        Some(self.0.into())
     }
 }

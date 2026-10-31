@@ -1,6 +1,6 @@
 //! What an item's JSDoc block says, read with oxc_jsdoc.
 
-use oxc_jsdoc::JSDoc;
+use oxc_jsdoc::{JSDoc, JSDocTag, parser::jsdoc_parts::JSDocTagTypeNamePart};
 
 use super::Kind;
 use crate::feature::access::Access;
@@ -18,9 +18,108 @@ pub(super) fn describes(doc: &JSDoc, kind: Kind) -> bool {
         })
 }
 
+/// Whether `doc` is a stub nobody has filled in, as `--fix` writes them: its description is just
+/// `TODO`. Its tags, a stub's empty `@param`s included, don't make it docs.
+pub(crate) fn placeholder(doc: &JSDoc) -> bool {
+    doc.comment().parsed() == "TODO"
+}
+
+/// The tags that make a block about its file.
+const FILE_TAGS: [&str; 5] = ["file", "fileoverview", "overview", "module", "packageDocumentation"];
+
+/// Whether `doc` is about its file, and if it is, whether it says something: a description, or
+/// text on one of its file tags, unless it's a [placeholder].
+pub(super) fn file(doc: &JSDoc) -> Option<bool> {
+    let tags: Vec<_> = doc.tags().iter().filter(|tag| FILE_TAGS.contains(&tag.kind.parsed())).collect();
+    let text = !doc.comment().parsed().is_empty() || tags.iter().any(|tag| !tag.comment().parsed().is_empty());
+    let text = text && !placeholder(doc);
+    (!tags.is_empty()).then_some(text)
+}
+
+/// The type `doc` declares with its first `@typedef` or `@callback`, if that names one, and
+/// whether it's described: a description, or text after the name, unless it's a [placeholder].
+pub(super) fn declared_type(doc: &JSDoc) -> Option<(String, bool)> {
+    let (name, text) = declares(doc)?;
+    let described = !doc.comment().parsed().is_empty() || !text.is_empty();
+    Some((name.to_owned(), described && !placeholder(doc)))
+}
+
+/// The name of the type `doc` declares, as [`declared_type`] finds it.
+pub(super) fn declared_name<'a>(doc: &JSDoc<'a>) -> Option<&'a str> {
+    declares(doc).map(|(name, _)| name)
+}
+
+/// The name and text of `doc`'s first `@typedef` or `@callback`, if that names a type.
+fn declares<'a>(doc: &JSDoc<'a>) -> Option<(&'a str, String)> {
+    let tag = doc.tags().iter().find(|tag| matches!(tag.kind.parsed(), "typedef" | "callback"))?;
+    let (_, name, text) = tag.type_name_comment();
+    Some((name?.parsed(), text.parsed()))
+}
+
+/// Whether `doc` has a `@property` (or `@prop`) named `name`.
+pub(super) fn lists(doc: &JSDoc, name: &str) -> bool {
+    let properties = doc.tags().iter().filter(|tag| matches!(tag.kind.parsed(), "property" | "prop"));
+    properties.filter_map(|tag| tag.type_name_comment().1).any(|named| named.parsed() == name)
+}
+
+/// How many of the release tags `@public`, `@beta`, `@alpha` and `@internal` `doc` has.
+pub(super) fn release_tags(doc: &JSDoc) -> usize {
+    ["public", "beta", "alpha", "internal"].iter().filter(|tag| has_tag(doc, tag)).count()
+}
+
+/// Whether each of `doc`'s `@param` tags (or `@arg`, or `@argument`) has a `{type}`, and so do
+/// its `@returns` (or `@return`).
+pub(super) fn typed(doc: &JSDoc) -> bool {
+    let typing = doc
+        .tags()
+        .iter()
+        .filter(|tag| matches!(tag.kind.parsed(), "param" | "arg" | "argument" | "returns" | "return"));
+    typing.into_iter().all(|tag| tag.r#type().is_some())
+}
+
 /// Whether `doc` has the tag `name` (without its `@`).
-pub(super) fn has_tag(doc: &JSDoc, name: &str) -> bool {
+pub(crate) fn has_tag(doc: &JSDoc, name: &str) -> bool {
     doc.tags().iter().any(|tag| tag.kind.parsed() == name)
+}
+
+/// The text of `doc`'s first `name` tag (without its `@`), if it has one with text.
+pub(super) fn text(doc: &JSDoc, name: &str) -> Option<String> {
+    let tag = doc.tags().iter().find(|tag| tag.kind.parsed() == name)?;
+    Some(tag.comment().parsed()).filter(|text| !text.is_empty())
+}
+
+/// Whether each of `params` (a parameter's name, or `None` for a destructured one) has a matching
+/// `@param` in `doc`, as [`undocumented`] finds them.
+pub(super) fn documents(doc: Option<&JSDoc>, params: &[Option<&str>]) -> bool {
+    undocumented(doc, params).next().is_none()
+}
+
+/// Each of `params` (a parameter's name, or `None` for a destructured one) with no matching
+/// `@param` in `doc`, and its place: a match has its name, or for a destructured one, is at its
+/// place. A dotted name (`@param options.a`) documents a part of a parameter, not one of its own.
+pub(crate) fn undocumented<'p>(
+    doc: Option<&JSDoc>,
+    params: &'p [Option<&'p str>],
+) -> impl Iterator<Item = (usize, Option<&'p str>)> {
+    let names: Vec<&str> = doc.map_or_else(Vec::new, |doc| {
+        param_names(doc).map(|(name, _)| name).filter(|name| !name.contains('.')).collect()
+    });
+    let documented =
+        move |(i, param): &(usize, &Option<&str>)| param.map_or(*i < names.len(), |param| names.contains(&param));
+    params.iter().enumerate().filter(move |p| !documented(p)).map(|(i, param)| (i, *param))
+}
+
+/// The name of each of `doc`'s `@param` tags (or `@arg`, or `@argument`) that has one, and where
+/// the name starts.
+pub(crate) fn param_names<'a>(doc: &JSDoc<'a>) -> impl Iterator<Item = (&'a str, u32)> {
+    let tags = doc.tags().iter().filter(|tag| matches!(tag.kind.parsed(), "param" | "arg" | "argument"));
+    tags.filter_map(name).map(|name| (name.parsed(), name.span.start))
+}
+
+/// The name a tag like `@param` gives, past its type, if it gives one. oxc_jsdoc reads a tag's text
+/// up to the next tag, so a tag with nothing on its line takes the next line's `*` as its name.
+pub(crate) fn name<'a>(tag: &JSDocTag<'a>) -> Option<JSDocTagTypeNamePart<'a>> {
+    tag.type_name_comment().1.filter(|name| name.parsed() != "*")
 }
 
 /// The access level `doc`'s first access tag gives: `@public`, `@protected`, `@package`,

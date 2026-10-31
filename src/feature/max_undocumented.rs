@@ -45,4 +45,8 @@ impl Feature for MaxUndocumented {
         let failure = self.0.and_then(|most| Limit::Undocumented(most).check(Totals::of(run.reports), "limit"));
         failure.into_iter().collect()
     }
+
+    fn describe(&self) -> Option<serde_json::Value> {
+        Some(self.0.into())
+    }
 }

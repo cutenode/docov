@@ -2,7 +2,7 @@
 
 use serde_json::json;
 
-use crate::report::{Context, Format, color, total};
+use crate::report::{Context, Format, color, sorted, total};
 
 /// The format.
 pub const FORMAT: Format =
@@ -11,5 +11,5 @@ pub const FORMAT: Format =
 /// https://shields.io/badges/endpoint-badge
 fn render(context: &Context) -> String {
     let badge = json!({ "schemaVersion": 1, "label": "docs", "message": total(context), "color": color(context).0 });
-    badge.to_string() + "\n"
+    sorted(badge).to_string() + "\n"
 }

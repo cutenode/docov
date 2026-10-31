@@ -6,11 +6,14 @@ fn docov(dir: &Path, args: &[&str]) -> (i32, String, String) {
     docov_in(dir, args, &[])
 }
 
-/// docov with these environment variables, and without GITHUB_ACTIONS unless they set it: CI
-/// would otherwise add annotations to the output.
+/// docov with these environment variables, and without the ones it reads to change its output
+/// (GitHub Actions' annotations and color) unless they set them: CI would otherwise change it.
 fn docov_in(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> (i32, String, String) {
     let mut command = Command::new(env!("CARGO_BIN_EXE_docov"));
-    command.env_remove("GITHUB_ACTIONS").envs(env.iter().copied());
+    for var in ["GITHUB_ACTIONS", "NO_COLOR", "CLICOLOR", "CLICOLOR_FORCE"] {
+        command.env_remove(var);
+    }
+    command.envs(env.iter().copied());
     let out = command.args(args).current_dir(dir).output().unwrap();
     let text = |b: Vec<u8>| String::from_utf8(b).unwrap();
     (out.status.code().unwrap(), text(out.stdout), text(out.stderr))
@@ -369,6 +372,36 @@ fn unused_ignores_fail_when_reported() {
 }
 
 #[test]
+fn ignores_that_cover_nothing_are_unused() {
+    let dir = tempfile::tempdir().unwrap();
+    let files = [
+        ("blank.ts", "// docov-ignore-next-line\n\nexport const a = 1;\n"),
+        ("file.ts", "/** B. */\nexport const b = 1;\n/* docov-ignore-file */\n"),
+        ("generated.ts", "// @generated\n// docov-ignore-next-line\nexport const c = 1;\n"),
+        ("nested.ts", "/** D. */\nexport function d() {\n  // docov-ignore-next-line\n  const e = 1;\n}\n"),
+        ("scope.ts", "// docov-ignore-next-line\nconst f = 1;\n"),
+        ("stacked.ts", "// docov-ignore-next-line\n// docov-ignore-next-line\nexport const g = 1;\n"),
+        ("statement.ts", "// docov-ignore-next-line\ngo();\n/** H. */\nexport const h = 1;\n"),
+        ("top.ts", "// docov-ignore-next-line\n/** I. */\nexport const i = 1;\n"),
+    ];
+    for (name, source) in files {
+        fs::write(dir.path().join(name), source).unwrap();
+    }
+    fs::write(dir.path().join("docov.json"), r#"{ "skipGenerated": true }"#).unwrap();
+    let unused =
+        |names: &[&str]| names.iter().map(|n| format!("docov: {n}: unused docov-ignore\n")).collect::<String>();
+    let (code, _, err) = docov(dir.path(), &["--report-unused-ignores"]);
+    let wanted = ["blank.ts:1:1", "file.ts:3:1", "nested.ts:3:3", "scope.ts:1:1", "stacked.ts:1:1", "statement.ts:1:1"];
+    assert_eq!((code, err), (1, unused(&[&wanted[..], &["top.ts:1:1"]].concat())));
+    // The first comment before a file's code covers its own item, which then needs it.
+    fs::write(dir.path().join("docov.json"), r#"{ "skipGenerated": true, "fileDocs": "require" }"#).unwrap();
+    let (code, _, err) = docov(dir.path(), &["--report-unused-ignores"]);
+    assert_eq!((code, err), (1, unused(&["nested.ts:3:3", "stacked.ts:1:1"])));
+    let (_, out, _) = docov(dir.path(), &["--explain", "nested.ts"]);
+    assert!(out.ends_with("nested.ts:3:3  unused docov-ignore-next-line: removing it changes nothing\n"), "{out}");
+}
+
+#[test]
 fn each_line_of_a_gate_is_an_annotation_of_its_own() {
     let dir = tempfile::tempdir().unwrap();
     let source = "// docov-ignore-next-line\n/** A. */ export const a = 1;\n// docov-ignore-next-line\n/** B. */ export const b = 1;\n";
@@ -390,6 +423,37 @@ fn add_ignore_writes_a_comment_above_each_undocumented_item() {
     assert_eq!(fs::read_to_string(dir.path().join("a.ts")).unwrap(), ignored);
     assert_eq!(docov(dir.path(), &[]).1, " 100.0%  1/1  a.ts\n 100.0%  1/1  total\n");
     assert_eq!(docov(dir.path(), &["--add-ignore"]).2, "docov: added 0 docov-ignore-next-line comments\n");
+}
+
+#[test]
+fn add_ignore_covers_a_files_own_item_once() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("docov.json"), r#"{ "fileDocs": "require" }"#).unwrap();
+    fs::write(dir.path().join("a.js"), "export const a = 1;\n").unwrap();
+    fs::write(dir.path().join("bin.js"), "#!/usr/bin/env node\n/** Doc. */\nexport function c() {}\n").unwrap();
+    assert_eq!(docov(dir.path(), &["--add-ignore"]).2, "docov: added 2 docov-ignore-next-line comments\n");
+    assert_eq!(
+        fs::read_to_string(dir.path().join("a.js")).unwrap(),
+        "// docov-ignore-next-line\nexport const a = 1;\n"
+    );
+    let bin = "#!/usr/bin/env node\n// docov-ignore-next-line\n/** Doc. */\nexport function c() {}\n";
+    assert_eq!(fs::read_to_string(dir.path().join("bin.js")).unwrap(), bin);
+    assert_eq!(
+        docov(dir.path(), &["--report-unused-ignores"]),
+        (0, " 100.0%  1/1  bin.js\n 100.0%  1/1  total\n".into(), String::new())
+    );
+    assert_eq!(docov(dir.path(), &["--add-ignore"]).2, "docov: added 0 docov-ignore-next-line comments\n");
+}
+
+#[test]
+fn add_ignore_lets_a_comment_above_the_code_cover_the_file_too() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("docov.json"), r#"{ "fileDocs": "require" }"#).unwrap();
+    fs::write(dir.path().join("a.js"), "// header\nexport const a = 1;\n").unwrap();
+    assert_eq!(docov(dir.path(), &["--add-ignore"]).2, "docov: added 1 docov-ignore-next-line comment\n");
+    let ignored = "// header\n// docov-ignore-next-line\nexport const a = 1;\n";
+    assert_eq!(fs::read_to_string(dir.path().join("a.js")).unwrap(), ignored);
+    assert_eq!(docov(dir.path(), &["--report-unused-ignores"]).0, 0);
 }
 
 #[test]
@@ -559,10 +623,27 @@ fn overrides_change_exclude_and_threshold_for_their_files() {
     );
     assert_eq!((code, err), (1, wanted));
 
-    fs::write(dir.path().join("docov.json"), r#"{ "overrides": [{ "files": ["src"], "scope": "all" }] }"#).unwrap();
+    fs::write(dir.path().join("docov.json"), r#"{ "overrides": [{ "files": ["src"], "kinds": ["function"] }] }"#)
+        .unwrap();
     let (code, _, err) = docov(dir.path(), &[]);
     assert_eq!(code, 2);
-    assert!(err.contains("unknown field `scope`, expected one of `files`, `exclude`, `threshold`"), "{err}");
+    assert!(err.contains("unknown field `kinds`, expected one of `files`, `exclude`, `threshold`, `scope`"), "{err}");
+}
+
+#[test]
+fn an_overrides_scope_is_for_its_files_and_the_flag_wins() {
+    let dir = project();
+    fs::write(dir.path().join("src/d.ts"), "const d = 1;\n").unwrap();
+    fs::write(dir.path().join("docov.json"), r#"{ "overrides": [{ "files": ["src/d.ts"], "scope": "all" }] }"#)
+        .unwrap();
+    // `--explain` names the file as it's given.
+    let d = "src/d.ts";
+    let (code, out, _) = docov(dir.path(), &["--explain", d]);
+    let wanted = format!("{d}  scope all: set by overrides[0], for src/d.ts\n{d}:1:1  variable d  undocumented\n");
+    assert_eq!((code, out), (0, wanted));
+    let (code, out, _) = docov(dir.path(), &["--explain", d, "--scope", "exports"]);
+    let wanted = format!("{d}:1:1  variable d  left out: not exported by a way of exporting that counts\n");
+    assert_eq!((code, out), (0, wanted));
 }
 
 #[test]
@@ -587,6 +668,86 @@ fn the_checked_in_baseline_schema_is_current() {
         out,
         fs::read_to_string(path).unwrap(),
         "cargo run -- --print-schema baseline > docov-baseline.schema.json"
+    );
+}
+
+#[test]
+fn json_items_say_what_their_docs_have_and_priority_sorts_the_text() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = "/**\n * Adds.\n * @param a The a.\n * @example add(1, 2)\n * @since 1.2.0\n * @deprecated\n */
+export function add(a, b) {}
+export const v = 1;
+export class C {}
+export function one(a) {}
+export function two(a, b) {}
+";
+    fs::write(dir.path().join("a.js"), source).unwrap();
+    let (_, out, _) = docov(dir.path(), &["--format", "json"]);
+    let json: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let add = &json["files"][0]["items"][0];
+    let facts = |item: &serde_json::Value| -> [serde_json::Value; 5] {
+        ["hasDescription", "hasExample", "paramsDocumented", "deprecated", "since"].map(|key| item[key].clone())
+    };
+    assert_eq!(facts(add), serde_json::json!([true, true, false, true, "1.2.0"]).as_array().unwrap().as_slice());
+    let v = serde_json::json!([false, false, null, false, null]);
+    assert_eq!(facts(&json["files"][0]["items"][1]), v.as_array().unwrap().as_slice());
+
+    let listed = |args: &[&str]| -> Vec<String> {
+        let (_, out, _) = docov(dir.path(), args);
+        let items = out.lines().filter(|l| l.starts_with("         "));
+        items.map(|l| l.trim_start().split_once("  ").unwrap().1.to_owned()).collect()
+    };
+    assert_eq!(listed(&[]), ["variable v", "class C", "function one", "function two"]);
+    assert_eq!(listed(&["--sort", "priority"]), ["function two", "function one", "class C", "variable v"]);
+}
+
+#[test]
+fn examples_are_counted_and_gated() {
+    let dir = project();
+    fs::write(dir.path().join("src/c.js"), "/**\n * C.\n * @example new C()\n */\nexport class C {}\n").unwrap();
+    let (code, out, _) = docov(dir.path(), &["--examples"]);
+    let a = Path::new("src").join("a.ts").display().to_string();
+    let c = Path::new("src").join("c.js").display().to_string();
+    assert_eq!(code, 0);
+    assert_eq!(
+        out,
+        format!(
+            "  50.0%  1/2  examples 0/2  {a}\n         {a}:3:1  variable b\n 100.0%  1/1  examples 1/1  {c}\n  66.7%  2/3  examples 1/3  total\n"
+        )
+    );
+    let (_, out, _) = docov(dir.path(), &["--format", "json"]);
+    let json: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!((&json["withExamples"], &json["files"][1]["examplesPercent"]), (&1.into(), &100.0.into()));
+
+    let (code, _, err) = docov(dir.path(), &["--examples-threshold", "50"]);
+    assert_eq!((code, err.as_str()), (1, "docov: 33.3% with examples, under the 50% examples threshold\n"));
+    fs::write(dir.path().join("docov.json"), r#"{ "examplesThreshold": 30 }"#).unwrap();
+    assert_eq!(docov(dir.path(), &[]).0, 0);
+}
+
+#[test]
+fn file_docs_make_each_file_an_item() {
+    let dir = project();
+    fs::write(dir.path().join("src/c.js"), "/** @module c The c module. */\n\n/** c */\nexport class C {}\n").unwrap();
+    fs::write(dir.path().join("docov.json"), r#"{ "fileDocs": "require" }"#).unwrap();
+    let (code, out, _) = docov(dir.path(), &["--format", "json", "--kind", "module"]);
+    let json: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let file =
+        |f: usize| (json["files"][f]["items"][0]["name"].clone(), json["files"][f]["items"][0]["documented"].clone());
+    let a = Path::new("src").join("a.ts").display().to_string();
+    assert_eq!((code, file(0), file(1)), (0, (a.into(), false.into()), ("c".into(), true.into())));
+}
+
+#[test]
+fn virtual_types_count_typedefs_in_javascript() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = "/**\n * A point.\n * @typedef {Object} Point\n */\n/** @callback Done */\nexport const a = 1;\n";
+    fs::write(dir.path().join("a.js"), source).unwrap();
+    fs::write(dir.path().join("docov.json"), r#"{ "virtual": true }"#).unwrap();
+    let (code, out, _) = docov(dir.path(), &[]);
+    assert_eq!(
+        (code, out.as_str()),
+        (0, "  33.3%  1/3  a.js\n         a.js:5:1  type Done\n         a.js:6:1  variable a\n  33.3%  1/3  total\n")
     );
 }
 
@@ -729,4 +890,183 @@ fn each_path_threshold_failure_is_an_annotation_and_ignored_items_stay_out() {
     )
     .unwrap();
     assert_eq!(docov(dir.path(), &["--format", "github"]), (0, String::new(), String::new()));
+}
+
+#[test]
+fn a_config_extends_others_relative_to_itself() {
+    let dir = project();
+    fs::create_dir(dir.path().join("pkg")).unwrap();
+    // `paths` and `exclude` stay relative to the base's folder, and the extending file's keys win.
+    let base = r#"{ "paths": ["src"], "exclude": ["*.js"], "threshold": 100, "scope": "all" }"#;
+    fs::write(dir.path().join("base.json"), base).unwrap();
+    fs::write(dir.path().join("pkg/docov.json"), r#"{ "extends": "../base.json", "scope": "exports" }"#).unwrap();
+    let (code, out, _) = docov(&dir.path().join("pkg"), &["--format", "json"]);
+    let json: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!((code, &json["documented"], &json["total"]), (1, &1.into(), &2.into()));
+
+    fs::write(dir.path().join("base.json"), r#"{ "extends": ["pkg/docov.json"] }"#).unwrap();
+    let (code, _, err) = docov(&dir.path().join("pkg"), &[]);
+    // docov puts the OS's separator between the parts of the files it extends.
+    let up = Path::new("..");
+    let chain = [Path::new("docov.json"), &up.join("base.json"), &up.join("pkg").join("docov.json")]
+        .map(|p| p.display().to_string());
+    assert_eq!((code, err), (2, format!("docov: config files extend each other in a cycle: {}\n", chain.join(" -> "))));
+}
+
+#[test]
+fn print_config_and_list_files_show_what_a_scan_would_use() {
+    let dir = project();
+    fs::write(dir.path().join("docov.json"), r#"{ "paths": ["src"], "threshold": 80 }"#).unwrap();
+    let (code, out, _) = docov(dir.path(), &["--print-config", "--scope", "all"]);
+    let json: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(code, 0);
+    assert_eq!(json["files"], serde_json::json!(["docov.json"]));
+    assert_eq!((&json["features"]["scope"], &json["features"]["threshold"]), (&"all".into(), &80.0.into()));
+
+    let (code, out, _) = docov(dir.path(), &["--list-files"]);
+    let files = [Path::new("src").join("a.ts"), Path::new("src").join("c.js")].map(|p| p.display().to_string() + "\n");
+    assert_eq!((code, out), (0, files.concat()));
+}
+
+#[test]
+fn init_writes_a_config_with_the_current_coverage() {
+    let dir = project();
+    let (code, _, err) = docov(dir.path(), &["init"]);
+    assert_eq!((code, err.as_str()), (0, "docov: wrote docov.json, with a 66% threshold\n"));
+    let json: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(dir.path().join("docov.json")).unwrap()).unwrap();
+    let schema =
+        format!("https://raw.githubusercontent.com/cutenode/docov/v{}/docov.schema.json", env!("CARGO_PKG_VERSION"));
+    assert_eq!(json, serde_json::json!({ "$schema": schema, "threshold": 66 }));
+    assert_eq!(docov(dir.path(), &["init"]), (2, String::new(), "docov: docov.json is already there\n".into()));
+    // Paths still scan: a folder named init as `./init`, and one named help as it is.
+    fs::create_dir(dir.path().join("init")).unwrap();
+    fs::create_dir(dir.path().join("help")).unwrap();
+    for path in ["./init", "help"] {
+        assert_eq!(docov(dir.path(), &[path]), (0, " 100.0%  0/0  total\n".into(), String::new()), "{path}");
+    }
+}
+
+#[test]
+fn every_member_counts_with_members_all() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = "/**\n * Colors.\n * @property Red The red one.\n */\nexport enum Color {\n  Red,\n  Green,\n}\n";
+    fs::write(dir.path().join("a.ts"), source).unwrap();
+    fs::write(dir.path().join("docov.json"), r#"{ "members": "all" }"#).unwrap();
+    let (code, out, _) = docov(dir.path(), &[]);
+    assert_eq!(
+        (code, out.as_str()),
+        (0, "  66.7%  2/3  a.ts\n         a.ts:7:3  property Color.Green\n  66.7%  2/3  total\n")
+    );
+}
+
+#[test]
+fn commonjs_members_count_prototype_and_this_assignments() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = "/** A. */\nfunction A() {}\n/** Runs. */\nA.prototype.run = function () {};\nA.stop = function () {};\nmodule.exports = A;\nthis.b = 1;\n";
+    fs::write(dir.path().join("a.cjs"), source).unwrap();
+    assert_eq!(docov(dir.path(), &[]).1, " 100.0%  1/1  a.cjs\n 100.0%  1/1  total\n");
+    fs::write(dir.path().join("docov.json"), r#"{ "commonjsMembers": true }"#).unwrap();
+    let (code, out, _) = docov(dir.path(), &[]);
+    assert_eq!(
+        (code, out.as_str()),
+        (
+            0,
+            "  50.0%  2/4  a.cjs\n         a.cjs:5:1  method A.stop\n         a.cjs:7:1  variable b\n  50.0%  2/4  total\n"
+        )
+    );
+}
+
+#[test]
+fn release_tags_are_counted_over_top_level_exports() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = "/**\n * A.\n * @public\n */\nexport class A {\n  m() {}\n}\n/** B. */\nexport const b = 1;\n";
+    fs::write(dir.path().join("a.ts"), source).unwrap();
+    let (code, out, _) = docov(dir.path(), &["--release-tags"]);
+    assert_eq!((code, out.lines().last()), (0, Some("  50.0%  1/2  release tags")));
+    let (_, out, _) = docov(dir.path(), &["--format", "json"]);
+    assert!(!out.contains("releaseTagged"));
+    fs::write(dir.path().join("docov.json"), r#"{ "releaseTagsThreshold": 60 }"#).unwrap();
+    let (code, out, err) = docov(dir.path(), &["--format", "json"]);
+    let json: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!((code, &json["releaseTagged"], &json["releaseTagsPercent"]), (1, &1.into(), &50.0.into()));
+    assert_eq!(err, "docov: 50.0% with release tags, under the 60% release tags threshold\n");
+}
+
+#[test]
+fn types_are_counted_over_javascript_functions() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = "/**\n * @param {number} a\n * @returns {number}\n */\nexport function f(a) {}\n/** @param b */\nexport function g(b) {}\n";
+    fs::write(dir.path().join("a.js"), source).unwrap();
+    fs::write(dir.path().join("b.ts"), "/** @param b */\nexport function h(b: string) {}\n").unwrap();
+    let (code, out, _) = docov(dir.path(), &["--types"]);
+    assert_eq!((code, out.lines().last()), (0, Some("  50.0%  1/2  types")));
+    let (code, out, err) = docov(dir.path(), &["--format", "json", "--types-threshold", "75"]);
+    let json: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!((code, &json["typed"], &json["files"][1]["typesPercent"]), (1, &1.into(), &100.0.into()));
+    assert_eq!(err, "docov: 50.0% with types, under the 75% types threshold\n");
+}
+
+#[test]
+fn the_public_scope_follows_the_package_entry_points() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src")).unwrap();
+    fs::write(dir.path().join("package.json"), r#"{ "exports": { ".": "./dist/index.js" } }"#).unwrap();
+    fs::write(dir.path().join("tsconfig.json"), r#"{ "compilerOptions": { "outDir": "dist", "rootDir": "src" } }"#)
+        .unwrap();
+    fs::write(dir.path().join("src/index.ts"), "export { a } from './a.js';\nexport * from './b';\n").unwrap();
+    fs::write(dir.path().join("src/a.ts"), "/** A. */\nexport function a() {}\nexport function hidden() {}\n").unwrap();
+    fs::write(dir.path().join("src/b.ts"), "export const b = 1;\n").unwrap();
+    let (code, out, _) = docov(dir.path(), &["--scope", "public"]);
+    let (a, b) =
+        (Path::new("src").join("a.ts").display().to_string(), Path::new("src").join("b.ts").display().to_string());
+    assert_eq!(
+        (code, out),
+        (0, format!(" 100.0%  1/1  {a}\n   0.0%  0/1  {b}\n         {b}:1:1  variable b\n  50.0%  1/2  total\n"))
+    );
+
+    fs::write(dir.path().join("package.json"), r#"{ "main": "./lib/main.js" }"#).unwrap();
+    let (code, out, err) = docov(dir.path(), &["--scope", "public"]);
+    let package = Path::new("package.json").display();
+    assert_eq!(
+        (code, out.as_str(), err),
+        (2, "", format!("docov: {package}: entry point ./lib/main.js has no source file\n"))
+    );
+}
+
+#[test]
+fn explain_says_why_for_each_item_in_a_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = "/** A. */\nexport function a() {}\nexport class C {\n  constructor() {}\n}\n/** @internal */\nexport const i = 1;\n";
+    fs::write(dir.path().join("a.ts"), source).unwrap();
+    let (code, out, _) = docov(dir.path(), &["--explain", "a.ts", "--exclude-tag", "internal"]);
+    let lines = [
+        "a.ts:2:1  function a  documented by the block at 1:1",
+        "a.ts:3:1  class C  undocumented",
+        "a.ts:4:3  skipped C.constructor: a constructor, which its class's doc covers",
+        "a.ts:7:1  variable i  left out: its JSDoc has @internal",
+    ];
+    assert_eq!((code, out), (0, lines.map(|l| format!("{l}\n")).concat()));
+}
+
+#[test]
+fn doc_checks_print_what_they_find_and_fail_on_errors() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("a.ts"), "/**\n * A.\n * @param b B.\n */\nexport function a(c) {}\n").unwrap();
+    let (code, out, err) = docov(dir.path(), &[]);
+    assert_eq!((code, err.as_str()), (0, ""));
+    let (_, plain, _) = docov(dir.path(), &["--rule", "require-param=warn", "--rule", "param-names=warn"]);
+    assert_eq!(plain, out);
+
+    let found = "docov: a.ts:1:1: require-param: missing @param for `c`\ndocov: a.ts:3:11: param-names: @param `b` doesn't match a parameter\n";
+    let (code, _, err) = docov(dir.path(), &["--rule", "require-param=warn", "--rule", "param-names=warn"]);
+    assert_eq!((code, err.as_str()), (0, found));
+    fs::write(dir.path().join("docov.json"), r#"{ "rules": { "param-names": "error", "require-param": "warn" } }"#)
+        .unwrap();
+    let (code, _, err) = docov(dir.path(), &[]);
+    assert_eq!((code, err), (1, format!("{found}docov: the doc checks found 1 error\n")));
+    let (code, _, err) = docov(dir.path(), &["--rule", "param-names=off", "--rule", "require-param=off"]);
+    assert_eq!((code, err.as_str()), (0, ""));
+    let (code, _, err) = docov(dir.path(), &["--rule", "nope=warn"]);
+    assert_eq!(code, 2, "{err}");
 }

@@ -5,15 +5,15 @@ use std::path::Path;
 use rustc_hash::FxHashMap;
 
 use crate::Totals;
-use crate::report::{Context, Format, escape, slash};
+use crate::report::{Context, Format, diagnostics, escape, severity, slash};
 
 /// The format.
 pub const FORMAT: Format =
     Format { name: "markdown", help: "A summary for $GITHUB_STEP_SUMMARY or a pull request comment", render };
 
-/// The total and any failed gates, a table of the files, and each file's undocumented items,
-/// folded away. With `--compare`, the total and each file's row show the change from the earlier
-/// report too, and files it had that are gone get a row of their own.
+/// The total and any failed gates, a table of the files, each file's undocumented items and then
+/// the doc checks' findings, folded away. With `--compare`, the total and each file's row show the
+/// change from the earlier report too, and files it had that are gone get a row of their own.
 fn render(context: &Context) -> String {
     let totals = Totals::of(context.files);
     let (percent, documented, total) = (totals.percent(), totals.documented, totals.total);
@@ -50,6 +50,15 @@ fn render(context: &Context) -> String {
         out += &format!("\n<details>\n<summary><code>{path}</code>: {} undocumented</summary>\n\n", totals.total - totals.documented);
         for item in file.counted().filter(|i| !i.documented) {
             out += &format!("- {}:{} {} {}\n", item.line, item.column, item.kind.as_str(), code(&item.name));
+        }
+        out += "\n</details>\n";
+    }
+    let found: Vec<_> = diagnostics(context.files).collect();
+    if !found.is_empty() {
+        out += &format!("\n<details>\n<summary>Doc checks: {} found</summary>\n\n", found.len());
+        for (file, d) in found {
+            let (path, rule) = (code(&slash(&file.path)), code(d.rule));
+            out += &format!("- {path}:{}:{} {} {rule}: {}\n", d.line, d.column, severity(d), plain(&d.message));
         }
         out += "\n</details>\n";
     }
