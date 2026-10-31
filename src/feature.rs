@@ -54,6 +54,11 @@ pub trait Feature: Sized + Send + Sync + 'static {
     fn describe(&self) -> Option<Value> {
         None
     }
+
+    /// Turns its keys in `top`, a config file's, into what they are over `base`, the keys of a file
+    /// it extends or nests under, before `top`'s replace `base`'s. Left as is, a key `top` sets
+    /// replaces `base`'s whole.
+    fn merge(_base: &Map<String, Value>, _top: &mut Map<String, Value>) {}
 }
 
 /// What a scan found, for the gates.
@@ -79,12 +84,14 @@ pub struct Entry {
     schema: fn() -> Schema,
     keys: fn(&str) -> serde_json::Result<Box<dyn AnyKeys>>,
     load: fn(&ArgMatches, Box<dyn AnyKeys>) -> Box<dyn Loaded>,
+    merge: fn(&Map<String, Value>, &mut Map<String, Value>),
 }
 
 impl Entry {
     /// The entry for `F`.
     pub fn of<F: Feature>() -> Self {
-        Self { name: "", args: F::Flags::augment_args, schema: schema::<F>, keys: keys::<F>, load: load::<F> }
+        let (args, merge) = (F::Flags::augment_args, F::merge);
+        Self { name: "", args, schema: schema::<F>, keys: keys::<F>, load: load::<F>, merge }
     }
 }
 
@@ -116,6 +123,12 @@ pub fn args(command: Command) -> Command {
 /// Every feature's keys' schemas, in registration order.
 pub(crate) fn schemas() -> impl Iterator<Item = Schema> {
     FEATURES.iter().map(|entry| (entry.schema)())
+}
+
+/// Turns `top`, a config file's keys, into what they are over `base`, by each feature's
+/// [`merge`](Feature::merge).
+pub(crate) fn merge(base: &Map<String, Value>, top: &mut Map<String, Value>) {
+    FEATURES.iter().for_each(|entry| (entry.merge)(base, top));
 }
 
 /// A feature's keys, of a type only its entry knows.

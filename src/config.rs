@@ -114,7 +114,8 @@ struct Layer {
 
 impl Layer {
     /// Puts `top`'s settings over these.
-    fn over(&mut self, top: Self) {
+    fn over(&mut self, mut top: Self) {
+        feature::merge(&self.keys, &mut top.keys);
         self.keys.extend(top.keys);
         self.dirs.extend(top.dirs);
         self.paths = top.paths.or(self.paths.take());

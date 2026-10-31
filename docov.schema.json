@@ -790,7 +790,7 @@
     },
     "rules": {
       "$ref": "#/$defs/Rules",
-      "description": "Doc checks to turn on, by rule id: \"off\", \"warn\" or \"error\", or that level with the check's options, as [\"warn\", { … }]. Every check is off by default."
+      "description": "Doc checks to turn on, by rule id: \"off\", \"warn\" or \"error\", or that level with the check's options, as [\"warn\", { … }]. Every check is off by default. A rule set here replaces that rule's setting in a config this one extends or nests under, keeping its options if this gives a level alone, and leaves that config's other rules be."
     },
     "scope": {
       "$ref": "#/$defs/Scope",

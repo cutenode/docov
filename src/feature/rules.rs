@@ -7,7 +7,7 @@ use std::{borrow::Cow, sync::Arc};
 
 use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde::{Deserialize, Deserializer, de};
-use serde_json::Value;
+use serde_json::{Map, Value, json};
 
 use crate::{
     Rules,
@@ -37,7 +37,7 @@ pub struct Flags {
 #[derive(Debug, Default, PartialEq, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct Keys {
-    /// Doc checks to turn on, by rule id: "off", "warn" or "error", or that level with the check's options, as ["warn", { … }]. Every check is off by default.
+    /// Doc checks to turn on, by rule id: "off", "warn" or "error", or that level with the check's options, as ["warn", { … }]. Every check is off by default. A rule set here replaces that rule's setting in a config this one extends or nests under, keeping its options if this gives a level alone, and leaves that config's other rules be.
     rules: Settings,
 }
 
@@ -88,6 +88,24 @@ impl Feature for DocChecks {
         let errors = report::diagnostics(run.reports).filter(|(_, d)| d.severity == Level::Error).count();
         let plural = if errors == 1 { "" } else { "s" };
         Vec::from_iter((errors > 0).then(|| format!("the doc checks found {errors} error{plural}")))
+    }
+
+    /// Merges `rules` per rule id, the way ESLint's flat config and oxlint's nested configs do.
+    fn merge(base: &Map<String, Value>, top: &mut Map<String, Value>) {
+        let (Some(Value::Object(base)), Some(Value::Object(top))) = (base.get("rules"), top.get_mut("rules")) else {
+            return;
+        };
+        let mut merged = base.clone();
+        for (id, setting) in std::mem::take(top) {
+            // A level alone is `"warn"` or `["warn"]`, which has no second item.
+            let options = merged.get(&id).and_then(|base| base.get(1)).filter(|_| setting.get(1).is_none());
+            let setting = match options {
+                Some(options) => json!([setting.get(0).unwrap_or(&setting), options]),
+                None => setting,
+            };
+            merged.insert(id, setting);
+        }
+        *top = merged;
     }
 
     fn describe(&self) -> Option<Value> {

@@ -111,7 +111,7 @@ Checks on what each counted item's JSDoc block says. Each is off until `--rule I
 "rules": { "require-param": "error", "param-names": "warn", "summary-sentence": ["warn", { "maxLength": 80 }] }
 ```
 
-Each finding prints to stderr as `docov: path:line:column: rule-id: message`, and the `github`, `sarif`, `unix` and `markdown` formats list them too. A finding at `error` fails the scan (exit 1). A flag's level wins over the config's, which keeps its options, and a config's `rules` replaces the whole `rules` of one it extends or nests under. An item a `docov-ignore` comment takes out of the total isn't checked. The checks that want a tag leave a block with `@inheritdoc` alone.
+Each finding prints to stderr as `docov: path:line:column: rule-id: message`, and the `github`, `sarif`, `unix` and `markdown` formats list them too. A finding at `error` fails the scan (exit 1). A flag's level wins over the config's, which keeps its options. A config's `rules` merges by rule id over those of one it extends or nests under, the way ESLint's flat config does: its setting for a rule replaces that one's, keeping its options when it gives a level alone, and that one's other rules stay. An item a `docov-ignore` comment takes out of the total isn't checked. The checks that want a tag leave a block with `@inheritdoc` alone.
 
 - `require-param`: each parameter of a function or method has a matching `@param`, by name, or for a destructured one, at its place (as `paramsDocumented` counts them).
 - `param-names`: each `@param` names a parameter, so none is left over from a rename. A destructured parameter takes the name of the `@param` at its place, and `@param options.a` belongs to `options`.
@@ -144,7 +144,7 @@ Each finding prints to stderr as `docov: path:line:column: rule-id: message`, an
 
 `paths` and `exclude` (gitignore-style globs) are relative to the config's folder. Comments and trailing commas are fine in any of the three.
 
-`"extends": "../docov.json"` (or a list of paths) builds on other config files, relative to the one that names them. Its own keys win, and in a list a later file's win over an earlier one's. Each file's `paths`, `exclude`, `baseline` and the globs in its `threshold` and `overrides` stay relative to that file. Editors don't know `.docovrc` is JSON, so tell yours (in VS Code, `"files.associations": { ".docovrc": "jsonc" }`).
+`"extends": "../docov.json"` (or a list of paths) builds on other config files, relative to the one that names them. Its own keys win (`rules` by rule id), and in a list a later file's win over an earlier one's. Each file's `paths`, `exclude`, `baseline` and the globs in its `threshold` and `overrides` stay relative to that file. Editors don't know `.docovrc` is JSON, so tell yours (in VS Code, `"files.associations": { ".docovrc": "jsonc" }`).
 
 `--jsdoc-config FILE` (or `"jsdocConfig": "jsdoc.json"`, relative to the config) scans the files a [jsdoc config](https://jsdoc.app/about-configuring-jsdoc) documents: its `source.include` are the paths, unless there are paths already, and `source.exclude` leaves files and folders out, both relative to the jsdoc config. `source.includePattern` and `excludePattern` filter files only when the config writes them, since jsdoc's default `includePattern` would leave out TypeScript. It has to be JSON; docov can't read a `.js` config.
 
