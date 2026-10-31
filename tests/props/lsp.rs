@@ -2,6 +2,7 @@
 //! with the JSON-RPC messages an editor sends, and the binary over stdio.
 
 use std::{
+    fs,
     io::{BufReader, Write},
     path::Path,
     process::Stdio,
@@ -428,4 +429,278 @@ fn serve_stdio(root: &Path, input: &str, code: i32) {
     let stderr = String::from_utf8(out.stderr).unwrap();
     assert_eq!(out.status.code(), Some(code), "{stderr}");
     assert_eq!(stderr.is_empty(), code != 2, "{stderr}");
+}
+
+impl Client {
+    /// Starts a server for the workspace folder `folder`, initialized by a client that watches
+    /// files for servers, and accepts its watcher, or refuses it.
+    fn watching(folder: &Path, accept: bool) -> Self {
+        let capabilities = json!({ "workspace": { "didChangeWatchedFiles": { "dynamicRegistration": true } } });
+        let client = Self::start(
+            json!({ "capabilities": capabilities, "workspaceFolders": [{ "uri": uri(folder), "name": "p" }] }),
+        );
+        let Message::Request(request) = client.receive() else { panic!("the server asks to watch files") };
+        assert_eq!(request.method, "client/registerCapability");
+        let registration = &request.params["registrations"][0];
+        assert_eq!(registration["method"], json!("workspace/didChangeWatchedFiles"));
+        let globs = json!(["**/*.{json,jsonc,js,jsx,mjs,cjs,ts,tsx,mts,cts}", "**/.docovrc"]);
+        let watchers = registration["registerOptions"]["watchers"].as_array().unwrap();
+        assert_eq!(Value::Array(watchers.iter().map(|w| w["globPattern"].clone()).collect()), globs);
+        client.send(if accept {
+            Response::new_ok(request.id, ())
+        } else {
+            Response::new_err(request.id, lsp_server::ErrorCode::RequestFailed as i32, "no".into())
+        });
+        client
+    }
+
+    /// What the server sent next: the diagnostics it published, or the message it logged.
+    fn outcome(&self) -> Value {
+        match self.receive() {
+            Message::Notification(n) if n.method == "textDocument/publishDiagnostics" => {
+                n.params["diagnostics"].clone()
+            }
+            Message::Notification(n) if n.method == "window/logMessage" => n.params["message"].clone(),
+            message => panic!("{message:?}"),
+        }
+    }
+
+    /// Tells the server that the files at `paths` changed, as a client that watches them does.
+    fn watched(&self, paths: &[(&Path, u8)]) {
+        let changes: Vec<_> = paths.iter().map(|(path, kind)| json!({ "uri": uri(path), "type": kind })).collect();
+        self.notify("workspace/didChangeWatchedFiles", json!({ "changes": changes }));
+    }
+}
+
+/// What a server that has kept nothing does first for the document at `path` with `text`, with
+/// `folder` as its workspace folder.
+fn fresh(folder: &Path, path: &Path, text: &str) -> Value {
+    let client =
+        Client::start(json!({ "capabilities": {}, "workspaceFolders": [{ "uri": uri(folder), "name": "p" }] }));
+    client.open(&uri(path), text);
+    let outcome = client.outcome();
+    assert_eq!(client.stop(), Ok(true));
+    outcome
+}
+
+/// Long enough after a file changes that its modified time can't be mistaken for one during a
+/// read, which the server doesn't keep: it reads it again, which no property here should lean on.
+fn settle() {
+    thread::sleep(Duration::from_millis(30));
+}
+
+/// The document the cache properties edit around: `a` has a summary but no `@param`, `b` has no
+/// docs, and `c` isn't exported.
+const LIB: &str = "/** Adds. */\nexport function a(x) {}\nexport function b(y) {}\nfunction c() {}\n";
+
+/// A file a cache property edits, from the workspace folder, and what it writes there, or `None`
+/// to delete it.
+type Edit = (&'static str, Option<&'static str>);
+
+/// Edits that each change what the document's diagnostics are read from, in a project as
+/// [`kept_rules_follow_the_files_they_were_read_from`] writes it, each ending as it started: a
+/// config the root one extends from outside the workspace folder (also while it leaves the
+/// document out), the root config, its jsdoc config, a nested config that turns up and goes (also
+/// outside the public scope), one that extends another file, package.json, tsconfig.json, a module
+/// the entry points reach, and one an import names that's added.
+const SCENARIOS: [&[Edit]; 11] = [
+    &[("../shared.json", Some(r#"{ "rules": { "require-param": "error" } }"#)), ("../shared.json", Some(SHARED))],
+    &[("../shared.json", Some(r#"{ "exclude": ["ws/src/lib.ts"] }"#)), ("../shared.json", Some(SHARED))],
+    &[
+        ("docov.json", Some(r#"{ "extends": "../shared.json", "nested": true, "scope": "exports" }"#)),
+        ("src/docov.json", Some(r#"{ "scope": "all" }"#)),
+        ("src/docov.json", None),
+        ("docov.json", Some(CONFIG)),
+    ],
+    &[
+        ("docov.json", Some(r#"{ "extends": "../shared.json", "nested": true, "scope": "exports" }"#)),
+        ("docov.json", Some(CONFIG)),
+    ],
+    &[("jsdoc.json", Some(r#"{ "source": { "excludePattern": "lib" } }"#)), ("jsdoc.json", Some("{}"))],
+    &[("src/docov.json", Some(r#"{ "scope": "all" }"#)), ("src/docov.json", None)],
+    &[
+        ("src/base.json", Some("{}")),
+        ("src/docov.json", Some(r#"{ "extends": "./base.json" }"#)),
+        ("src/base.json", Some(r#"{ "scope": "all" }"#)),
+        ("src/docov.json", None),
+        ("src/base.json", None),
+    ],
+    &[("package.json", Some(r#"{ "exports": "./src/lib.ts" }"#)), ("package.json", Some(PACKAGE))],
+    &[
+        ("package.json", Some(r#"{ "exports": "./dist/index.js" }"#)),
+        ("tsconfig.json", Some(r#"{ "compilerOptions": { "outDir": "dist", "rootDir": "src" } }"#)),
+        ("package.json", Some(PACKAGE)),
+        ("tsconfig.json", None),
+    ],
+    &[("src/index.ts", Some("export * from './lib.js';\n")), ("src/index.ts", Some(INDEX))],
+    &[("src/extra.ts", Some("export { b } from './lib.js';\n")), ("src/extra.ts", None)],
+];
+
+const SHARED: &str = r#"{ "rules": { "require-param": "warn" } }"#;
+const CONFIG: &str =
+    r#"{ "extends": "../shared.json", "nested": true, "scope": "public", "jsdocConfig": "jsdoc.json" }"#;
+const PACKAGE: &str = r#"{ "exports": "./src/index.ts" }"#;
+/// The entry point: `a`, and whatever `./extra.js` exports once it's there.
+const INDEX: &str = "export { a } from './lib.js';\nexport * from './extra.js';\n";
+
+/// After a file the document's rules were read from changes, the next diagnostics are what a
+/// server that kept nothing publishes (or the error it logs), for each of [`SCENARIOS`]' edits, in
+/// any order. The server learns of a change from the client when the client watches files (except
+/// for the file outside the folder, which no watcher covers), and otherwise from each file's
+/// modified time and size.
+#[hegel::test(test_cases = 2)]
+fn kept_rules_follow_the_files_they_were_read_from(tc: TestCase) {
+    let mut order: Vec<_> = (0..SCENARIOS.len()).collect();
+    for i in (1..order.len()).rev() {
+        order.swap(i, tc.draw(gs::integers::<usize>().max_value(i)));
+    }
+    for watch in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let ws = root.join("ws");
+        write(&root, "shared.json", SHARED);
+        for (name, text) in [
+            ("docov.json", CONFIG),
+            ("jsdoc.json", "{}"),
+            ("package.json", PACKAGE),
+            ("src/index.ts", INDEX),
+            ("src/lib.ts", LIB),
+        ] {
+            write(&ws, name, text);
+        }
+        let path = ws.join("src/lib.ts");
+        let client = if watch {
+            Client::watching(&ws, true)
+        } else {
+            Client::start(json!({ "capabilities": {}, "workspaceFolders": [{ "uri": uri(&ws), "name": "p" }] }))
+        };
+        settle();
+        client.open(&uri(&path), LIB);
+        let mut last = client.outcome();
+        assert_eq!(last, fresh(&ws, &path, LIB));
+        for &i in &order {
+            // Each scenario changes the diagnostics somewhere, or it would show nothing.
+            let mut changed = false;
+            for &(name, text) in SCENARIOS[i] {
+                let file = if name.starts_with("..") { root.join("shared.json") } else { ws.join(name) };
+                let existed = file.is_file();
+                match text {
+                    Some(text) => write(&ws, name, text),
+                    None => fs::remove_file(&file).unwrap(),
+                }
+                // Created, changed or deleted, as a watcher says of a file in the folder.
+                if watch && file.starts_with(&ws) {
+                    client.watched(&[(
+                        &file,
+                        if !existed {
+                            1
+                        } else if text.is_some() {
+                            2
+                        } else {
+                            3
+                        },
+                    )]);
+                }
+                settle();
+                client.change(&uri(&path), LIB);
+                let outcome = client.outcome();
+                assert_eq!(outcome, fresh(&ws, &path, LIB), "{name}: {text:?}");
+                changed |= outcome != last;
+                last = outcome;
+            }
+            assert!(changed, "{:?}", SCENARIOS[i]);
+        }
+        assert_eq!(client.stop(), Ok(true));
+    }
+}
+
+/// Rewrites the config at `path` with `scope`, padded with spaces to `size` bytes, and gives it
+/// the modified time `modified` when that's given.
+fn rewrite(path: &Path, scope: &str, size: usize, modified: Option<std::time::SystemTime>) {
+    let text = format!(r#"{{ "scope": "{scope}" }}"#);
+    fs::write(path, format!("{text:<size$}")).unwrap();
+    if let Some(modified) = modified {
+        fs::File::options().write(true).open(path).unwrap().set_modified(modified).unwrap();
+    }
+}
+
+/// While nothing says a file a document's rules were read from changed, the server keeps them: a
+/// config rewritten to the same size and modified time leaves the diagnostics as they were, and so
+/// does any rewrite the client's watcher says nothing about, once the client has registered the
+/// watcher. When the client says the file changed or was saved, or it refused the watcher and the
+/// file's size changed, the diagnostics follow it. A watcher change that isn't about a file, or
+/// whose params are wrong, changes nothing (and the latter is logged).
+#[hegel::test(test_cases = 2)]
+fn kept_rules_stay_while_nothing_says_their_files_changed(tc: TestCase) {
+    let (from, to) = if tc.draw(gs::booleans()) { ("exports", "all") } else { ("all", "exports") };
+    // Watching: no, yes, and refused.
+    for (watch, accept) in [(false, false), (true, true), (true, false)] {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir.path().canonicalize().unwrap();
+        let config = ws.join("docov.json");
+        rewrite(&config, from, 40, None);
+        let path = ws.join("src/lib.ts");
+        write(&ws, "src/lib.ts", LIB);
+        let mut client = if watch {
+            Client::watching(&ws, accept)
+        } else {
+            Client::start(json!({ "capabilities": {}, "workspaceFolders": [{ "uri": uri(&ws), "name": "p" }] }))
+        };
+        settle();
+        client.open(&uri(&path), LIB);
+        let before = client.outcome();
+        assert_eq!(before, fresh(&ws, &path, LIB));
+
+        rewrite(&config, to, 40, Some(fs::metadata(&config).unwrap().modified().unwrap()));
+        let after = fresh(&ws, &path, LIB);
+        assert_ne!(before, after);
+        client.change(&uri(&path), LIB);
+        assert_eq!(client.outcome(), before);
+
+        rewrite(&config, to, 50, None);
+        settle();
+        client.change(&uri(&path), LIB);
+        let trusted = watch && accept;
+        assert_eq!(&client.outcome(), if trusted { &before } else { &after });
+        if trusted {
+            client.watched(&[(&config, 2)]);
+            client.change(&uri(&path), LIB);
+            assert_eq!(client.outcome(), after);
+            rewrite(&config, from, 40, None);
+            settle();
+            client.notify("textDocument/didSave", json!({ "textDocument": { "uri": uri(&config) } }));
+            assert_eq!(client.published(&uri(&config)), json!([]));
+            client.change(&uri(&path), LIB);
+            assert_eq!(client.outcome(), before);
+        }
+
+        client.notify("workspace/didChangeWatchedFiles", json!({ "changes": [{ "uri": "untitled:x", "type": 2 }] }));
+        client.notify("workspace/didChangeWatchedFiles", json!({ "changes": 1 }));
+        assert!(client.logged().starts_with("docov: invalid type"));
+        // The first sent nothing back: the next message is this request's response.
+        assert_eq!(client.actions(&uri(&ws.join("closed.ts")), (0, 1)), json!([]));
+        assert_eq!(client.stop(), Ok(true));
+    }
+}
+
+/// Rules read from a file whose modified time is so close to the read (or past it) that it may
+/// have changed during it aren't kept: a rewrite to the same size and modified time is read again.
+#[hegel::test(test_cases = 2)]
+fn rules_read_while_a_file_may_change_are_read_again(tc: TestCase) {
+    let (from, to) = if tc.draw(gs::booleans()) { ("exports", "all") } else { ("all", "exports") };
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path().canonicalize().unwrap();
+    let config = ws.join("docov.json");
+    let future = std::time::SystemTime::now() + Duration::from_secs(3600);
+    rewrite(&config, from, 40, Some(future));
+    let path = ws.join("src/lib.ts");
+    write(&ws, "src/lib.ts", LIB);
+    let client = Client::start(json!({ "capabilities": {}, "workspaceFolders": [{ "uri": uri(&ws), "name": "p" }] }));
+    settle();
+    client.open(&uri(&path), LIB);
+    assert_eq!(client.outcome(), fresh(&ws, &path, LIB));
+    rewrite(&config, to, 40, Some(future));
+    client.change(&uri(&path), LIB);
+    assert_eq!(client.outcome(), fresh(&ws, &path, LIB));
+    assert_eq!(client.stop(), Ok(true));
 }

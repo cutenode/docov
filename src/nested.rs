@@ -29,6 +29,8 @@ use crate::{
 pub struct Group {
     /// The nested config file they're scanned with, or none for the root config.
     pub config: Option<PathBuf>,
+    /// The config files its settings came from, each before the files it wins over.
+    pub configs: Vec<PathBuf>,
     /// Its settings.
     pub settings: Settings,
     /// What counts in its files, by its settings.
@@ -78,7 +80,8 @@ impl Group {
             Some(place)
         };
         let scoped_by = files.iter().map(scope_of).collect();
-        Ok(Self { config: path, settings, rules, scoped, scoped_by, root, dir, baseline_dir, excused, files })
+        let configs = config.files.clone();
+        Ok(Self { config: path, configs, settings, rules, scoped, scoped_by, root, dir, baseline_dir, excused, files })
     }
 
     /// Each of its files, with the rules it's scanned with.
@@ -157,13 +160,23 @@ impl Plan {
     /// override's for some of its files: the package.json in its config's folder, or else the
     /// nearest one above one of `paths`, read once for the group and its overrides.
     pub fn load_public(&mut self, paths: &[PathBuf]) -> Result<(), Vec<String>> {
+        self.load_public_with(paths, |dir, paths| Api::load(dir, paths).map(Arc::new))
+    }
+
+    /// [`Plan::load_public`], with each group's API from `load`, given the folder and paths
+    /// [`Api::load`] takes, for a caller that keeps them.
+    pub fn load_public_with(
+        &mut self,
+        paths: &[PathBuf],
+        mut load: impl FnMut(&Path, &[PathBuf]) -> Result<Arc<Api>, Vec<String>>,
+    ) -> Result<(), Vec<String>> {
         for group in &mut self.groups {
             let all = std::iter::once(&mut group.rules).chain(group.scoped.values_mut());
             let public: Vec<_> = all.filter(|rules| rules.scope == Scope::Public).collect();
             if public.is_empty() {
                 continue;
             }
-            let api = Arc::new(Api::load(&group.dir, paths)?);
+            let api = load(&group.dir, paths)?;
             public.into_iter().for_each(|rules| rules.public = Some(api.clone()));
         }
         Ok(())
