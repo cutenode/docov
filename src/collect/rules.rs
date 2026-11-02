@@ -10,7 +10,9 @@ use super::{Found, Via, doc};
 use crate::{
     Kind, Scope,
     check::Checks,
-    feature::{access::Access, exports::Exports, file_docs::FileDocs, inherit::Inherit, members::Members},
+    feature::{
+        access::Access, exports::Exports, file_docs::FileDocs, inherit::Inherit, members::Members, syntax::Syntax,
+    },
     glob::Globs,
     public::Api,
 };
@@ -51,6 +53,10 @@ pub struct Rules {
     pub virtual_types: bool,
     /// Which members count.
     pub members: Members,
+    /// The doc comment syntax of the stubs `--fix` writes, which also says how `valid-link` reads
+    /// `#` and which tag `require-template` asks for. The cache stamps by it, since it keeps each
+    /// item's stub and findings.
+    pub syntax: Syntax,
     /// Whether `X.prototype.m = …` and `X.m = …` add members, and `this.a = …` in a CommonJS file
     /// exports.
     pub commonjs_members: bool,

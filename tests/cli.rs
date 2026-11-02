@@ -1086,3 +1086,32 @@ fn public_scope_errors_show_plain_windows_paths() {
     assert!(err.contains("package.json"), "{err}");
     assert!(!err.contains(r"\\?\"), "{err}");
 }
+
+/// A TSDoc-style file (`@typeParam`, `@param x - …`, `{@inheritDoc}`, `@packageDocumentation`,
+/// declaration references in `{@link}`) is fully documented and passes every doc check at `error`
+/// with `"syntax": "tsdoc"`.
+#[test]
+fn a_tsdoc_file_passes_every_doc_check() {
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tsdoc/parser.ts");
+    fs::copy(fixture, dir.path().join("parser.ts")).unwrap();
+    let rules: serde_json::Map<_, _> = docov::check::ids().map(|id| (id.to_owned(), "error".into())).collect();
+    let config = serde_json::json!({ "fileDocs": "require", "syntax": "tsdoc", "rules": rules });
+    fs::write(dir.path().join("docov.json"), config.to_string()).unwrap();
+    let (code, out, err) = docov(dir.path(), &[]);
+    assert_eq!((code, out.as_str(), err.as_str()), (0, " 100.0%  9/9  parser.ts\n 100.0%  9/9  total\n", ""));
+}
+
+/// With `"syntax": "tsdoc"`, `--fix` writes stubs in TSDoc's tags.
+#[test]
+fn tsdoc_syntax_writes_tsdoc_stubs() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("a.ts"), "export function f<T>(a: T) { return a; }\n").unwrap();
+    fs::write(dir.path().join("docov.json"), r#"{ "fileDocs": "require", "syntax": "tsdoc" }"#).unwrap();
+    let (code, _, err) = docov(dir.path(), &["--fix"]);
+    assert_eq!((code, err.as_str()), (0, "docov: added 2 doc stubs\n"));
+    assert_eq!(
+        fs::read_to_string(dir.path().join("a.ts")).unwrap(),
+        "/**\n * TODO\n * @packageDocumentation\n */\n/**\n * TODO\n * @typeParam T -\n * @param a -\n * @returns\n */\nexport function f<T>(a: T) { return a; }\n"
+    );
+}
