@@ -27,6 +27,12 @@ on:
 
 permissions: {}
 
+# Back-to-back pushes to main would otherwise race their pr and cargo-pr jobs on the release PR's
+# branch. Runs for the same event and ref wait their turn, the newest replacing any still waiting.
+concurrency:
+  group: release-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: false
+
 defaults:
   run:
     shell: bash
@@ -49,6 +55,7 @@ jobs:
         )
       )
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
       pull-requests: write
@@ -67,6 +74,7 @@ jobs:
   cargo-pr:
     needs: pr
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: write
       pull-requests: read
@@ -89,6 +97,7 @@ jobs:
       && github.event.pull_request.head.repo.full_name == github.repository
       && !github.event.repository.fork
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     concurrency:
       group: release-${{ github.event.pull_request.number }}
       cancel-in-progress: false
@@ -115,6 +124,7 @@ jobs:
           - { platform: win32-arm64, target: aarch64-pc-windows-msvc, os: windows-latest }
           - { platform: win32-x64, target: x86_64-pc-windows-msvc, os: windows-latest }
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     permissions:
       contents: read
     env:
@@ -138,6 +148,7 @@ jobs:
   pack:
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     concurrency:
       group: pack-${{ github.ref }}
       cancel-in-progress: false
@@ -170,6 +181,7 @@ jobs:
     if: needs.pack.outputs.files != '[]'
     needs: pack
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     concurrency:
       group: publish-${{ github.ref }}
       cancel-in-progress: false
@@ -187,6 +199,7 @@ jobs:
   cargo-publish:
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     concurrency:
       group: cargo-publish-${{ github.ref }}
       cancel-in-progress: false

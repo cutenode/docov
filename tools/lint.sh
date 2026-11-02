@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Formatting, clippy (for Windows too when its target is installed), and shellcheck where it's
-# installed (GitHub's Linux runners have it). CI's lint check.
+# Formatting, clippy (for Windows too when its target is installed), rustdoc, and shellcheck,
+# cargo-deny, zizmor and actionlint where they're installed (CI's Linux lint job has them all).
+# CI's lint check.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -18,6 +19,20 @@ cargo clippy --all-targets -- -D warnings
 if rustup target list --installed | grep -qx x86_64-pc-windows-msvc; then
   cargo clippy --all-targets --target x86_64-pc-windows-msvc -- -D warnings
 fi
+# Broken intra-doc links and bare URLs, which clippy doesn't check.
+RUSTDOCFLAGS='-D warnings' cargo doc --no-deps --locked --document-private-items
 if command -v shellcheck >/dev/null; then
   shellcheck action/*.sh tools/*.sh
+fi
+# Advisories, licenses and sources, configured in deny.toml.
+if command -v cargo-deny >/dev/null; then
+  cargo deny --locked check
+fi
+# The workflows and action.yml. zizmor runs its online audits (impostor commits, known-vulnerable
+# actions) when GH_TOKEN is set, as on CI.
+if command -v zizmor >/dev/null; then
+  zizmor .
+fi
+if command -v actionlint >/dev/null; then
+  actionlint
 fi

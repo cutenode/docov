@@ -1,0 +1,43 @@
+# Monthly, grouped updates, each a week old first, so a compromised release has time to be pulled.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: ci
+      include: scope
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      # oxc's crates break their API between minor versions, so they move together.
+      oxc:
+        patterns: ["oxc_*"]
+        exclude-patterns: [oxc_resolver]
+      # The rest (a crate goes in the first group it matches), but hegeltest, whose beta releases
+      # break its API and get a PR of their own.
+      cargo:
+        patterns: ["*"]
+        exclude-patterns: [hegeltest]
+
+  - package-ecosystem: rust-toolchain
+    directory: /
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: chore
+      include: scope
