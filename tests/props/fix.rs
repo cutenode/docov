@@ -4,6 +4,7 @@ use std::{fs, path::Path};
 
 use docov::feature::{
     Feature, Run, add_ignore::AddIgnore, file_docs::FileDocs, fix::Fix, report_unused_ignores::ReportUnusedIgnores,
+    syntax::Syntax,
 };
 use docov::{FileReport, Kind, Rules, Scope, check, collect, rewrite, root::Root, scan_file};
 use hegel::{TestCase, generators as gs};
@@ -23,8 +24,9 @@ struct Declared {
 /// A module of functions, methods and variables with drawn parameters (named, defaulted,
 /// destructured and rest), type parameters and bodies, some with a block before them already
 /// (empty, a stub, tags alone, or docs) and some sharing a line or not starting one, and what
-/// each should get.
-fn module(tc: &TestCase) -> (String, Vec<Declared>) {
+/// each should get in `syntax`.
+fn module(tc: &TestCase, syntax: Syntax) -> (String, Vec<Declared>) {
+    let (template, hyphen) = if syntax == Syntax::Tsdoc { ("@typeParam", " -") } else { ("@template", "") };
     let mut source = String::new();
     let mut declared = Vec::new();
     let class = tc.draw(gs::booleans());
@@ -60,11 +62,11 @@ fn module(tc: &TestCase) -> (String, Vec<Declared>) {
         let generic = if generics.is_empty() { String::new() } else { format!("<{}>", generics.join(", ")) };
         let (keyword, name) = if class { ("", format!("K.f{i}")) } else { ("export function ", format!("f{i}")) };
         source.push_str(&format!("{indent}{keyword}f{i}{generic}({}) {{ {body} }}\n", params.join(", ")));
-        let mut tags: Vec<String> = generics.iter().map(|t| format!("@template {t}")).collect();
+        let mut tags: Vec<String> = generics.iter().map(|t| format!("{template} {t}{hyphen}")).collect();
         for (place, param) in params.iter().enumerate() {
             let own = param.trim_start_matches("...").split(' ').next().unwrap();
             let named = own.chars().all(|c| c.is_ascii_alphabetic());
-            tags.push(format!("@param {}", if named { own.to_owned() } else { format!("param{place}") }));
+            tags.push(format!("@param {}{hyphen}", if named { own.to_owned() } else { format!("param{place}") }));
         }
         if returns {
             tags.push("@returns".into());
@@ -96,14 +98,15 @@ fn checks() -> Rules {
 /// block already, and changes no other line. The stubs leave the coverage as it was, since a
 /// `TODO` description documents nothing, and running it again writes none. Once each `TODO` is a
 /// description, each stubbed item is documented, with a tag for each parameter, type parameter
-/// and returned value that the checks want.
+/// and returned value that the checks want, in JSDoc's syntax or TSDoc's.
 #[hegel::test(test_cases = 100)]
 fn stubs_go_above_each_undocumented_item(tc: TestCase) {
-    let (source, declared) = module(&tc);
+    let syntax = tc.draw(gs::sampled_from(vec![Syntax::Jsdoc, Syntax::Tsdoc]));
+    let (source, declared) = module(&tc, syntax);
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("m.ts");
     fs::write(&path, &source).unwrap();
-    let rules = Rules::from(Scope::All);
+    let rules = Rules { syntax, ..Rules::from(Scope::All) };
     let before = scan_file(&path, &rules).unwrap();
     let names: Vec<_> = before.items.iter().map(|i| i.name.clone()).collect();
     assert_eq!(names, declared.iter().map(|d| d.name.clone()).collect::<Vec<_>>(), "{source}");
@@ -157,9 +160,9 @@ fn inserts_past_the_end_go_at_the_end(tc: TestCase) {
     assert_eq!(rewrite::insert_above(source, &[(past, text)]), format!("{source}{separator}{inserted}"));
 }
 
-/// A file's own item, with `fileDocs`, gets a stub with `@file` at the top, below a shebang, even in
-/// an empty file, above the stub of an item on its first line, and it counts as undocumented until
-/// its `TODO` is a description.
+/// A file's own item, with `fileDocs`, gets a stub with `@file` (TSDoc's `@packageDocumentation`)
+/// at the top, below a shebang, even in an empty file, above the stub of an item on its first line,
+/// and it counts as undocumented until its `TODO` is a description.
 #[hegel::test(test_cases = 20)]
 fn files_get_a_stub_at_the_top(tc: TestCase) {
     let shebang = tc.draw(gs::sampled_from(vec!["", "#!/usr/bin/env node\n", "#!/usr/bin/env node"]));
@@ -172,13 +175,15 @@ fn files_get_a_stub_at_the_top(tc: TestCase) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("m.ts");
     fs::write(&path, format!("{shebang}{body}")).unwrap();
-    let rules = Rules { file_docs: FileDocs::Require, ..Rules::default() };
+    let (syntax, tag) =
+        tc.draw(gs::sampled_from(vec![(Syntax::Jsdoc, "@file"), (Syntax::Tsdoc, "@packageDocumentation")]));
+    let rules = Rules { file_docs: FileDocs::Require, syntax, ..Rules::default() };
     let before = scan_file(&path, &rules).unwrap();
     let edited = Fix(true).edit(std::slice::from_ref(&before));
     let added = 1 + usize::from(stub.is_some());
     assert_eq!(edited, Some(Ok(format!("added {added} doc stub{}", if added == 1 { "" } else { "s" }))));
     let first = if shebang.is_empty() { "" } else { "#!/usr/bin/env node\n" };
-    let wanted = format!("{first}/**\n * TODO\n * @file\n */\n{}{body}", stub.unwrap_or_default());
+    let wanted = format!("{first}/**\n * TODO\n * {tag}\n */\n{}{body}", stub.unwrap_or_default());
     assert_eq!(fs::read_to_string(&path).unwrap(), wanted);
     let after = scan_file(&path, &rules).unwrap();
     assert_eq!(after.totals(), before.totals());

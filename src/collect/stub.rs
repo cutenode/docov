@@ -5,6 +5,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::{Found, Kind, Lines};
+use crate::feature::syntax::Syntax;
 
 /// A block to put above an undocumented item.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -20,23 +21,30 @@ impl Stub {
     /// on its line, which a block above would document instead. It has a `@template` for each type
     /// parameter, a `@param` for each parameter (a destructured one by its place, as `param0`), and
     /// `@returns` when its body returns a value, the way the doc checks want them; a file's has
-    /// `@file`.
-    pub(super) fn of(found: &Found, lines: &Lines) -> Option<Self> {
+    /// `@file`. In TSDoc's `syntax` those are `@typeParam T -`, `@param x -` and
+    /// `@packageDocumentation`.
+    pub(super) fn of(found: &Found, lines: &Lines, syntax: Syntax) -> Option<Self> {
         let at = found.at as usize;
         let (line, _) = lines.position(at);
         if !lines.source[lines.starts[line - 1]..at].trim().is_empty() {
             return None;
         }
-        let mut tags: Vec<String> = found.shape.type_params.iter().map(|name| format!("@template {name}")).collect();
+        let (template, hyphen, file) = match syntax {
+            Syntax::Jsdoc => ("@template", "", "@file"),
+            Syntax::Tsdoc => ("@typeParam", " -", "@packageDocumentation"),
+        };
+        let mut tags: Vec<String> =
+            found.shape.type_params.iter().map(|name| format!("{template} {name}{hyphen}")).collect();
         let params = found.params.iter().flatten().enumerate();
         tags.extend(
-            params.map(|(i, name)| format!("@param {}", name.map_or_else(|| format!("param{i}"), str::to_owned))),
+            params
+                .map(|(i, name)| format!("@param {}{hyphen}", name.map_or_else(|| format!("param{i}"), str::to_owned))),
         );
         if found.shape.returns && !found.shape.void {
             tags.push("@returns".into());
         }
         if found.kind == Kind::Module {
-            tags.push("@file".into());
+            tags.push(file.into());
         }
         let text = if tags.is_empty() {
             "/** TODO */".to_owned()

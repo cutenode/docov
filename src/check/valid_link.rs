@@ -1,14 +1,20 @@
 //! `valid-link`: each `{@link}`, `{@linkcode}` and `{@linkplain}` is closed, has no unescaped `{`
 //! inside, and has a target, and each `@see` has text. A target that's a plain name, or a namepath
 //! (`A#b`, `A.b`, `A~b`) by its first part, names something the file declares or imports, a type a
-//! block there declares, or a JavaScript, browser or Node.js global. URLs, `module:` paths and other
-//! targets aren't looked up, nor are names in other files.
+//! block there declares, or a JavaScript, browser or Node.js global. URLs, `module:` paths, TSDoc's
+//! declaration references (`(A:constructor)`, `@scope/pkg#A`) and other targets aren't looked up,
+//! nor are names in other files. With `"syntax": "tsdoc"`, the `A` in `A#b` is a package
+//! (`pkg#Foo.bar`), so it isn't either.
 
 use std::sync::LazyLock;
 
 use regex::Regex;
 
-use crate::check::{Check, Entry, Finding, NoOptions, Subject};
+use crate::{
+    check::{Check, Entry, Finding, NoOptions, Subject},
+    collect::doc,
+    feature::syntax::Syntax,
+};
 
 pub(crate) fn entry() -> Entry {
     Entry::of::<ValidLink>()
@@ -36,9 +42,7 @@ impl Check for ValidLink {
         for part in parts {
             let text = part.source_text(subject.source);
             for link in LINK.find_iter(text) {
-                let line = &text[text[..link.start()].rfind('\n').map_or(0, |i| i + 1)..link.start()];
-                // Escaped, or in a code span, it's an example of the syntax.
-                if line.ends_with('\\') || line.matches('`').count() % 2 == 1 {
+                if doc::literal(text, link.start()) {
                     continue;
                 }
                 let (at, tag, rest) = (part.start + link.start() as u32, &link.as_str()[1..], &text[link.end()..]);
@@ -75,12 +79,15 @@ fn unescaped(text: &str, c: char) -> Option<usize> {
 }
 
 /// Adds a finding at `at` when `target` is a plain name or namepath whose first part `subject`'s
-/// file doesn't have.
+/// file doesn't have, unless that part is a TSDoc package name.
 fn resolve(subject: &Subject, target: &str, at: u32, out: &mut Vec<Finding>) {
     if !NAMEPATH.is_match(target) {
         return;
     }
     let first = target.split(['.', '#', '~', '(']).next().unwrap_or_default();
+    if subject.syntax == Syntax::Tsdoc && target[first.len()..].starts_with('#') {
+        return;
+    }
     let global = ["builtin", "browser", "node"]
         .iter()
         .any(|env| javascript_globals::GLOBALS.get(env).is_some_and(|globals| globals.contains_key(first)));

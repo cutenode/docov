@@ -2,8 +2,8 @@ use oxc_span::SourceType;
 
 use super::*;
 use crate::{
-    Scope,
-    feature::{access::Access, exports::Exports, inherit::Inherit},
+    Scope, check,
+    feature::{access::Access, exports::Exports, file_docs::FileDocs, inherit::Inherit, syntax::Syntax},
 };
 
 /// `(name, kind, documented)` for each item `source` has, as TypeScript.
@@ -480,4 +480,125 @@ fn deprecated_items_and_generated_files_can_be_left_out() {
     assert_eq!(names(&format!("/* @generated */\n{source}"), &generated), [""; 0]);
     assert_eq!(names(&format!("/* @generated */\n{source}"), &Rules::default()).len(), 2);
     assert_eq!(names(&format!("// header\n// @generated\n{source}"), &generated).len(), 2, "only the first comment");
+}
+
+/// What every doc check, at `error`, finds in `source`, as TypeScript under the `all` scope, read
+/// in `syntax`: each finding's line, rule and message.
+fn findings(source: &str, syntax: Syntax) -> Vec<(usize, &'static str, String)> {
+    let error = check::Setting { level: check::Level::Error, options: None };
+    let checks = check::Checks::new(check::ids().map(|id| (id, &error))).unwrap();
+    let rules = Rules { checks: Some(std::sync::Arc::new(checks)), syntax, ..Scope::All.into() };
+    let items = scan(source, SourceType::ts(), &rules).unwrap().into_iter();
+    items.flat_map(|i| i.facts.diagnostics).map(|d| (d.line, d.rule, d.message)).collect()
+}
+
+#[test]
+fn type_params_name_type_parameters() {
+    let source = "
+/**
+ * Docs.
+ * @typeParam T - The key.
+ * @typeParam U
+ */
+export type A<T, U, K> = 1;
+";
+    let missing = |tag| (2, "require-template", format!("missing {tag} for `K`"));
+    let empty = (5, "empty-tag-description", "@typeParam `U` has no description".to_owned());
+    assert_eq!(findings(source, Syntax::Jsdoc), [missing("@template"), empty.clone()]);
+    assert_eq!(findings(source, Syntax::Tsdoc), [missing("@typeParam"), empty]);
+}
+
+#[test]
+fn hyphens_separate_a_tags_name_from_its_description() {
+    assert_eq!(doc::past_hyphen("- The x."), "The x.");
+    assert_eq!(doc::past_hyphen("-\tThe x."), "The x.");
+    assert_eq!(doc::past_hyphen("-"), "");
+    assert_eq!(doc::past_hyphen("-1 on failure."), "-1 on failure.");
+    assert_eq!(doc::past_hyphen("The x."), "The x.");
+    let source = "
+/**
+ * Docs.
+ * @typeParam T -
+ * @param a - The a.
+ * @param b -
+ * @param c
+ * @returns -1 when it fails.
+ */
+export function f<T>(a: T, b: T, c: T): number {
+    return -1;
+}
+";
+    let empty = |line, tag: &str| (line, "empty-tag-description", format!("@{tag} has no description"));
+    let wanted = [empty(4, "typeParam `T`"), empty(6, "param `b`"), empty(7, "param `c`")];
+    assert_eq!(findings(source, Syntax::Jsdoc), wanted);
+}
+
+#[test]
+fn inline_inherit_doc_inherits_like_the_tag() {
+    let source = "
+export class A extends B {
+    /** {@inheritDoc B.m} */
+    m(a) { return a; }
+    /**
+     * @remarks {@inheritdoc}
+     */
+    n(a) { return a; }
+    /** @remarks See {@link A}. */
+    o() {}
+    /** @remarks Write `{@inheritDoc}` to inherit. */
+    p(a) {}
+    /** @remarks \\{@inheritDoc} */
+    q(a) {}
+}
+";
+    let rules = Rules { require_description: true, ..Rules::default() };
+    let documented: Vec<bool> =
+        scan(source, SourceType::ts(), &rules).unwrap().into_iter().map(|i| i.documented).collect();
+    assert_eq!(documented, [false, true, true, false, false, false]);
+    let missing = |line| (line, "require-param", "missing @param for `a`".to_owned());
+    assert_eq!(findings(source, Syntax::Jsdoc), [missing(11), missing(13)]);
+}
+
+#[test]
+fn tsdoc_stubs_write_tsdoc_tags() {
+    let source = "export function f<T>(a: T, { b }: { b: T }) { return a; }\n";
+    let stubs = |syntax| {
+        let rules = Rules { syntax, file_docs: FileDocs::Require, ..Rules::default() };
+        let items = scan(source, SourceType::ts(), &rules).unwrap().into_iter();
+        items.map(|i| i.facts.stub.unwrap().text).collect::<Vec<_>>()
+    };
+    assert_eq!(
+        stubs(Syntax::Tsdoc),
+        [
+            "/**\n * TODO\n * @packageDocumentation\n */",
+            "/**\n * TODO\n * @typeParam T -\n * @param a -\n * @param param1 -\n * @returns\n */",
+        ]
+    );
+    assert_eq!(
+        stubs(Syntax::Jsdoc),
+        [
+            "/**\n * TODO\n * @file\n */",
+            "/**\n * TODO\n * @template T\n * @param a\n * @param param1\n * @returns\n */"
+        ]
+    );
+}
+
+#[test]
+fn tsdoc_declaration_references_are_valid_links() {
+    let source = "
+/**
+ * Links.
+ *
+ * {@link Foo.bar | the bar}, {@link pkg#Foo.bar}, {@link @scope/pkg#Foo},
+ * {@link (Foo:constructor)}, {@link Foo.(bar:static)} and {@link Shpae#area}.
+ */
+export class Foo {
+    /** Docs. */
+    static bar() {}
+}
+";
+    assert_eq!(findings(source, Syntax::Tsdoc), []);
+    // JSDoc's `A#b` is a member of the class `A`, which the file has to declare.
+    let unresolved = |line, name| (line, "valid-link", format!("`{name}` isn't declared or imported in this file"));
+    assert_eq!(findings(source, Syntax::Jsdoc), [unresolved(5, "pkg#Foo.bar"), unresolved(6, "Shpae#area")]);
 }
