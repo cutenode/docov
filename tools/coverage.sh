@@ -25,4 +25,5 @@ coverage props --test props
 # No branch threshold: the launcher's one branch V8 counts is the Windows `.exe` name, and each OS
 # only takes one side of it.
 node --test --experimental-test-coverage --test-coverage-include='npm/docov/**' \
-  --test-coverage-lines=100 --test-coverage-functions=100 npm/launcher.test.mjs
+  --test-coverage-lines=100 --test-coverage-functions=100 \
+  npm/launcher.test.mjs tools/release-pr-changelog.test.mjs
