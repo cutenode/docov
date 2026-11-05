@@ -10,7 +10,7 @@ use std::{
 use docov::feature::{
     Feature, access::Access, add_ignore::AddIgnore, commonjs_members::CommonjsMembers, complete::Complete,
     examples::Examples, exports::Exports, file_docs::FileDocs, inherit::Inherit, members::Members,
-    release_tags::ReleaseTags, rules::DocChecks, sort::Sort, types::Types, virtual_types::VirtualTypes,
+    release_tags::ReleaseTags, rules::DocChecks, sort::Sort, syntax::Syntax, types::Types, virtual_types::VirtualTypes,
 };
 use docov::{
     Context, FileReport, Item, Kind, Output, Rules, Scope, Totals, check, collect, collect::Facts, collect::Ignore,
@@ -197,7 +197,7 @@ const fn access(text: &'static str, tags: &'static [&'static str], level: Access
     Block { access: Some(level), ..block(text, true, true, tags) }
 }
 
-const BLOCKS: [Block; 22] = [
+const BLOCKS: [Block; 23] = [
     block("/** Docs.\n * @beta\n * @alpha\n */", true, true, &["beta", "alpha"]),
     block("/** Docs. */", true, true, &[]),
     Block { params: &["a"], ..block("/**\n * Docs.\n * @param a The a.\n */", true, true, &["param"]) },
@@ -227,6 +227,7 @@ const BLOCKS: [Block; 22] = [
     block("/** @classdesc Docs. */", false, true, &["classdesc"]),
     block("/** @inheritDoc */", true, true, &["inheritDoc"]),
     block("/**\n * @INHERITDOC\n */", true, true, &["INHERITDOC"]),
+    block("/** @remarks {@inheritDoc Base} */", true, true, &["remarks"]),
     block("/**\n * Hidden.\n * @hidden\n * @ignore\n */", true, true, &["hidden", "ignore"]),
     access("/** Docs.\n * @private\n */", &["private"], Access::Private),
     access("/**\n * Docs.\n * @access protected\n */", &["access"], Access::Protected),
@@ -3926,7 +3927,9 @@ fn at_level(
 }
 
 /// `require-param` finds each parameter with no matching `@param` (by name, or for a destructured
-/// one, by place), unless the block has `@inheritdoc`, and `param-names` each `@param` whose name,
+/// one, by place), unless the block inherits its docs (`@inheritdoc`, or an inline `{@inheritDoc}`
+/// in its description or a tag's text that isn't escaped or in a code span), and `param-names`
+/// each `@param` whose name,
 /// or a dotted name's root, is no parameter's, nor the name of the `@param` at a destructured
 /// one's place. Only counted functions and methods with a block are checked.
 #[hegel::test(test_cases = 100)]
@@ -3942,12 +3945,20 @@ fn parameters_and_their_tags_match(tc: TestCase) {
         gs::vecs(gs::sampled_from(vec!["a", "b", "c", "e", "z", "[b=1]", "a.x", "z.y", "opts", "opts.v"])).max_size(4),
     );
     let kind = tc.draw(gs::sampled_from(vec!["param", "arg", "argument"]));
-    let inherits = tc.draw(gs::booleans());
+    // Each line, and whether it inherits: an inline tag in a code span, or escaped, doesn't.
+    let (inherit, inherits) = tc.draw(gs::sampled_from(vec![
+        ("", false),
+        (" * @inheritDoc\n", true),
+        (" * {@inheritDoc}\n", true),
+        (" * @remarks {@inheritDoc Base.f}\n", true),
+        (" * @remarks Not `{@inheritDoc}`.\n", false),
+        (" * @remarks \\{@inheritDoc}\n", false),
+    ]));
     let ((require, require_on), (names, names_on)) = (level(&tc), level(&tc));
     let doc: String = tags.iter().map(|name| format!(" * @{kind} {{string}} {name} Docs.\n")).collect();
     let source = format!(
         "/**\n * Docs.\n{doc}{} */\nexport function f({}) {{}}\n/** Docs. */\nfunction hidden(z) {{}}\nexport function bare(q) {{}}\n/** @param a Not a function's. */\nexport const v = 1;\n",
-        if inherits { " * @inheritDoc\n" } else { "" },
+        inherit,
         params.join(", "),
     );
 
@@ -4112,19 +4123,20 @@ fn complete_items_are_a_metric_when_asked(tc: TestCase) {
 }
 
 /// Tag lines a generated block has, past its description, and the tags they give.
-const RETURN_TAGS: [(&str, &str); 6] = [
+const RETURN_TAGS: [(&str, &str); 7] = [
     ("", ""),
     (" * @returns The thing.\n", "returns"),
     (" * @return The thing.\n", "returns"),
     (" * @yields A thing.\n", "yields"),
     (" * @yield A thing.\n", "yields"),
     (" * @inheritDoc\n", "inherits"),
+    (" * {@inheritDoc Base.m}\n", "inherits"),
 ];
 
 /// `require-returns` finds a function or method whose own body returns a value (`return x;`, or an
 /// arrow function's expression body, past the functions and classes inside it) with no `@returns`
-/// or `@return`, unless its return type is `void`, `undefined` or `Promise<void>` or its block has
-/// `@inheritdoc`. `require-yields` finds a generator that yields a value with no `@yields` or
+/// or `@return`, unless its return type is `void`, `undefined` or `Promise<void>` or its block
+/// inherits its docs (`@inheritdoc` or `{@inheritDoc}`). `require-yields` finds a generator that yields a value with no `@yields` or
 /// `@yield`.
 #[hegel::test(test_cases = 100)]
 fn returned_and_yielded_values_are_documented(tc: TestCase) {
@@ -4200,7 +4212,7 @@ fn returned_and_yielded_values_are_documented(tc: TestCase) {
 
 /// `require-throws` finds an exported function or method whose own body throws (outside a `try`
 /// with a `catch`, and past the functions inside it) with no `@throws` or `@exception`, unless its
-/// block has `@inheritdoc`.
+/// block inherits its docs (`@inheritdoc` or `{@inheritDoc}`).
 #[hegel::test(test_cases = 100)]
 fn thrown_errors_are_documented(tc: TestCase) {
     let (throws_level, throws_on) = level(&tc);
@@ -4222,6 +4234,7 @@ fn thrown_errors_are_documented(tc: TestCase) {
         (" * @throws {Error} When it fails.\n", true),
         (" * @exception When it fails.\n", true),
         (" * @inheritdoc\n", true),
+        (" * {@inheritDoc}\n", true),
     ];
     let mut source = String::new();
     let mut wanted = Vec::new();
@@ -4250,9 +4263,10 @@ fn thrown_errors_are_documented(tc: TestCase) {
 }
 
 /// `require-template` finds each type parameter of a function, method, class, interface, interface
-/// method or type alias with no `@template` naming it, where one tag can name several
-/// (`@template T, U`) after a constraint (`@template {string} K`), or with a default
-/// (`@template [T=string]`), unless its block has `@inheritdoc`.
+/// method or type alias with no `@template` or TSDoc `@typeParam` naming it, where one `@template`
+/// can name several (`@template T, U`) after a constraint (`@template {string} K`), or with a
+/// default (`@template [T=string]`), and a `@typeParam` names one before its description
+/// (`@typeParam T - The key.`), unless its block inherits its docs.
 #[hegel::test(test_cases = 100)]
 fn type_parameters_are_documented(tc: TestCase) {
     let (template_level, template_on) = level(&tc);
@@ -4265,7 +4279,11 @@ fn type_parameters_are_documented(tc: TestCase) {
         (" * @template {string} K The key.\n", vec!["K"]),
         (" * @template [T=string]\n", vec!["T"]),
         (" * @template\n", vec![]),
+        (" * @typeParam T - The key.\n", vec!["T"]),
+        (" * @typeParam U\n", vec!["U"]),
+        (" * @typeParam\n", vec![]),
         (" * @inheritDoc\n", names.to_vec()),
+        (" * @remarks {@inheritDoc Base}\n", names.to_vec()),
     ];
     let mut source = String::new();
     let mut wanted = Vec::new();
@@ -4299,9 +4317,10 @@ fn type_parameters_are_documented(tc: TestCase) {
     assert_eq!(diagnose(&source, &on, Rules::default()), at_level(wanted, template_on), "{source}");
 }
 
-/// `empty-tag-description` finds each `@param`, `@returns`, `@throws` and `@yields` tag (or one of
-/// their other names) that says nothing past its type and name, except a `@returns` of a function
-/// that returns nothing, by its return type or the tag's.
+/// `empty-tag-description` finds each `@param`, `@typeParam`, `@returns`, `@throws` and `@yields`
+/// tag (or one of their other names) that says nothing past its type and name and the `-` TSDoc
+/// puts before a description, except a `@returns` of a function that returns nothing, by its
+/// return type or the tag's.
 #[hegel::test(test_cases = 100)]
 fn tags_have_descriptions(tc: TestCase) {
     let (empty_level, empty_on) = level(&tc);
@@ -4312,6 +4331,13 @@ fn tags_have_descriptions(tc: TestCase) {
         ("@param {string} a The a.", "param", None, false, false),
         ("@param {string} a", "param", Some("a"), true, false),
         ("@arg b", "arg", Some("b"), true, false),
+        ("@param a - The a.", "param", Some("a"), false, false),
+        ("@param {string} b -", "param", Some("b"), true, false),
+        ("@typeParam T - The T.", "typeParam", Some("T"), false, false),
+        ("@typeParam T", "typeParam", Some("T"), true, false),
+        ("@typeParam T -", "typeParam", Some("T"), true, false),
+        ("@typeParam", "typeParam", None, true, false),
+        ("@returns -1 when it fails.", "returns", None, false, false),
         ("@argument", "argument", None, true, false),
         ("@returns {number} The count.", "returns", None, false, false),
         ("@returns {number}", "returns", None, true, false),
@@ -4453,9 +4479,57 @@ fn links_are_well_formed_and_resolve(tc: TestCase) {
     assert_eq!(diagnose(&source, &on, Rules::from(Scope::All)), at_level(wanted, link_on), "{source}");
 }
 
+/// `valid-link` leaves TSDoc's declaration references be: a target with text after a `|` goes by
+/// its name, and `@scope/pkg#A`, `(A:constructor)` and `A.(b:static)` aren't looked up, so an `A`
+/// the file doesn't declare is no finding there. With `"syntax": "tsdoc"`, neither is the `A` in
+/// `A#b`, a package's name, while JSDoc's is a class the file has to declare.
+#[hegel::test(test_cases = 50)]
+fn tsdoc_declaration_references_are_left_be(tc: TestCase) {
+    let (link_level, link_on) = level(&tc);
+    let syntax = tc.draw(gs::sampled_from(vec![Syntax::Jsdoc, Syntax::Tsdoc]));
+    let jsdoc = |name| (syntax == Syntax::Jsdoc).then_some(name);
+    // Each link, and the target it doesn't resolve, if there is one.
+    let links = vec![
+        ("{@link Foo.bar | the bar}", None),
+        ("{@link Nope.bar | the bar}", Some("Nope.bar")),
+        ("{@link Foo#bar}", None),
+        ("{@link pkg#Foo.bar}", jsdoc("pkg#Foo.bar")),
+        ("{@link Nope#x}", jsdoc("Nope#x")),
+        ("{@link @scope/pkg#Nope}", None),
+        ("{@link (Nope:constructor)}", None),
+        ("{@link Nope.(x:static)}", None),
+    ];
+    let mut source = "export class Foo {}\n".to_owned();
+    let mut wanted = Vec::new();
+    for (i, (link, unresolved)) in tc.draw(gs::vecs(gs::sampled_from(links)).max_size(4)).iter().enumerate() {
+        let line = source.matches('\n').count() + 2;
+        source += &format!("/**\n * See {link}.\n */\nexport const v{i} = 1;\n");
+        let message = |name| format!("`{name}` isn't declared or imported in this file");
+        wanted.extend(unresolved.map(|name| (line, 8, "valid-link", message(name))));
+    }
+    let on = [("valid-link", link_level)];
+    let rules = Rules { syntax, ..Rules::from(Scope::All) };
+    assert_eq!(diagnose(&source, &on, rules), at_level(wanted, link_on), "{source}");
+}
+
+/// `require-template`'s finding names the tag the config's `syntax` writes: `@template` with
+/// JSDoc's, `@typeParam` with TSDoc's. Either tag names a type parameter in both.
+#[hegel::test(test_cases = 20)]
+fn require_template_asks_for_the_syntaxs_tag(tc: TestCase) {
+    let (template_level, template_on) = level(&tc);
+    let (syntax, tag) = tc.draw(gs::sampled_from(vec![(Syntax::Jsdoc, "@template"), (Syntax::Tsdoc, "@typeParam")]));
+    let given = tc.draw(gs::sampled_from(vec!["", " * @template T\n", " * @typeParam T - The T.\n"]));
+    let source = format!("/**\n * Docs.\n{given} */\nexport function f<T>() {{}}\n");
+    let wanted = given.is_empty().then(|| (1, 1, "require-template", format!("missing {tag} for `T`")));
+    let on = [("require-template", template_level)];
+    let rules = Rules { syntax, ..Rules::default() };
+    assert_eq!(diagnose(&source, &on, rules), at_level(Vec::from_iter(wanted), template_on), "{source}");
+}
+
 /// `summary-sentence` finds a summary, a description's first sentence (up to a `.`, `!` or `?`
 /// with a space after it, or else its first paragraph), that's longer than `maxLength` characters
-/// (120 by default) or, with `period` on (the default), doesn't end with one of those.
+/// (120 by default) or, with `period` on (the default), doesn't end with one of those, unless its
+/// block inherits its docs (`@inheritdoc` or `{@inheritDoc}`) and so its summary.
 #[hegel::test(test_cases = 100)]
 fn summaries_are_short_sentences(tc: TestCase) {
     let (summary_level, summary_on) = level(&tc);
@@ -4474,13 +4548,15 @@ fn summaries_are_short_sentences(tc: TestCase) {
     let second = tc.draw(gs::sampled_from(vec!["", " More here."]));
     let paragraph = tc.draw(gs::sampled_from(vec!["", "\n *\n * Another paragraph."]));
     let described = tc.draw(gs::weighted_booleans(0.9));
+    let inherit = tc.draw(gs::sampled_from(vec!["", "", "", " * {@inheritDoc Base.a}\n", " * @inheritDoc\n"]));
     let first = vec!["word"; words];
     let text = format!("{}\n * {}{end}{second}{paragraph}", first[..wrap].join(" "), first[wrap..].join(" "));
     let source = if described {
-        format!("/**\n * {text}\n * @since 1\n */\nexport const a = 1;\n")
+        format!("/**\n * {text}\n{inherit} * @since 1\n */\nexport const a = 1;\n")
     } else {
-        "/**\n * @since 1\n */\nexport const a = 1;\n".to_owned()
+        format!("/**\n{inherit} * @since 1\n */\nexport const a = 1;\n")
     };
+    let described = described && inherit.is_empty();
     let summary = if [".", "!", "?"].contains(&end) || second.is_empty() {
         format!("{}{end}", first.join(" "))
     } else {
@@ -4585,6 +4661,23 @@ fn descriptions_are_markdown(tc: TestCase) {
     let source = format!("/**\n{block} * @since 1\n */\nexport const a = 1;\n");
     let on = [("doc-markdown", setting)];
     assert_eq!(diagnose(&source, &on, Rules::default()), at_level(wanted, markdown_on), "{source}");
+}
+
+/// The text of a tag like `@param a - text` or `@typeParam T - text` isn't a description, so
+/// `summary-sentence`, `informative-docs` and `doc-markdown` find nothing in it, whatever its words,
+/// length, ending and lists, with a description or without one.
+#[hegel::test(test_cases = 50)]
+fn hyphenated_tag_text_is_no_description(tc: TestCase) {
+    let texts = vec!["- fooBar", "- snake_case", "-", "- id", "- the a", "- - item\n * lazy", "- %LONG%"];
+    let texts: Vec<String> = texts.into_iter().map(|t| t.replace("%LONG%", &["word"; 30].join(" "))).collect();
+    let kind = tc.draw(gs::sampled_from(vec!["param a", "typeParam T"]));
+    let lines: String =
+        tc.draw(gs::vecs(gs::sampled_from(texts)).max_size(3)).iter().map(|t| format!(" * @{kind} {t}\n")).collect();
+    let description = tc.draw(gs::sampled_from(vec!["", " * Docs here.\n"]));
+    let source = format!("/**\n{description}{lines} */\nexport function id<T>(a: T) {{}}\n");
+    let error = serde_json::json!("error");
+    let on = [("summary-sentence", error.clone()), ("informative-docs", error.clone()), ("doc-markdown", error)];
+    assert_eq!(diagnose(&source, &on, Rules::default()), [], "{source}");
 }
 
 /// Doc check findings on counted items add to what every format that lists problems writes, and

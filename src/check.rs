@@ -15,7 +15,10 @@ use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::DeserializeOwned};
 use serde_json::Value;
 
-use crate::collect::{Shape, doc};
+use crate::{
+    collect::{Shape, doc},
+    feature::syntax::Syntax,
+};
 
 /// A check's rule id, and what makes its entry.
 type Registered = (&'static str, fn() -> Entry);
@@ -91,6 +94,9 @@ pub struct Subject<'a, 's> {
     pub source: &'s str,
     /// The names the file declares or imports at its top level, and the types its blocks declare.
     pub names: &'a FxHashSet<&'s str>,
+    /// The doc comment syntax the config writes, which says how a check reads what the two write
+    /// differently.
+    pub syntax: Syntax,
 }
 
 impl Subject<'_, '_> {
@@ -110,10 +116,10 @@ impl Subject<'_, '_> {
         names.iter().any(|name| doc::has_tag(self.doc, name))
     }
 
-    /// Whether its block inherits its docs with `@inheritdoc` (in any case), so the checks that
-    /// want tags leave it be.
+    /// Whether its block inherits its docs with `@inheritdoc` (in any case) or an inline
+    /// `{@inheritDoc}`, so the checks that want tags leave it be.
     pub fn inherits(&self) -> bool {
-        self.doc.tags().iter().any(|tag| tag.kind.parsed().eq_ignore_ascii_case("inheritdoc"))
+        doc::inherits(self.doc)
     }
 
     /// Adds a finding at its block that it's missing `what`, unless it inherits its docs.
