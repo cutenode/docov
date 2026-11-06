@@ -14,8 +14,9 @@ use std::{
 use docov::{FileReport, Rules, Scope, check, collect, lsp, rewrite};
 use hegel::{TestCase, generators as gs};
 use lsp_server::{Connection, Message, Notification, Request, RequestId, Response};
-use lsp_types::Url;
+use lsp_types::Uri;
 use serde_json::{Value, json};
+use url::Url;
 
 use super::{Module, write};
 
@@ -77,7 +78,7 @@ impl Client {
     }
 
     /// The diagnostics published next, for `uri`.
-    fn published(&self, uri: &Url) -> Value {
+    fn published(&self, uri: &Uri) -> Value {
         let params = self.expect("textDocument/publishDiagnostics");
         assert_eq!(params["uri"], json!(uri));
         params["diagnostics"].clone()
@@ -88,12 +89,12 @@ impl Client {
         self.expect("window/logMessage")["message"].as_str().unwrap().to_owned()
     }
 
-    fn open(&self, uri: &Url, text: &str) {
+    fn open(&self, uri: &Uri, text: &str) {
         let document = json!({ "uri": uri, "languageId": "typescript", "version": 1, "text": text });
         self.notify("textDocument/didOpen", json!({ "textDocument": document }));
     }
 
-    fn change(&self, uri: &Url, text: &str) {
+    fn change(&self, uri: &Uri, text: &str) {
         let changes = json!([{ "text": text }]);
         self.notify(
             "textDocument/didChange",
@@ -101,7 +102,7 @@ impl Client {
         );
     }
 
-    fn actions(&mut self, uri: &Url, lines: (u32, u32)) -> Value {
+    fn actions(&mut self, uri: &Uri, lines: (u32, u32)) -> Value {
         let range = json!({ "start": { "line": lines.0, "character": 0 }, "end": { "line": lines.1, "character": 0 } });
         let params = json!({ "textDocument": { "uri": uri }, "range": range, "context": { "diagnostics": [] } });
         self.request("textDocument/codeAction", params).response_result.unwrap()
@@ -115,8 +116,8 @@ impl Client {
     }
 }
 
-fn uri(path: &Path) -> Url {
-    Url::from_file_path(path).unwrap()
+fn uri(path: &Path) -> Uri {
+    Url::from_file_path(path).unwrap().as_str().parse().unwrap()
 }
 
 /// What the server should publish for `report`, a scan of `text`: an information diagnostic at
@@ -284,9 +285,12 @@ fn the_server_says_what_it_can_not_do(tc: TestCase) {
 
     client.open(&uri(&root.join("notes.md")), "# notes");
     assert!(client.logged().contains("not a JavaScript or TypeScript file"));
-    let untitled = Url::parse("untitled:Untitled-1").unwrap();
+    let untitled = "untitled:Untitled-1".parse().unwrap();
     client.open(&untitled, "export const a = 1;\n");
     assert_eq!(client.logged(), "docov: untitled:Untitled-1: not a file");
+    let document = json!({ "uri": "a.ts", "languageId": "typescript", "version": 1, "text": "" });
+    client.notify("textDocument/didOpen", json!({ "textDocument": document }));
+    assert_eq!(client.logged(), "docov: a.ts: not a file");
     client.notify("textDocument/didOpen", json!({ "textDocument": 1 }));
     assert!(client.logged().starts_with("docov: invalid type"));
 

@@ -2,7 +2,7 @@
 //! in UTF-16 code units.
 
 use lsp_types::{
-    CodeAction, CodeActionKind, Diagnostic, DiagnosticSeverity, NumberOrString, Position, Range, TextEdit, Url,
+    CodeAction, CodeActionKind, Diagnostic, DiagnosticSeverity, NumberOrString, Position, Range, TextEdit, Uri,
     WorkspaceEdit,
 };
 
@@ -55,7 +55,7 @@ fn diagnostic(
 
 /// The code action that writes `item`'s stub into the document at `uri`, whose text is `text`, if
 /// it has one.
-pub(super) fn action(uri: &Url, item: &Item, text: &str) -> Option<CodeAction> {
+pub(super) fn action(uri: &Uri, item: &Item, text: &str) -> Option<CodeAction> {
     let stub = item.facts.stub.as_ref()?;
     // The stub as `--fix` writes it, as an insert where the text first differs.
     let edited = rewrite::insert_above(text, &[(stub.line, &stub.text)]);
