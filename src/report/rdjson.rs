@@ -1,4 +1,8 @@
 //! `rdjson`: reviewdog's diagnostic format, for review comments.
+//!
+//! [reviewdog](https://github.com/reviewdog/reviewdog) reads it with `reviewdog -f=rdjson`. It has
+//! a diagnostic at each undocumented item, with the code `docov/undocumented`, and one at its level
+//! for each doc check finding, with the check's rule as its code, such as `docov/require-param`.
 
 use serde_json::json;
 

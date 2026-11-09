@@ -1,4 +1,7 @@
 //! `benchmark`: the total for github-action-benchmark, to chart it over time.
+//!
+//! [github-action-benchmark](https://github.com/benchmark-action/github-action-benchmark) reads it
+//! with `tool: customBiggerIsBetter`.
 
 use serde_json::json;
 
