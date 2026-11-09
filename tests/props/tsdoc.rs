@@ -299,9 +299,12 @@ fn tsdoc_json_sets_up_the_parser(tc: TestCase) {
     assert_eq!(configuration, wanted);
     let mut read = vec![path];
     if extends {
-        read.push(fs::canonicalize(dir.path().join(base_file)).unwrap());
+        read.push(dir.path().join(base_file));
     }
-    assert_eq!(sources, read);
+    // The file it extends comes back as the resolver names it: by its real path, which on
+    // Windows can differ from the temporary folder's in form (a short name, no `\\?\`).
+    let real = |paths: &[std::path::PathBuf]| paths.iter().map(|p| fs::canonicalize(p).unwrap()).collect::<Vec<_>>();
+    assert_eq!(real(&sources), real(&read));
 }
 
 /// A tsdoc.json that can't be used fails with TSDoc's message id for why, naming the file: it
@@ -450,7 +453,9 @@ fn the_cli_reads_each_files_tsdoc_json(tc: TestCase) {
     };
     let undefined: Vec<&str> = files.iter().copied().filter(|file| on && !defined(file)).collect();
     for file in files {
-        let finding = format!("{file}:3:4: tsdoc-tags: tsdoc-undefined-tag");
+        // A path as docov prints it, with the OS's separator.
+        let path = file.replace('/', std::path::MAIN_SEPARATOR_STR);
+        let finding = format!("{path}:3:4: tsdoc-tags: tsdoc-undefined-tag");
         assert_eq!(stderr.contains(&finding), undefined.contains(&file), "{file}\n{stderr}");
     }
     assert_eq!(code, i32::from(!undefined.is_empty()), "{stderr}");
