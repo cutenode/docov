@@ -133,7 +133,7 @@ Each finding prints to stderr as `docov: path:line:column: rule-id: message`, an
 
 ```jsonc
 {
-  "$schema": "https://raw.githubusercontent.com/cutenode/docov/v0.1.1/docov.schema.json",
+  "$schema": "https://raw.githubusercontent.com/cutenode/docov/v0.2.0/docov.schema.json",
   // Relative to this file's folder, wherever docov runs from.
   "paths": ["src"],
   "exclude": ["**/*.test.ts", "src/generated/**"],
