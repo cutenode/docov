@@ -13,7 +13,7 @@ docov measures how much of a JavaScript or TypeScript project's API has doc comm
 
 ## Quickstart
 
-Run docov in a project's folder. With no config, it scans every JavaScript and TypeScript file there and reports each file's coverage, its undocumented items, and the total. These examples run on [tests/fixtures/quickstart](tests/fixtures/quickstart), a tiny project, and the output under each command is what docov printed, which a test keeps current.
+Run docov in a project's folder. With no config, it scans every JavaScript and TypeScript file there and reports each file's coverage, its undocumented items, and the total. These examples run on [tests/fixtures/quickstart](tests/fixtures/quickstart), a tiny project.
 
 ```console
 $ docov
@@ -72,11 +72,11 @@ $ docov --quiet
 
 ## How coverage is counted
 
-Coverage is documented items over counted items. The rules below decide both sides, and `docov --explain FILE` says which rule decided each item in a file, so any number docov prints can be checked by hand.
+Coverage is documented items over counted items. `docov --explain FILE` says which rule decided each item in a file.
 
 ### Files
 
-With no paths, docov scans the folder it runs in (or the config's `paths`): every `.js`, `.mjs`, `.cjs`, `.jsx`, `.ts`, `.mts`, `.cts` and `.tsx` file, leaving out hidden files, what `.gitignore` and `.ignore` files leave out (in a git repository or not), and the config's `exclude` globs. A file named on the command line is always scanned. `docov --list-files` prints the files a scan would read, and `--print-config` the settings it would use (the config files they came from, the paths, the excludes and each feature's setting, with the flags applied). Neither scans.
+With no paths, docov scans the folder it runs in (or the config's `paths`): every `.js`, `.mjs`, `.cjs`, `.jsx`, `.ts`, `.mts`, `.cts` and `.tsx` file. It leaves out hidden files, the config's `exclude` globs, and whatever `.gitignore` and `.ignore` files leave out, in a git repository or not. A file named on the command line is always scanned. `docov --list-files` prints the files a scan would read. `--print-config` prints the settings it would use: the config files they came from, the paths, the excludes and each feature's setting, with the flags applied. Neither scans.
 
 `--jsdoc-config FILE` (or `"jsdocConfig"`) scans the files a [jsdoc config](https://jsdoc.app/about-configuring-jsdoc) documents: its `source.include` are the paths, unless there are paths already, and `source.exclude` leaves files and folders out, both relative to the jsdoc config. `source.includePattern` and `excludePattern` filter files only when the config writes them, since jsdoc's default `includePattern` would leave out TypeScript. It has to be JSON, since docov can't read a `.js` config.
 
@@ -89,7 +89,7 @@ An item is a declaration that's part of the API. With the default scope, `export
 - CommonJS: `exports.a = …`, `module.exports.a = …`, `module.exports = …`, and each property of `module.exports = { … }`
 - the public members of exported classes (methods, properties, and accessors, a getter and its setter as one) and interfaces (properties and methods)
 
-Some declarations never count, each for a reason:
+These never count:
 
 | Not counted | Why |
 | --- | --- |
@@ -109,7 +109,7 @@ The scope changes which declarations count:
 | `all` | Every module-level declaration, exported or not. |
 | `public` | Only what the package's entry points export. |
 
-`--scope public` reads the package.json in the config's folder (a nested config's own, for its files), or else the nearest one above the scanned paths. It takes every path in `exports` (under every condition and subpath, leaving out `*` patterns), `main`, `module`, `types` and `typings`, and finds each one's source file, back through tsconfig.json's `outDir` and `rootDir` (or `src`) for a built file, and from a `.d.ts` to the module it declares. From there it follows `export * from`, `export { x } from`, `export * as ns from` and imports exported again, the way Node and TypeScript resolve them, and counts each declaration it reaches once, in its own file. A reached file's CommonJS exports count too. An entry point with no source file is an error (exit 2).
+`--scope public` reads the package.json in the config's folder (a nested config's own, for its files), or else the nearest one above the scanned paths. It takes every path in `exports` (under every condition and subpath, leaving out `*` patterns), `main`, `module`, `types` and `typings`. For each one it finds the source file: back through tsconfig.json's `outDir` and `rootDir` (or `src`) for a built file, and from a `.d.ts` to the module it declares. From there it follows `export * from`, `export { x } from`, `export * as ns from` and imports exported again, the way Node and TypeScript resolve them, and counts each declaration it reaches once, in its own file. A reached file's CommonJS exports count too. An entry point with no source file is an error (exit 2).
 
 More settings add items or narrow them, each in [docs/config.md](docs/config.md):
 
@@ -151,13 +151,13 @@ These take items out of the total, so they're neither documented nor undocumente
 | `"ignoreDeprecated": true` | Items whose block has `@deprecated`. |
 | `"skipGenerated": true` | Every item in a file whose first comment has `@generated`. |
 
-A documented item under an ignore comment still counts as documented, as rustdoc does it, so ignoring never hides docs that are there. Only the `json` report lists ignored items, with `"ignored": true` and their `reason`. `--report-unused-ignores` (`"reportUnusedIgnores": true`) fails the scan on each ignore comment that changes nothing: one over a blank line, over a statement that declares nothing or an item the config leaves out, over items that are documented anyway, or one that another comment covers too (of those, one is kept). In a file `skipGenerated` skips, none counts as unused.
+A documented item under an ignore comment still counts as documented, as rustdoc does it, so ignoring never hides docs that are there. Only the `json` report lists ignored items, with `"ignored": true` and their `reason`. `--report-unused-ignores` (`"reportUnusedIgnores": true`) fails the scan on each ignore comment that changes nothing. That's one over a blank line, a statement that declares nothing, an item the config leaves out, or items that are documented anyway. It's also a comment that another comment covers too, and of those, one is kept. In a file `skipGenerated` skips, none counts as unused.
 
 A [baseline](#ratchet-coverage-up) is different: its items stay in the total and in the report, and only the gates count them as documented.
 
 ### Other figures
 
-Coverage is the headline number. Four second figures each have a share, a gate, and fields in the `json` report:
+docov also measures four other shares, each with a gate and fields in the `json` report:
 
 | Figure | The share of | Text report | Gate | `json` fields |
 | --- | --- | --- | --- | --- |
@@ -261,7 +261,7 @@ For settings per package, put `"nested": true` in the root config. Each file is 
 { "threshold": 40, "exclude": ["src/generated/**"] }
 ```
 
-A nested config's `exclude` applies in its folder, and its `overrides` (in place of the root's) set its own files' scope. Its gates (`threshold`, `maxUndocumented`, `overrides`, `baseline`, the other figures' thresholds and the doc checks' errors) hold for its own files, and a failure names the config. Its `paths` aren't read. `--update-threshold` goes by the files the root config scans.
+A nested config's `exclude` applies in its folder, and its `overrides` (in place of the root's) set its own files' scope. Its gates hold for its own files, and a failure names the config. Those are `threshold`, `maxUndocumented`, `overrides`, `baseline`, the other figures' thresholds and the doc checks' errors. Its `paths` aren't read. `--update-threshold` goes by the files the root config scans.
 
 To share settings without nesting, `"extends": "../../docov.json"` (or a list) builds on other config files, relative to the one that names them. Its own keys win (`rules` by rule id), and a later file in the list wins over an earlier one. Each file's `paths`, `exclude`, `baseline` and the globs in its `threshold` and `overrides` stay relative to that file.
 
@@ -386,8 +386,6 @@ Codecov [merges every upload](https://docs.codecov.com/docs/merging-reports) for
 | [docs/config.md](docs/config.md) | Every docov.json key, with its type, default and values |
 | [docs/checks.md](docs/checks.md) | Every doc check, with its options and an example that fails and one that passes |
 | [docs/formats.md](docs/formats.md) | Every output format, with a sample |
-
-Tests generate these from the code, so they match the docov they ship with.
 
 ## Working on it
 
