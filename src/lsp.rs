@@ -9,13 +9,15 @@
 mod convert;
 mod project;
 
+use std::path::PathBuf;
+
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, RequestId, Response};
 use lsp_types::{
     CodeActionOrCommand, CodeActionParams, CodeActionProviderCapability, DidChangeTextDocumentParams,
     DidChangeWatchedFilesParams, DidChangeWatchedFilesRegistrationOptions, DidCloseTextDocumentParams,
     DidOpenTextDocumentParams, DidSaveTextDocumentParams, FileSystemWatcher, GlobPattern, InitializeParams,
     LogMessageParams, MessageType, PublishDiagnosticsParams, Registration, RegistrationParams, ServerCapabilities,
-    TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions, TextDocumentSyncSaveOptions, Url,
+    TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions, TextDocumentSyncSaveOptions, Uri,
     notification::{
         DidChangeTextDocument, DidChangeWatchedFiles, DidCloseTextDocument, DidOpenTextDocument, DidSaveTextDocument,
         LogMessage, Notification as _, PublishDiagnostics,
@@ -24,6 +26,7 @@ use lsp_types::{
 };
 use rustc_hash::FxHashMap;
 use serde::de::DeserializeOwned;
+use url::Url;
 
 use crate::{FileReport, collect};
 
@@ -75,7 +78,7 @@ pub fn serve(connection: &Connection) -> Result<bool, String> {
 /// The server's state: the open documents' text, and the rules they're scanned with.
 struct Server<'c> {
     connection: &'c Connection,
-    documents: FxHashMap<Url, String>,
+    documents: FxHashMap<Uri, String>,
     projects: project::Projects,
 }
 
@@ -87,7 +90,7 @@ impl<'c> Server<'c> {
         #[expect(deprecated, reason = "older clients send only rootUri")]
         let root = params.root_uri;
         let folders = params.workspace_folders.unwrap_or_default().into_iter().map(|folder| folder.uri);
-        let roots = folders.chain(root).filter_map(|uri| uri.to_file_path().ok()).collect();
+        let roots = folders.chain(root).filter_map(|uri| file_path(&uri)).collect();
         let server = Self { connection, documents: FxHashMap::default(), projects: project::Projects::new(roots) };
         let watched = params.capabilities.workspace.and_then(|w| w.did_change_watched_files);
         if watched.and_then(|w| w.dynamic_registration) == Some(true) {
@@ -149,7 +152,7 @@ impl<'c> Server<'c> {
             DidChangeWatchedFiles::METHOD => {
                 return match parse::<DidChangeWatchedFilesParams>(notification.params) {
                     Ok(params) => {
-                        let paths = params.changes.into_iter().flat_map(|change| change.uri.to_file_path());
+                        let paths = params.changes.into_iter().flat_map(|change| file_path(&change.uri));
                         paths.for_each(|path| self.projects.changed(&path));
                     }
                     Err(e) => self.log(e),
@@ -167,12 +170,12 @@ impl<'c> Server<'c> {
             }),
             // A client that watches files may say the saved one changed only after this.
             DidSaveTextDocument::METHOD => parse(notification.params).map(|p: DidSaveTextDocumentParams| {
-                p.text_document.uri.to_file_path().into_iter().for_each(|path| self.projects.changed(&path));
+                file_path(&p.text_document.uri).into_iter().for_each(|path| self.projects.changed(&path));
                 p.text_document.uri
             }),
             DidCloseTextDocument::METHOD => parse(notification.params).map(|p: DidCloseTextDocumentParams| {
                 self.documents.remove(&p.text_document.uri);
-                p.text_document.uri.to_file_path().into_iter().for_each(|path| self.projects.forget(&path));
+                file_path(&p.text_document.uri).into_iter().for_each(|path| self.projects.forget(&path));
                 p.text_document.uri
             }),
             _ => return,
@@ -186,7 +189,7 @@ impl<'c> Server<'c> {
     /// Publishes the diagnostics of the document at `uri`, none if it isn't open or its config
     /// leaves it out. When it can't be scanned (it doesn't parse yet, say), the ones published
     /// last stay, and the log says why.
-    fn publish(&mut self, uri: Url) {
+    fn publish(&mut self, uri: Uri) {
         let diagnostics = match self.documents.get(&uri).map(|text| (text, scan(&mut self.projects, &uri, text))) {
             None => Vec::new(),
             Some((text, Ok(report))) => report.map_or_else(Vec::new, |report| convert::diagnostics(&report, text)),
@@ -211,10 +214,16 @@ impl<'c> Server<'c> {
 
 /// The document at `uri`, whose text is `text`, scanned by the rules `projects` has for it, or
 /// nothing when its config leaves it out.
-fn scan(projects: &mut project::Projects, uri: &Url, text: &str) -> Result<Option<FileReport>, String> {
-    let path = uri.to_file_path().map_err(|()| format!("{uri}: not a file"))?;
+fn scan(projects: &mut project::Projects, uri: &Uri, text: &str) -> Result<Option<FileReport>, String> {
+    let path = file_path(uri).ok_or_else(|| format!("{}: not a file", uri.as_str()))?;
     let Some(rules) = projects.rules(&path)? else { return Ok(None) };
     collect::scan_source(&path, text, &rules).map(Some).map_err(|e| e.to_string())
+}
+
+/// The file at `uri`, if it's a `file:` URI. lsp-types' `Uri` can't say, and `url` knows Windows'
+/// drive letters and UNC shares.
+fn file_path(uri: &Uri) -> Option<PathBuf> {
+    Url::parse(uri.as_str()).ok()?.to_file_path().ok()
 }
 
 /// A message's params as `T`, or why they aren't.
