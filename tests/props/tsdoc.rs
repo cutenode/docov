@@ -230,18 +230,19 @@ fn tsdoc_json_sets_up_the_parser(tc: TestCase) {
     let mut top = Map::new();
     let base_standard = tc.draw(gs::optional(gs::booleans()));
     let top_standard = tc.draw(gs::optional(gs::booleans()));
-    let standard = !top_standard.or(base_standard).unwrap_or(false);
-    let mut wanted = Configuration::standard(standard);
     let (base_file, specifier) = if tc.draw(gs::booleans()) {
         ("base/tsdoc.json", "./base/tsdoc.json")
     } else {
         ("node_modules/shared/tsdoc.json", "shared/tsdoc.json")
     };
     let extends = tc.draw(gs::booleans());
+    // The base file is there either way, and counts only when the top one extends it.
+    if let Some(no) = base_standard {
+        base.insert("noStandardTags".into(), json!(no));
+    }
+    let standard = !top_standard.or(base_standard.filter(|_| extends)).unwrap_or(false);
+    let mut wanted = Configuration::standard(standard);
     if extends {
-        if let Some(no) = base_standard {
-            base.insert("noStandardTags".into(), json!(no));
-        }
         let (json, custom) = definition(&tc, "@custom");
         base.insert("tagDefinitions".into(), json!([json]));
         wanted.tags.push(custom);
