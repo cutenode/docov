@@ -36,10 +36,22 @@ fn current(path: &str, text: &str) {
     let line = stale.unwrap_or(checked_in.lines().count().min(text.lines().count()));
     assert!(
         checked_in == text,
-        "{} is stale from line {}: run `DOCOV_BLESS=1 cargo test --test docs`",
+        "{} is stale from line {}: run `DOCOV_BLESS=1 cargo test --test docs`\nchecked in: {:?}\ngenerated:  {:?}",
         path.display(),
-        line + 1
+        line + 1,
+        checked_in.lines().nth(line),
+        text.lines().nth(line)
     );
+}
+
+/// docov's `output` as it reads on macOS and Linux, which the docs show. On Windows, the reports
+/// meant for people and editors write native paths (`src\cart.ts`, and `src\\cart.ts` in JSON),
+/// and clap names the binary `docov.exe`. Every path in the fixtures is under `src/`.
+fn as_on_unix(output: String) -> String {
+    if !cfg!(windows) {
+        return output;
+    }
+    output.replace(r"src\\", "src/").replace(r"src\", "src/").replace("docov.exe", "docov")
 }
 
 /// docov in `dir`, without the environment variables that change its output: GitHub Actions' annotations,
@@ -101,7 +113,7 @@ fn console<'a>(lines: &mut Peekable<impl Iterator<Item = &'a str>>, out: &mut St
         let command = line.strip_prefix("$ docov").expect("each line of a console block's commands runs docov");
         assert!(!command.contains(['"', '\'', '|', '>']), "{line}: no quotes or shell syntax");
         let args: Vec<&str> = command.split_whitespace().collect();
-        *out += &interleaved(docov(dir.path(), &args));
+        *out += &as_on_unix(interleaved(docov(dir.path(), &args)));
         while lines.next_if(|next| !next.starts_with("$ ") && !next.starts_with("```")).is_some() {}
     }
     panic!("a console block isn't closed");
@@ -122,7 +134,7 @@ fn interleaved(mut command: Command) -> String {
 fn the_command_line_reference_is_current() {
     let dir = tempfile::tempdir().unwrap();
     let help = docov(dir.path(), &["--help"]).output().unwrap();
-    let help = String::from_utf8(help.stdout).unwrap();
+    let help = as_on_unix(String::from_utf8(help.stdout).unwrap());
     let page = format!(
         "{}\n# Command line\n\n`docov --help` prints this, and `docov -h` a summary. Flags win over the config file's \
          settings, which [config.md](config.md) lists.\n\n```text\n{help}```\n",

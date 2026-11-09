@@ -1,7 +1,7 @@
 //! docs/formats.md, from the format registry: each format's module docs and its real output on
 //! tests/fixtures/quickstart.
 
-use crate::{code_block, current, docov, fixture, generated, module_docs};
+use crate::{as_on_unix, code_block, current, docov, fixture, generated, module_docs};
 
 /// The flags each sample runs with, past `--format`: enough for undocumented items, a doc check
 /// finding and a failed gate.
@@ -34,7 +34,7 @@ fn the_formats_reference_is_current() {
         let dir = fixture("quickstart");
         let out = docov(dir.path(), &[&FLAGS[..], &["--format", format.name]].concat()).output().unwrap();
         // docov's version changes with each release, and cobertura's timestamp with each run.
-        let sample = String::from_utf8(out.stdout).unwrap().replace(env!("CARGO_PKG_VERSION"), "X.Y.Z");
+        let sample = as_on_unix(String::from_utf8(out.stdout).unwrap()).replace(env!("CARGO_PKG_VERSION"), "X.Y.Z");
         let sample = match sample.split_once("timestamp=\"") {
             Some((before, after)) => {
                 format!("{before}timestamp=\"TIMESTAMP{}", after.trim_start_matches(|c: char| c.is_ascii_digit()))
