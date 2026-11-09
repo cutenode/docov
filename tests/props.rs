@@ -29,6 +29,8 @@ mod fix;
 mod lsp;
 #[path = "props/scope_overrides.rs"]
 mod scope_overrides;
+#[path = "props/tsdoc.rs"]
+mod tsdoc;
 #[path = "props/unused.rs"]
 mod unused;
 

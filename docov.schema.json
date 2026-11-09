@@ -551,6 +551,153 @@
           ],
           "description": "A description's first sentence is short and ends with a period."
         },
+        "tsdoc-code": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Level"
+            },
+            {
+              "items": false,
+              "minItems": 1,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Level"
+                },
+                {
+                  "$ref": "#/$defs/NoOptions"
+                }
+              ],
+              "type": "array"
+            }
+          ],
+          "description": "Each TSDoc code span and code fence is closed and well formed."
+        },
+        "tsdoc-escapes": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Level"
+            },
+            {
+              "items": false,
+              "minItems": 1,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Level"
+                },
+                {
+                  "$ref": "#/$defs/NoOptions"
+                }
+              ],
+              "type": "array"
+            }
+          ],
+          "description": "TSDoc text escapes a {, } or > that isn't markup and an @ that isn't a tag, and a backslash escapes only punctuation."
+        },
+        "tsdoc-html": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Level"
+            },
+            {
+              "items": false,
+              "minItems": 1,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Level"
+                },
+                {
+                  "$ref": "#/$defs/NoOptions"
+                }
+              ],
+              "type": "array"
+            }
+          ],
+          "description": "Each HTML tag in a TSDoc block is well formed, and an element the file's tsdoc.json supports."
+        },
+        "tsdoc-inline-tags": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Level"
+            },
+            {
+              "items": false,
+              "minItems": 1,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Level"
+                },
+                {
+                  "$ref": "#/$defs/NoOptions"
+                }
+              ],
+              "type": "array"
+            }
+          ],
+          "description": "Each TSDoc tag has a valid name with a space after it, and each inline tag is closed with no unescaped { inside."
+        },
+        "tsdoc-links": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Level"
+            },
+            {
+              "items": false,
+              "minItems": 1,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Level"
+                },
+                {
+                  "$ref": "#/$defs/NoOptions"
+                }
+              ],
+              "type": "array"
+            }
+          ],
+          "description": "Each TSDoc {@link} has a URL or a declaration reference in TSDoc's grammar, and text only after a |."
+        },
+        "tsdoc-params": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Level"
+            },
+            {
+              "items": false,
+              "minItems": 1,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Level"
+                },
+                {
+                  "$ref": "#/$defs/NoOptions"
+                }
+              ],
+              "type": "array"
+            }
+          ],
+          "description": "Each TSDoc @param and @typeParam has a valid name and a hyphen before its description, without a {type}."
+        },
+        "tsdoc-tags": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Level"
+            },
+            {
+              "items": false,
+              "minItems": 1,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/Level"
+                },
+                {
+                  "$ref": "#/$defs/NoOptions"
+                }
+              ],
+              "type": "array"
+            }
+          ],
+          "description": "Each TSDoc tag is defined and supported by the file's tsdoc.json, used as its kind, and repeated only with allowMultiple."
+        },
         "valid-link": {
           "anyOf": [
             {
@@ -906,6 +1053,14 @@
       ],
       "default": null,
       "description": "The lowest documented percentage that passes, or thresholds by path: `global` for every file together, `perFile` for each file, and gitignore-style globs for the files each matches together."
+    },
+    "tsdocConfig": {
+      "default": null,
+      "description": "A tsdoc.json, relative to this file's folder, that the tsdoc-* checks read every file's blocks with: its tagDefinitions, noStandardTags, supportForTags, supportedHtmlElements, reportUnsupportedHtmlElements and the files it extends (paths or package names, resolved the way Node resolves them). Without it, and with \"syntax\": \"tsdoc\", each file gets the tsdoc.json in the nearest folder above it with a tsconfig.json or a package.json, as @microsoft/tsdoc-config finds one; otherwise TSDoc's standard tags. Unknown keys in a tsdoc.json are an error, as in tsdoc-config.",
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "typesThreshold": {
       "default": null,
