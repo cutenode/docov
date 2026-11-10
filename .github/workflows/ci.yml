@@ -31,6 +31,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # tools/lint.sh's harden check runs npx, and package.json's devEngines wants a newer npm than
+      # the runners' own Node has.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
       - run: rustup toolchain install
       # Only main saves caches. A pull request's cache is only readable by that pull request, and
       # each one's crowded main's out of the repository's 10 GB.
@@ -130,6 +136,15 @@ jobs:
           printf '/** a */\nexport const a = 1;\n' > fixture/a.ts
           target/debug/docov fixture --format json=base.json
           printf '/** b */\nexport const b = 2;\n' >> fixture/a.ts
+      # The action runs npx in the root, where package.json's devEngines wants a newer npm than the
+      # runners' own Node has.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      # The action installs @docov/cli at Cargo.toml's version, which is under .npmrc's
+      # min-release-age for its first days on npm. npx ignores min-release-age-exclude, so this lifts
+      # the age gate for this step, which installs only docov's own packages.
       - id: docov
         uses: ./
         with:
@@ -137,6 +152,7 @@ jobs:
           compare: base.json
         env:
           DOCOV_BINARY: ${{ github.workspace }}/target/debug/docov
+          npm_config_min_release_age: 0
       - run: grep -F "| 100.0% | 100.0% | +0.0 | 2/2 |" "$MARKDOWN"
         env:
           MARKDOWN: ${{ steps.docov.outputs.markdown }}

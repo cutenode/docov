@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Formatting, clippy (for Windows too when its target is installed), rustdoc, and shellcheck,
-# cargo-deny, zizmor and actionlint where they're installed (CI's Linux lint job has them all).
-# CI's lint check.
+# Formatting, clippy (for Windows too when its target is installed), rustdoc, the npm config's
+# hardening, and shellcheck, cargo-deny, zizmor and actionlint where they're installed (CI's Linux
+# lint job has them all). CI's lint check.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -13,6 +13,30 @@ if [[ $cargo_version != "$npm_version" ]]; then
   echo "Cargo.toml's version is $cargo_version, but npm/docov/package.json's is $npm_version" >&2
   exit 1
 fi
+
+# The npm config in the root and npm/docov (.npmrc and package.json) holds @lavamoat/harden's
+# moderate level, plus the opinions harden-decisions.json turns on and minus the ones it turns off.
+# `harden check` takes a level but no decisions, so this checks at strict and lets through what
+# the decisions turn off. check exits 1 for those too, so jq decides.
+declined=$(jq -c 'to_entries | map(select(.value == false).key)' harden-decisions.json)
+for dir in . npm/docov; do
+  report=$(cd "$dir" && npx -y @lavamoat/harden@0.8.1 check -p npm -l strict --json) || true
+  jq -e --arg dir "$dir" --argjson declined "$declined" \
+    '.checks | map(select(.satisfied != 1).id) - $declined |
+      if . == [] then true else "harden: \($dir) is missing \(join(", "))\n" | halt_error end' \
+    <<<"$report" >/dev/null
+  # harden reads a key's first line in .npmrc and npm its last, so a second one would get past it.
+  # Keys ending in [] are lists, set once per item.
+  repeated=$(awk -F= '/^[[:space:]]*[^#;[:space:]]/ {
+    key = $1
+    gsub(/[[:space:]]/, "", key)
+    if (key !~ /\[\]$/ && seen[key]++ == 1) print key
+  }' "$dir/.npmrc")
+  if [[ -n $repeated ]]; then
+    echo "harden: $dir/.npmrc sets $repeated more than once, and npm takes the last" >&2
+    exit 1
+  fi
+done
 
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings

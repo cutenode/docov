@@ -323,11 +323,13 @@ Codecov [merges every upload](https://docs.codecov.com/docs/merging-reports) for
 
 The toolchain is pinned in `rust-toolchain.toml`, and Node in `.node-version`. The checks need [cargo-nextest](https://nexte.st) and [cargo-llvm-cov](https://github.com/taiki-e/cargo-llvm-cov). `tools/lint.sh` also runs [shellcheck](https://www.shellcheck.net), [cargo-deny](https://github.com/EmbarkStudios/cargo-deny) (`deny.toml`), [zizmor](https://docs.zizmor.sh) and [actionlint](https://github.com/rhysd/actionlint) when they're installed, as they are on CI's Linux lint job.
 
+The npm config in the root and in `npm/docov` (`.npmrc`, and `devEngines` and `allowScripts` in package.json) is [@lavamoat/harden](https://github.com/LavaMoat/LavaMoat/tree/main/packages/harden)'s moderate level plus `harden-decisions.json`, which adds `n_nogit` and leaves out `n_runner`, whose script shell doesn't work in Windows' cmd.exe. It needs npm 11.17 or newer (Node 24.19 or newer). `npx -y @lavamoat/harden@0.8.1 defaults -p npm -l moderate -d harden-decisions.json` writes it again in the root (`-d ../../harden-decisions.json` in `npm/docov`), and `tools/lint.sh` fails when either falls short of it.
+
 Each flag and docov.json key belongs to a feature, one file in `src/feature/` that implements `Feature`. Each output format is one file in `src/report/` with a `FORMAT` naming it, describing it for `--help`, and rendering it. Each doc check is one file in `src/check/` that implements `Check`, its rule id the file name in kebab case. `build.rs` registers every file in the three folders, so a new feature, format or check is a new file and nothing else.
 
 ```bash
 cargo run -- [PATHS]...   # docov on a project
-tools/check.sh            # what CI runs: tools/lint.sh (format, clippy, rustdoc, matching crate and npm versions, and the linters above) and tools/coverage.sh (coverage for the whole suite, for the Hegel properties alone, and for the npm launcher's tests)
+tools/check.sh            # what CI runs: tools/lint.sh (format, clippy, rustdoc, matching crate and npm versions, the npm config's hardening, and the linters above) and tools/coverage.sh (coverage for the whole suite, for the Hegel properties alone, and for the npm launcher's tests)
 tools/jsdoc-oracle.sh [DIR]   # where docov and jsdoc disagree on a folder of plain JavaScript (default: tests/fixtures/jsdoc)
 tools/npm-approve.sh 1.2.3   # put a release's staged npm packages live
 ```
