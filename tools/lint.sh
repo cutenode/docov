@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Formatting, clippy (for Windows too when its target is installed), rustdoc, the npm config's
-# hardening, and shellcheck, cargo-deny, zizmor and actionlint where they're installed (CI's Linux
-# lint job has them all). CI's lint check.
+# hardening, and shellcheck, cargo-deny, zizmor, actionlint and knip where they're installed (CI's
+# Linux lint job has them all). CI's lint check.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -59,4 +59,9 @@ if command -v zizmor >/dev/null; then
 fi
 if command -v actionlint >/dev/null; then
   actionlint
+fi
+# Unused files, exports and dependencies in the JavaScript, configured in knip.jsonc. `npm ci`
+# installs it.
+if [[ -x node_modules/.bin/knip ]]; then
+  npm run --silent knip
 fi

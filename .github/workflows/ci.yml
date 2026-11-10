@@ -53,6 +53,9 @@ jobs:
         run: |
           go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      # knip, from package-lock.json.
+      - if: runner.os == 'Linux'
+        run: npm ci
       - run: tools/lint.sh
         shell: bash
         env:
