@@ -16,10 +16,10 @@
     "directory": "npm/docov"
   },
   "bin": {
-    "docov": "bin/docov"
+    "docov": "bin/docov.cjs"
   },
   "files": [
-    "bin/docov"
+    "bin/docov.cjs"
   ],
   "publishConfig": {
     "access": "public"

@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-const launcher = fileURLToPath(new URL("docov/bin/docov", import.meta.url));
+const launcher = fileURLToPath(new URL("docov/bin/docov.cjs", import.meta.url));
 const pkg = `@docov/${process.platform}-${process.arch}`;
 
 function launch(args, env) {
