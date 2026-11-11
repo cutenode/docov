@@ -31,5 +31,8 @@
 			"onFail": "error"
 		}
 	},
+	"engines": {
+		"node": ">=22"
+	},
 	"allowScripts": {}
 }

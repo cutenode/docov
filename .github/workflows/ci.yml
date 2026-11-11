@@ -211,9 +211,9 @@ jobs:
           rustup toolchain install "$msrv" --profile minimal
           cargo "+$msrv" package --locked
 
-  # The npm launcher's tests on the oldest Node LTS line still maintained, since @docov/cli runs on
-  # whatever Node its user has. coverage runs them on .node-version's. Raise it when 22 reaches its
-  # end of life (April 2027).
+  # The npm launcher's tests on Node 22, the oldest LTS line still maintained and the oldest
+  # @docov/cli's `engines` allows. coverage runs them on .node-version's. Raise both when 22 reaches
+  # its end of life (April 2027).
   launcher-lts:
     runs-on: ubuntu-latest
     timeout-minutes: 10
