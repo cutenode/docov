@@ -1,9 +1,21 @@
 #!/usr/bin/env bash
-# Formatting, clippy (for Windows too when its target is installed), rustdoc, the npm config's
-# hardening, and shellcheck, cargo-deny, zizmor, actionlint and knip where they're installed (CI's
-# Linux lint job has them all). CI's lint check.
+# Formatting, clippy (for each release target that's installed too), rustdoc, the npm config's
+# hardening, and shellcheck, cargo-deny, zizmor, actionlint and knip where they're installed. CI's
+# lint check. CI's Linux lint job installs them all and sets REQUIRE_LINTERS=true, so there a missing
+# one fails instead of being skipped.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+PATH=$PWD/node_modules/.bin:$PATH
+
+# Whether linter $1 is installed, failing when it isn't and REQUIRE_LINTERS is true.
+have() {
+  command -v "$1" >/dev/null && return
+  if [[ ${REQUIRE_LINTERS:-} == true ]]; then
+    echo "$1 isn't installed, and REQUIRE_LINTERS is true" >&2
+    exit 1
+  fi
+  return 1
+}
 
 # Cargo.toml's version matches npm/docov/package.json's: release.yml bumps both together and
 # publishes the crate and the npm packages at that version.
@@ -40,28 +52,35 @@ done
 
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
-if rustup target list --installed | grep -qx x86_64-pc-windows-msvc; then
-  cargo clippy --all-targets --target x86_64-pc-windows-msvc -- -D warnings
-fi
+# The targets release.yml builds, each where it's installed besides the host, so code behind a
+# `cfg` for another OS or a dependency that doesn't build there fails here and not on the release
+# tag. CI's lint jobs install the ones their runner doesn't build natively.
+host=$(rustc -vV | sed -n 's/^host: //p')
+installed=$(rustup target list --installed)
+while read -r target; do
+  if [[ $target != "$host" ]] && grep -qx "$target" <<<"$installed"; then
+    cargo clippy --all-targets --target "$target" -- -D warnings
+  fi
+done < <(sed -n 's/.*target: \([a-z0-9_-]*\),.*/\1/p' .github/workflows/release.yml)
 # Broken intra-doc links and bare URLs, which clippy doesn't check.
 RUSTDOCFLAGS='-D warnings' cargo doc --no-deps --locked --document-private-items
-if command -v shellcheck >/dev/null; then
+if have shellcheck; then
   shellcheck action/*.sh tools/*.sh
 fi
 # Advisories, licenses and sources, configured in deny.toml.
-if command -v cargo-deny >/dev/null; then
+if have cargo-deny; then
   cargo deny --locked check
 fi
 # The workflows and action.yml. zizmor runs its online audits (impostor commits, known-vulnerable
-# actions) when GH_TOKEN is set, as on CI.
-if command -v zizmor >/dev/null; then
+# actions) when GH_TOKEN is set, as scheduled.yml's weekly run does.
+if have zizmor; then
   zizmor .
 fi
-if command -v actionlint >/dev/null; then
+if have actionlint; then
   actionlint
 fi
 # Unused files, exports and dependencies in the JavaScript, configured in knip.jsonc. `npm ci`
 # installs it.
-if [[ -x node_modules/.bin/knip ]]; then
+if have knip; then
   npm run --silent knip
 fi

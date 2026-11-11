@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The tests under coverage, the Hegel properties' own coverage, and the npm launcher's tests under
+# The tests under coverage, the Hegel properties' own coverage, and the JavaScript's tests under
 # coverage, each failing under its thresholds. CI's coverage check. Hegel runs derandomized, so it
 # draws the same cases every run and the coverage numbers don't move.
 set -euo pipefail
@@ -22,8 +22,9 @@ coverage() {
 }
 coverage suite
 coverage props --test props
-# No branch threshold: the launcher's one branch V8 counts is the Windows `.exe` name, and each OS
-# only takes one side of it.
+# The launcher and the release scripts. No branch threshold: the launcher's one branch V8 counts is
+# the Windows `.exe` name, and each OS only takes one side of it.
 node --test --experimental-test-coverage --test-coverage-include='npm/docov/**' \
+  --test-coverage-include='tools/*.mjs' --test-coverage-exclude='**/*.test.mjs' \
   --test-coverage-lines=100 --test-coverage-functions=100 \
   npm/launcher.test.mjs tools/release-pr-changelog.test.mjs
