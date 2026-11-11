@@ -211,12 +211,28 @@ jobs:
           rustup toolchain install "$msrv" --profile minimal
           cargo "+$msrv" package --locked
 
+  # The npm launcher's tests on the oldest Node LTS line still maintained, since @docov/cli runs on
+  # whatever Node its user has. coverage runs them on .node-version's. Raise it when 22 reaches its
+  # end of life (April 2027).
+  launcher-lts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - run: node --test npm/launcher.test.mjs
+
   # The one check for branch protection to require, failing when any job above failed or was
   # cancelled, so adding or renaming a job doesn't change what's required. It always runs: branch
   # protection takes a skipped check as a pass.
   ci:
     if: ${{ always() }}
-    needs: [lint, coverage, action, msrv]
+    needs: [lint, coverage, action, msrv, launcher-lts]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
