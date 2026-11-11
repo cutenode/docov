@@ -1,246 +1,180 @@
 # docov
 
-JSDoc coverage for JavaScript and TypeScript: how much of a project's API has a doc comment, and which declarations don't. It parses with [oxc](https://oxc.rs), so it reads TypeScript, JSX, ES modules and CommonJS without a build step.
-
-```
-$ docov --threshold 80
-  50.0%  1/2  src/a.ts
-         src/a.ts:3:1  variable b
- 100.0%  1/1  src/c.js
-  66.7%  2/3  total
-docov: 66.7% documented, under the 80% threshold
-```
-
-Each undocumented item is listed as `path:line:column`, the spot its JSDoc goes, which terminals and editors open directly.
+docov measures how much of a JavaScript or TypeScript project's API has doc comments, and lists each declaration that has none. It's for projects that want to hold that number in CI the way they hold test coverage, and to see what to document next. It reads JSDoc and TSDoc, and parses with [oxc](https://oxc.rs), so TypeScript, JSX, ES modules and CommonJS need no build step.
 
 ## Install
 
-```bash
-npm install --save-dev @docov/cli   # or pnpm, yarn, bun
-cargo install docov
+| Channel | Install | Notes |
+| --- | --- | --- |
+| npm | `npm install --save-dev @docov/cli` (or pnpm, yarn, bun) | Runs a prebuilt binary for macOS, Linux or Windows on x64 or arm64, from the `@docov/<platform>-<arch>` package npm installs with it. `DOCOV_BINARY` runs a different one. |
+| Cargo | `cargo install docov` | Builds from source. |
+| GitHub Action | `uses: cutenode/docov@vX.Y.Z` | Annotations, a job summary and a pull request comment. See [Fail CI under a threshold](#fail-ci-under-a-threshold). |
+| pre-commit | `repo: https://github.com/cutenode/docov` | Installs the npm package in pre-commit's own Node environment. See [Check before each commit](#check-before-each-commit). |
+
+## Quickstart
+
+Run docov in a project's folder. With no config, it scans every JavaScript and TypeScript file there and reports each file's coverage, its undocumented items, and the total. These examples run on [tests/fixtures/quickstart](tests/fixtures/quickstart), a tiny project.
+
+```console
+$ docov
+  57.1%  4/7  src/cart.ts
+         src/cart.ts:5:3  property Item.quantity
+         src/cart.ts:18:1  class Cart
+         src/cart.ts:26:3  accessor Cart.size
+  50.0%  1/2  src/format.js
+         src/format.js:11:1  variable CURRENCY
+  55.6%  5/9  total
 ```
 
-The npm package runs a prebuilt binary for macOS, Linux or Windows on x64 or arm64, from the `@docov/<platform>-<arch>` package npm installs alongside it. `DOCOV_BINARY` runs a different one.
+Each undocumented item is listed as `path:line:column`, the spot its doc comment goes, which terminals and editors open directly, then its kind and name. A threshold turns the number into a gate:
 
-## Usage
-
+```console
+$ docov --threshold 80
+  57.1%  4/7  src/cart.ts
+         src/cart.ts:5:3  property Item.quantity
+         src/cart.ts:18:1  class Cart
+         src/cart.ts:26:3  accessor Cart.size
+  50.0%  1/2  src/format.js
+         src/format.js:11:1  variable CURRENCY
+  55.6%  5/9  total
+docov: 55.6% documented, under the 80% threshold
 ```
-docov [PATHS]... [--config FILE] [--threshold PERCENT] [--scope exports|all|public] [--format FORMAT[=FILE]]... [--output FILE] [--badge FILE] [--compare FILE] [--omit-covered] [--quiet]
-docov init
-docov lsp
+
+docov exits 0 when every gate passes (or there isn't one), 1 when one fails, and 2 when a file doesn't parse or the config or a path can't be read. Every file has to parse, since a partial one would undercount.
+
+To see why an item counts or doesn't, ask about its file:
+
+```console
+$ docov --explain src/cart.ts
+src/cart.ts:2:1  interface Item  documented by the block at 1:1
+src/cart.ts:4:3  property Item.sku  documented by the block at 3:3
+src/cart.ts:5:3  property Item.quantity  undocumented
+src/cart.ts:14:1  function total  documented by the block at 8:1
+src/cart.ts:18:1  class Cart  undocumented
+src/cart.ts:19:3  skipped Cart.#items: private
+src/cart.ts:22:3  method Cart.add  documented by the block at 21:3
+src/cart.ts:26:3  accessor Cart.size  undocumented
+src/cart.ts:32:1  variable legacyTotal  ignored by the docov-ignore-next-line at 31:1 (kept for old callers)
 ```
 
-`docov --help` lists every flag.
+`Cart.#items` is private and `legacyTotal` is ignored, so the file has 7 items, not 9. `--explain` prints this in place of a report and exits 0. It goes by the config the file is scanned with (a nested config's too), says so when a config leaves the file out, and also lists each ignore comment there that changes nothing and each declaration or block the scan passed over, with why.
 
-With no paths it scans the current folder: every `.js`, `.mjs`, `.cjs`, `.jsx`, `.ts`, `.mts`, `.cts` and `.tsx` file, leaving out hidden files and what `.gitignore` leaves out (in a git repository or not). A file named on the command line is always scanned.
+To keep the number from falling, `docov init` writes a `docov.json` with the `$schema` for this version and a `threshold` of the folder's coverage now, rounded down to a whole percent. It scans the folder with the default settings, and won't write over a config that's there. (To scan a folder named `init`, use `docov ./init`.)
 
-It exits 0 when every gate passes (or there isn't one), 1 when one fails, such as coverage under a threshold, and 2 when a file doesn't parse or the config or a path can't be read. Every file has to parse, since a partial one would undercount.
+```console
+$ docov init
+docov: wrote docov.json, with a 55% threshold
+$ docov --quiet
+  55.6%  5/9  total
+```
 
-`--changed` scans only the files that differ from where HEAD branched off the default branch (`origin/HEAD`, or `main` without one), committed or not, and untracked ones. `--since REF` compares with another branch or commit instead. `--staged` scans only the staged files, for a pre-commit hook. Paths given on the command line still narrow the scan.
+`docov --help` lists every flag, and [Reference](#reference) has the rest.
 
-`--diff-threshold PERCENT` fails the scan when the items on lines a change added (committed or not, and every line of an untracked file) are under that documented percentage, wherever the rest of the project is. The change is from where HEAD branched off the default branch, or off `--diff-base REF`. These run `git` (2.30 or later).
+## How coverage is counted
 
-`docov init` writes a docov.json in the current folder with the `$schema` for this version and a `threshold` of its coverage now, rounded down, and won't write over a config file that's there. (To scan a folder named `init`, use `docov ./init`.)
+Coverage is documented items over counted items. `docov --explain FILE` says which rule decided each item in a file.
 
-`--watch` scans again whenever a JavaScript, TypeScript or config file under the paths changes, with a line between reports, until Ctrl-C.
+### Files
 
-`--stdin-filename PATH` scans stdin in place of the paths, as the file at PATH, whose extension picks the language, for editors to check a buffer before it's saved. It can't go with `--add-ignore`, `--fix`, `--write-baseline`, `--update-threshold`, `--watch`, `--changed` or `--staged`, which would act on that one file.
+With no paths, docov scans the folder it runs in (or the config's `paths`): every `.js`, `.mjs`, `.cjs`, `.jsx`, `.ts`, `.mts`, `.cts` and `.tsx` file. It leaves out hidden files, the config's `exclude` globs, and whatever `.gitignore` and `.ignore` files leave out, in a git repository or not. A file named on the command line is always scanned. `docov --list-files` prints the files a scan would read. `--print-config` prints the settings it would use: the config files they came from, the paths, the excludes and each feature's setting, with the flags applied. Neither scans.
 
-`--cache` keeps each file's items in `.docov-cache` in the config's folder (or the file `--cache-location` names), and the next scan reuses them for each file whose size and modified time haven't changed, as long as docov's version and the settings that change what counts are the same. Add it to `.gitignore`.
+`--jsdoc-config FILE` (or `"jsdocConfig"`) scans the files a [jsdoc config](https://jsdoc.app/about-configuring-jsdoc) documents: its `source.include` are the paths, unless there are paths already, and `source.exclude` leaves files and folders out, both relative to the jsdoc config. `source.includePattern` and `excludePattern` filter files only when the config writes them, since jsdoc's default `includePattern` would leave out TypeScript. It has to be JSON, since docov can't read a `.js` config.
 
-`--threads N` scans N files at once, one per CPU by default. `RAYON_NUM_THREADS` sets the same.
+### Items
 
-### What counts
+An item is a declaration that's part of the API. With the default scope, `exports`, that's anything a module exports:
 
-With the default scope, `exports`, an item is anything a module exports:
-
-- functions, classes, variables, interfaces, type aliases, enums and namespaces, whether exported where they're declared, with `export { a, b as c }`, with `export default a`, or with `export = a`
+- functions, classes, variables, interfaces, type aliases, enums and namespaces, exported where they're declared, with `export { a, b as c }`, with `export default a`, or with `export = a`
 - `export default` of an expression
 - CommonJS: `exports.a = …`, `module.exports.a = …`, `module.exports = …`, and each property of `module.exports = { … }`
-- the public members of exported classes (methods, properties, accessors, with a getter and its setter as one) and interfaces (properties and methods)
+- the public members of exported classes (methods, properties, and accessors, a getter and its setter as one) and interfaces (properties and methods)
 
-An item is documented when a `/** … */` block with something in it sits right before it, or before its `export` or decorators. Ordinary comments, an empty `/** */`, license headers (`/** @license … */`) and a block whose description is just `TODO`, as `--fix` writes them, don't count.
+These never count:
 
-`--require-description` (`"requireDescription": true`) also wants the block to describe the item: text before its first tag, or a `@description`, `@desc`, `@summary`, `@classdesc` (on a class) or `@inheritdoc` tag, or TSDoc's inline `{@inheritDoc}` (or `{@inheritDoc Ref}`) anywhere in the block. Without it, `/** @type {string} */` counts. A block of `@inheritdoc` or `{@inheritDoc}` alone documents its item either way, and `"inherit": "override"` counts a TypeScript class member marked `override` as documented too, since it inherits its docs.
+| Not counted | Why |
+| --- | --- |
+| Constructors | Their class's doc covers them. |
+| Private members (`#x`, `private x`) | They aren't API. |
+| An overload's implementation | Its signatures count instead. |
+| Destructured variables (`const { a } = b`) | There's nowhere for a doc of their own. |
+| `require()` bindings | They're imports. |
+| `declare module` and `declare global` blocks | They declare nothing of the module's own. |
+| Re-exports (`export { x } from './x'`, `export * from`) | The declaration counts once, in its own file. |
 
-`--exclude-tag NAME` (repeatable) or `"excludeTags": ["internal", "ignore", "hidden"]` leaves out items whose JSDoc has one of those tags: they're out of the total, not documented. `--ignore-name REGEX` (repeatable) or `"ignore": { "names": ["^_"] }` does the same for items whose name matches, a member by its own name or as `Class.member`.
+The scope changes which declarations count:
 
-A `// docov-ignore-next-line` comment (with an optional reason, `// docov-ignore-next-line: legacy API`) takes the items on the line after it out of the total, and `/* docov-ignore-file */` anywhere at the top level does the same for the whole file. A documented item still counts as documented, as rustdoc does. Only the JSON report lists ignored items, marked with `"ignored": true` and their `reason`; the other formats leave them out. `--report-unused-ignores` (`"reportUnusedIgnores": true`) fails the scan on each `docov-ignore` comment that changes nothing: one over a blank line, a statement that declares nothing or an item the config leaves out, one whose items are documented anyway, or one whose items another comment covers too (of those, one is kept). In a file `skipGenerated` skips, none is.
+| Scope | Counts |
+| --- | --- |
+| `exports` (default) | What each module exports, as above. |
+| `all` | Every module-level declaration, exported or not. |
+| `public` | Only what the package's entry points export. |
 
-To adopt docov in a project that's far from documented, `--add-ignore` (or `--add-ignore=REASON`) writes a `// docov-ignore-next-line` above every undocumented item, indented like it (a file's own item gets one at the top, below a shebang, unless one above the file's first line of code covers it), and reports how many it wrote instead of the coverage. It changes no other line.
+`--scope public` reads the package.json in the config's folder (a nested config's own, for its files), or else the nearest one above the scanned paths. It takes every path in `exports` (under every condition and subpath, leaving out `*` patterns), `main`, `module`, `types` and `typings`. For each one it finds the source file: back through tsconfig.json's `outDir` and `rootDir` (or `src`) for a built file, and from a `.d.ts` to the module it declares. From there it follows `export * from`, `export { x } from`, `export * as ns from` and imports exported again, the way Node and TypeScript resolve them, and counts each declaration it reaches once, in its own file. A reached file's CommonJS exports count too. An entry point with no source file is an error (exit 2).
 
-`--fix` writes a JSDoc stub above every undocumented item that has no block yet, indented like it, for filling in: a `TODO` description, a `@template` for each type parameter, a `@param` for each parameter (a destructured one by its place, as `param0`), `@returns` when its body returns a value, and `@file` for a file's own item. A `TODO` description documents nothing, so the coverage stays where it was until each one is written. It reports how many stubs it wrote, leaves every existing block as it is, and skips an item that starts after something else on its line. It can't go with `--add-ignore`.
+More settings add items or narrow them, each in [docs/config.md](docs/config.md):
 
-`"syntax": "tsdoc"` makes those stubs, and the language server's, TSDoc's: `@typeParam T -`, `@param x -` and `@packageDocumentation` in place of `@template T`, `@param x` and `@file`. `require-template` then asks for `@typeParam` in its findings, and `valid-link` takes the `A` in `{@link A#b}` for a package's name, as TSDoc does, and doesn't look it up. The default, `"jsdoc"`, takes it for a class the file has to declare. The scan and the other checks read both syntaxes the same.
+| Setting | Effect |
+| --- | --- |
+| `"members": "all"` | Also counts, where their parent counts, enum members (`Color.Red`), the members of a type alias's object type (`Options.timeout`), and the properties of an object literal whose block has `@enum`, `@namespace` or `@lends X` (`Name.prop`, or `X.prop`). A matching `@property` in the parent's block documents one. The default, `"classes"`, counts only the members of classes and interfaces. |
+| `"commonjsMembers": true` | Counts `X.prototype.m = …` and `X.m = …` at the top level as members of `X`, a function or class declared in the file, where `X` counts. In a CommonJS file (`.cjs`, or `.js` with no `import` or `export`), `this.a = …` at the top level exports `a`. |
+| `"fileDocs": "require"` | Makes each file an item of kind `module`, at its first line and named by its `@module` or else its path. It's documented when the file's first block has `@file`, `@fileoverview`, `@overview`, `@module` or `@packageDocumentation`, with text, and that block then documents nothing else. The first `// docov-ignore-next-line` before the file's code takes the file's item out too. |
+| `"virtual": true` | Counts a JavaScript file's `@typedef` and `@callback` blocks that name a type as items of kind `type`, at the block, documented when the block or the tag describes the type. They count as exported under the `exports` scope, since JSDoc treats them as the module's public types, and then document nothing else. |
+| `"exports": { "esm", "cjs", "globals" }` | Picks which ways of exporting make an item exported. With `globals`, `window.a = …` and `globalThis.a = …` at the top level export `a` the way `exports.a = …` does, under the `exports` and `all` scopes. |
+| `--kind function,class` or `kinds` | Counts only those kinds, named as the reports name them: `function`, `class`, `method`, `accessor`, `property`, `variable`, `interface`, `type`, `enum`, `namespace`, `default` and `module`. |
+| `--access public,protected` or `access` | Counts only those access levels, like jsdoc's `--access`: an item's `@public`, `@protected`, `@package` or `@private` tag (or `@access`), else `protected` for a TypeScript `protected` member, else `public`. |
 
-`--explain FILE` prints, in place of a report, a line for each item in `FILE` saying whether it counts by the config `FILE` is scanned with (a nested config's too) and why (documented by the block at a line, ignored by a comment, or left out by a rule), one for each `docov-ignore` comment there that changes nothing, and one for each declaration or block the scan passed over there and why (a re-export, a constructor, an overload's implementation, a destructured variable, a `require()` binding, a license header, a stub, a private member). When a nested config leaves `FILE` out, it says so. It exits 0.
+Without `fileDocs`, a file's first `@file` block right before a declaration documents the declaration, and without `virtual`, so does a `@typedef` block. A later `@file` block, or a `@typedef` block in TypeScript or one that names no type, documents the next declaration either way.
 
-Some things never count: constructors (their class's doc covers them), private members (`#x` and `private x`), an overload's implementation (only its signatures), destructured variables, `require()` bindings, `declare module` and `declare global` blocks, and re-exports from another file (`export { x } from './x'`, `export * from`), whose declarations count in their own file.
+### Documented
 
-`--scope all` counts every module-level declaration, exported or not.
+An item is documented when a `/** … */` block with something in it sits right before it, or before its `export` or decorators. With several, the nearest is the item's, as in jsdoc. These don't count:
 
-`--scope public` counts only a package's public API: what its entry points export. It reads the package.json in the config's folder (a nested config's own, for its files), or else the nearest one above the scanned paths, takes every path in its `exports` (under every condition and subpath, leaving out `*` patterns), `main`, `module`, `types` and `typings`, and finds each one's source file, back through tsconfig.json's `outDir` and `rootDir` (or `src`) for a built file, and from a `.d.ts` to the module it declares. From there it follows `export * from`, `export { x } from`, `export * as ns from` and imports exported again through the module graph, the way Node and TypeScript resolve them, and counts each declaration it reaches once, in its own file. A reached file's CommonJS exports count too. An entry point with no source file is an error (exit 2).
+- ordinary comments (`//` and `/* */`)
+- an empty `/** */`
+- license headers (`/** @license … */`), which are file headers
+- a block whose description is just `TODO`, as `--fix` writes stubs, so a stub nobody filled in doesn't raise the number
 
-`"members": "all"` counts more members, where their parent counts: TypeScript enum members (`Color.Red`), the members of a type alias's object type (`Options.timeout`), and the properties of an object literal whose block has `@enum`, `@namespace` or `@lends X` (`Name.prop`, or `X.prop`). A matching `@property` in the parent's block documents one of these. The default, `"classes"`, counts only the members of classes and interfaces.
+A block of tags alone, such as `/** @type {string} */`, counts. `--require-description` (`"requireDescription": true`) asks for more: text before the first tag, or a `@description`, `@desc`, `@summary`, `@classdesc` (on a class) or `@inheritdoc` tag.
 
-`"commonjsMembers": true` counts `X.prototype.m = …` and `X.m = …` at the top level as members of `X` (`X.m`, a method or property by its value) when `X` is a function or class declared in the file, counting where `X` does. In a CommonJS file (`.cjs`, or a `.js` file with no `import` or `export`), `this.a = …` at the top level then exports `a` the way `exports.a = …` does.
+An item can inherit its docs. A block with `@inheritdoc`, or TSDoc's inline `{@inheritDoc}` (or `{@inheritDoc Ref}`) anywhere in it, documents its item, with or without a description. `"inherit": "override"` also counts a TypeScript class member marked `override` as documented, since it inherits its base's docs.
 
-`"fileDocs": "require"` makes each file an item of its own, of kind `module`, at its first line and named by its `@module` or else its path. It's documented when the file's first JSDoc block has `@file`, `@fileoverview`, `@overview`, `@module` or `@packageDocumentation`, with text, and that block then documents nothing else. Without it, a block like that right before a declaration documents the declaration. The first `// docov-ignore-next-line` before a file's code takes the file's own item out of the total, along with the items on the line after it.
+### Leaving items out
 
-`"virtual": true` counts a JavaScript file's `@typedef` and `@callback` blocks that name a type as items of kind `type`, at the block, documented when the block or the tag describes the type. They count as exported under the `exports` scope, since JSDoc treats them as the module's public types, and they then document nothing else. Without it, such a block right before a declaration documents the declaration.
+These take items out of the total, so they're neither documented nor undocumented:
 
-`"exports": { "esm": true, "cjs": true, "globals": false }` picks which ways of exporting count under the `exports` scope (`cjs` covers TypeScript's `export =` too). With `globals` on, `window.a = …` and `globalThis.a = …` at the top level export `a` the way `exports.a = …` does, under either scope.
+| How | Leaves out |
+| --- | --- |
+| `// docov-ignore-next-line` (or with a reason, `// docov-ignore-next-line: legacy API`) | The items on the next line. |
+| `/* docov-ignore-file */` at the top level | Every item in the file. |
+| `--exclude-tag internal` or `"excludeTags": ["internal"]` | Items whose block has that tag. |
+| `--ignore-name '^_'` or `"ignore": { "names": ["^_"] }` | Items whose name matches the regex, a member by its own name or as `Class.member`. |
+| `"ignoreDeprecated": true` | Items whose block has `@deprecated`. |
+| `"skipGenerated": true` | Every item in a file whose first comment has `@generated`. |
 
-`--kind function,class` (or `"kinds": ["function", "class"]`) counts only those kinds of item, named as the reports name them: `function`, `class`, `method`, `accessor`, `property`, `variable`, `interface`, `type`, `enum`, `namespace`, `default` and `module`. `--by-kind` adds a line of totals by kind after the text report's total, and the JSON report always has them, under `kinds`.
+A documented item under an ignore comment still counts as documented, as rustdoc does it, so ignoring never hides docs that are there. Only the `json` report lists ignored items, with `"ignored": true` and their `reason`. `--report-unused-ignores` (`"reportUnusedIgnores": true`) fails the scan on each ignore comment that changes nothing. That's one over a blank line, a statement that declares nothing, an item the config leaves out, or items that are documented anyway. It's also a comment that another comment covers too, and of those, one is kept. In a file `skipGenerated` skips, none counts as unused.
 
-`--access public,protected` (or `"access": ["public", "protected", "package"]`) counts only items with those access levels, like jsdoc's `--access`: an item's level is its `@public`, `@protected`, `@package` or `@private` tag (or `@access` with one of those), else `protected` for a TypeScript `protected` member, else `public`. Without it, access tags change nothing.
+A [baseline](#ratchet-coverage-up) is different: its items stay in the total and in the report, and only the gates count them as documented.
 
-Example coverage is a second figure: the share of counted items whose JSDoc has an `@example`, as rustdoc's `--show-coverage` counts it. The JSON report always has it (`withExamples` and `examplesPercent`, for each file and in all), `--examples` adds it to each line of the text report, and `--examples-threshold PERCENT` (`"examplesThreshold"`) fails the scan under it.
+### Other figures
 
-`--release-tags` adds release-tag coverage: the share of counted top-level exports with exactly one of `@public`, `@beta`, `@alpha` and `@internal`, which [API Extractor asks for](https://api-extractor.com/pages/messages/ae-missing-release-tag/) (members take their container's, so they aren't counted). It's a line after the text report's total and `releaseTagged` and `releaseTagsPercent` in the JSON report, and `--release-tags-threshold PERCENT` (`"releaseTagsThreshold"`, which turns it on too) fails the scan under it.
+docov also measures four other shares, each with a gate and fields in the `json` report:
 
-`--types` adds type coverage for JavaScript (`.js`, `.mjs`, `.cjs` and `.jsx` files): the share of counted functions and methods whose JSDoc gives each `@param` a `{type}`, and its `@returns` one when it has one. An undocumented function isn't typed. It's a line after the text report's total and `typed` and `typesPercent` in the JSON report, and `--types-threshold PERCENT` (`"typesThreshold"`, which turns it on too) fails the scan under it.
+| Figure | The share of | Text report | Gate | `json` fields |
+| --- | --- | --- | --- | --- |
+| Examples | counted items with an `@example`, as rustdoc's `--show-coverage` counts it | `--examples`, on each file's line and the total's | `--examples-threshold`, `examplesThreshold` | `withExamples`, `examplesPercent`, always |
+| Complete | counted items documented with a matching `@param` for each parameter | `--complete`, a line after the total | `--complete-threshold`, `completeThreshold` | `complete`, `completePercent` |
+| Types | counted JavaScript functions and methods (in `.js`, `.mjs`, `.cjs` and `.jsx` files) whose `@param`s, and `@returns` if any, have a `{type}` | `--types`, a line after the total | `--types-threshold`, `typesThreshold` | `typed`, `typesPercent` |
+| Release tags | counted top-level exports with exactly one of `@public`, `@beta`, `@alpha` and `@internal`, [as API Extractor asks](https://api-extractor.com/pages/messages/ae-missing-release-tag/). Members take their container's, so they aren't counted. | `--release-tags`, a line after the total | `--release-tags-threshold`, `releaseTagsThreshold` | `releaseTagged`, `releaseTagsPercent` |
 
-`--complete` adds complete coverage: the share of counted items that are documented with a matching `@param` for each parameter. It's a line after the text report's total and `complete` and `completePercent` in the JSON report, and `--complete-threshold PERCENT` (`"completeThreshold"`, which turns it on too) fails the scan under it.
+The complete, types and release-tags gates turn their figure on too; the examples gate doesn't add it to the text report. An undocumented function isn't typed. `--by-kind` adds a line of totals by kind after the text report's total, which the `json` report always has under `kinds`.
 
-`"ignoreDeprecated": true` leaves out items whose JSDoc has `@deprecated`, and `"skipGenerated": true` leaves out every item in a file whose first comment has `@generated`.
+[Doc checks](docs/checks.md) go past whether a block exists to what it says (a `@param` for each parameter, a summary that ends with a period). They're findings, not part of the percentage.
 
-### Doc checks
+## Recipes
 
-Checks on what each counted item's JSDoc block says. Each is off until `--rule ID=LEVEL` (repeatable) or docov.json's `rules` turns it on, at `warn` or `error`, with its options if it has some:
+### Fail CI under a threshold
 
-```jsonc
-"rules": { "require-param": "error", "param-names": "warn", "summary-sentence": ["warn", { "maxLength": 80 }] }
-```
-
-Each finding prints to stderr as `docov: path:line:column: rule-id: message`, and the `json`, `github`, `markdown`, `sarif`, `gitlab`, `junit`, `checkstyle`, `rdjson`, `unix` and `html` formats list them too. A finding at `error` fails the scan (exit 1). A flag's level wins over the config's, which keeps its options. A config's `rules` merges by rule id over those of one it extends or nests under, the way ESLint's flat config does: its setting for a rule replaces that one's, keeping its options when it gives a level alone, and that one's other rules stay. An item a `docov-ignore` comment takes out of the total isn't checked. The checks that want a tag, and `summary-sentence`, leave a block that inherits its docs (`@inheritdoc` or `{@inheritDoc}`) alone.
-
-- `require-param`: each parameter of a function or method has a matching `@param`, by name, or for a destructured one, at its place (as `paramsDocumented` counts them).
-- `param-names`: each `@param` names a parameter, so none is left over from a rename. A destructured parameter takes the name of the `@param` at its place, and `@param options.a` belongs to `options`.
-- `require-returns`: a function or method whose own body returns a value has `@returns`, unless its return type is `void`, `undefined` or `Promise<void>`.
-- `require-yields`: a generator that yields a value has `@yields`.
-- `require-throws`: an exported function or method with a `throw` of its own (outside a `try` that catches it) has `@throws`.
-- `require-template`: each type parameter of a declaration has a `@template`, or TSDoc's `@typeParam` (`@typeParam T - The key.` or `@typeParam T`). A finding asks for the tag `syntax` writes.
-- `empty-tag-description`: each `@param`, `@typeParam`, `@returns`, `@throws` and `@yields` says something past its type and name, except a `@returns` of nothing. The `-` TSDoc puts before a description doesn't count, so `@param x -` says nothing.
-- `informative-docs`: a description says more than its item's name (`/** The user name. */` on `userName` doesn't).
-- `valid-link`: each `{@link}`, `{@linkcode}` and `{@linkplain}` is closed, has a target and no unescaped `{`, and each `@see` has text. A target that's a name, or a namepath like `A#b` by its first part, is declared or imported in the same file or is a JavaScript, browser or Node.js global. Names in other files aren't looked up, nor are TSDoc's declaration references (`(A:constructor)`, `A.(b:static)`, `@scope/pkg#A`). With `"syntax": "tsdoc"`, the `A` in `A#b` is a package's name, which isn't looked up either.
-- `summary-sentence`: a description's first sentence is at most `maxLength` characters (120) and, with `period` (on by default), ends with `.`, `!` or `?`.
-- `doc-markdown`: a description's words that look like code (`snake_case`, `a::b`, `camelCase`) are in backticks, and its lists have no lazy continuation lines. `allowlist` adds words to the default list (`JavaScript`, `GitHub` and others).
-- `tsdoc-tags`, `tsdoc-params`, `tsdoc-inline-tags`, `tsdoc-escapes`, `tsdoc-code`, `tsdoc-html` and `tsdoc-links`: TSDoc's grammar, as `@microsoft/tsdoc` reads it, with its message ids (`tsdoc-param-tag-missing-hyphen: …`) as `eslint-plugin-tsdoc` reports them. Tags are checked against a tsdoc.json: the one `--tsdoc-config` or `tsdocConfig` names, or with `"syntax": "tsdoc"` each file's nearest, found the way `@microsoft/tsdoc-config` finds it. `docov --print-schema` describes each.
-
-`const f = () => …` is a variable to docov, so the checks on parameters, returns and throws don't look at it.
-
-### docov.json
-
-`docov.json` (or `docov.jsonc`, or `.docovrc`) holds the same settings. Flags win over it. docov reads the one in the folder it runs from, or else the nearest folder above that has one, so it finds the project's config from a subfolder too. In one folder, `docov.json` comes first and `.docovrc` last. `--config FILE` names one instead.
-
-```jsonc
-{
-  "$schema": "https://raw.githubusercontent.com/cutenode/docov/v0.1.1/docov.schema.json",
-  // Relative to this file's folder, wherever docov runs from.
-  "paths": ["src"],
-  "exclude": ["**/*.test.ts", "src/generated/**"],
-  "threshold": 80,
-  "scope": "exports",
-}
-```
-
-`paths` and `exclude` (gitignore-style globs) are relative to the config's folder. Comments and trailing commas are fine in any of the three.
-
-`"extends": "../docov.json"` (or a list of paths) builds on other config files, relative to the one that names them. Its own keys win (`rules` by rule id), and in a list a later file's win over an earlier one's. Each file's `paths`, `exclude`, `baseline` and the globs in its `threshold` and `overrides` stay relative to that file. Editors don't know `.docovrc` is JSON, so tell yours (in VS Code, `"files.associations": { ".docovrc": "jsonc" }`).
-
-`--jsdoc-config FILE` (or `"jsdocConfig": "jsdoc.json"`, relative to the config) scans the files a [jsdoc config](https://jsdoc.app/about-configuring-jsdoc) documents: its `source.include` are the paths, unless there are paths already, and `source.exclude` leaves files and folders out, both relative to the jsdoc config. `source.includePattern` and `excludePattern` filter files only when the config writes them, since jsdoc's default `includePattern` would leave out TypeScript. It has to be JSON; docov can't read a `.js` config.
-
-With `"nested": true` in the root config, each file is scanned with the nearest docov.json, docov.jsonc or .docovrc in a folder above it, up to the root config's folder, merged over the root config, the way [oxlint's nested configs](https://oxc.rs/docs/guide/usage/linter/nested-config.html) work. A nested config's `exclude` applies in its folder, its gates (`threshold`, `maxUndocumented`, `overrides`, `baseline`, the examples, release-tags, types and complete thresholds, and the doc checks' errors) hold for its own files (a failure names the config), its `overrides` (in place of the root config's) set its own files' scope, and its `paths` aren't read.
-
-`--by-package` adds a total line for each workspace package after the text total, and a `packages` array to the JSON. The packages are the folders with a package.json that the globs in the root config folder's package.json `workspaces` or pnpm-workspace.yaml `packages` match.
-
-`--print-config` prints the settings a scan would use as JSON: the config files they came from, the paths, the excludes and each feature's setting, with the flags applied. `--list-files` prints the files it would scan. Neither scans.
-
-`threshold` can also be an object of thresholds by path, such as `{ "global": 80, "perFile": 50, "src/api/**": 100 }`. `global` is for every file together (`--threshold` sets it), `perFile` for each file on its own, and any other key is a gitignore-style glob, relative to the config's folder, for the files it matches together. A negative number is the most undocumented items that pass instead of a percentage, as in [Jest](https://jestjs.io/docs/configuration#coveragethreshold-object): `-10` allows 10. Each threshold that fails prints its own line.
-
-`maxUndocumented` (or `--max-undocumented N`) fails the scan when more than that many items are undocumented, next to any threshold.
-
-`baseline` (or `--baseline FILE`) names a file of known undocumented items, so new code can be held to a gate while older code catches up. `docov --write-baseline` writes every undocumented item that isn't ignored to it (to `docov-baseline.json` in the config's folder when nothing names one) and exits 0. The gates count the items in it as documented, while the report still lists them. Items are kept by path, kind and name, so moving lines doesn't make them stale, and each path is relative to the folder of the config that names the baseline (the root config's for `--baseline`) with `/` on every OS. [`docov-baseline.schema.json`](docov-baseline.schema.json) (`docov --print-schema baseline`) is its JSON Schema.
-
-`docov --update-threshold` ratchets the threshold: when the documented percentage, rounded down to a tenth, is over the config's global threshold, it writes it there (into `global` for an object of thresholds), changing only that number so comments and formatting stay. A negative threshold stays as it is. Without a config it writes a new `docov.json` where docov runs. With nested configs, it goes by the files the root config scans.
-
-`overrides` changes settings for some paths: each has `files` (gitignore-style globs) and any of `exclude`, `threshold` and `scope`, which replace the top-level ones for those files. For each file and setting, the last override that matches the file and has the setting wins. The top-level thresholds then cover only the files no override has a threshold for. As in .gitignore, a file in a folder that's left out stays out. `--scope` wins over every override's `scope`, and `--explain` names the override that set a file's scope.
-
-```jsonc
-"overrides": [
-  { "files": ["src/legacy/"], "exclude": [], "threshold": 20 },
-  { "files": ["src/internal/"], "scope": "all" },
-]
-```
-
-[`docov.schema.json`](docov.schema.json) is its JSON Schema, which editors use for completion and checking. The URL above is pinned to a release so it matches the docov you have; `docov --print-schema > docov.schema.json` writes your own copy to point at instead.
-
-### Formats
-
-`--format` picks one, and can be given more than once: one scan feeds them all. `FORMAT=FILE` writes that one to `FILE`, making its folder if needed, and the rest go to stdout one after another. `--output FILE` writes the one format without a file of its own to `FILE`.
-
-```bash
-docov --format text --format lcov=coverage/docov.lcov
-```
-
-- `text` (the default): each file's percentage and its undocumented items, then the total. `--omit-covered` leaves out fully documented files, and `--quiet` prints only the total (failed gates still go to stderr). `--sort priority` lists each file's undocumented items by what to document first: exported functions and methods (more parameters first), then classes, then the rest. On a terminal, a percentage under the threshold is red and the undocumented items are dim. `--color always` or `never` says otherwise, and `NO_COLOR` turns it off.
-- `json`: every item, documented or not, with its kind, line and column, and totals per file, per kind and overall. Each item also says whether its JSDoc describes it (`hasDescription`) and has an `@example` (`hasExample`), whether each parameter has a matching `@param` (`paramsDocumented`, `null` for what isn't a function or method), whether it's `deprecated`, its `since` text (or `null`), and with doc checks on, its findings (`diagnostics`, each with its `line`, `column`, `rule`, `severity` and `message`).
-- `lcov`: a line record for each line with items on it, hit when all of them are documented, and each item as a function, hit when it's documented. Coverage services and editor gutters read it.
-- `cobertura`: Cobertura XML (coverage-04.dtd) with the same line records, a package per folder and a class per file, for GitLab's merge request coverage and other CI coverage views.
-- `github`: GitHub Actions annotations, a warning on each undocumented item, one at its level on each doc check finding, and an error for each failed gate. In GitHub Actions (`GITHUB_ACTIONS=true`) with no `--format`, docov writes these after the text, the way [oxlint](https://oxc.rs/docs/guide/usage/linter/output-formats.html) does.
-- `markdown`: the total, any failed gates, a table of the files, and each file's undocumented items in a folded `<details>` block, then the doc checks' findings in one. Made for `$GITHUB_STEP_SUMMARY` (`--format markdown=$GITHUB_STEP_SUMMARY`) and pull request comments. `--compare BASE.json` takes an earlier `--format json` report (from the base branch, say) and adds the percentage before and the change, for the total and each file, with files marked `new` or `gone`.
-- `sarif`: SARIF 2.1.0, a result at each undocumented item under the rule `docov/undocumented` and one at its level for each doc check finding under the check's own rule (`docov/require-param`), for GitHub code scanning (`github/codeql-action/upload-sarif`) and other SARIF viewers.
-- `gitlab`: a GitLab Code Quality report, an issue of severity `minor` at each undocumented item and one at each doc check finding under the check's rule (`docov/require-param`), `major` at `error`. Each fingerprint is a hash of the item's path, kind and name, or the finding's path, line, rule and message, so GitLab tells new issues from old ones.
-- `junit`: JUnit XML, a test suite per file and a test case per item that fails when the item is undocumented, followed by a failed test case for each doc check finding at `error` in it. Its findings at `warn` go in its test case's `<system-out>`, so they show without failing it.
-- `checkstyle`: Checkstyle XML, a warning at each undocumented item and one at its level for each doc check finding, with the source `docov.<rule-id>`.
-- `rdjson`: [reviewdog](https://github.com/reviewdog/reviewdog)'s diagnostic format (`reviewdog -f=rdjson`), a diagnostic at each undocumented item and one at its level for each doc check finding, its code the check's rule.
-- `unix`: `path:line:column: kind name undocumented [docov]` for each undocumented item and `path:line:column: rule-id: message` for each doc check finding, the way compilers write warnings, for editors' problem matchers and grep.
-- `html`: one self-contained page (`--format html=report.html`) with a table of the files and each file's source, its undocumented declarations highlighted and the lines with doc check findings marked, with a list of the file's findings after it. It has no scripts and follows the system's light or dark mode.
-- `badge`: an SVG badge of the total, drawn without a network call. `--badge FILE` is short for `--format badge=FILE`.
-- `shields`: the JSON a [shields.io endpoint badge](https://shields.io/badges/endpoint-badge) reads, for a badge from a file you publish.
-- `benchmark`: the total as `[{"name":"docov","unit":"%","value":66.7}]`, for [github-action-benchmark](https://github.com/benchmark-action/github-action-benchmark)'s `customBiggerIsBetter`, to chart it over time.
-
-Badges are red under the threshold, yellow up to 10 points over it, and green past that. With no threshold they're blue.
-
-## Editors
-
-`docov lsp` is a language server on stdin and stdout. For each open JavaScript or TypeScript file it shows an information diagnostic at each undocumented item (`docov/undocumented`) and each doc check finding at its level, from the unsaved text, by the config `docov` would use for that file (nested configs included). It finds the config as if it ran in the workspace folder the file is in, or else in the file's own folder, and shows nothing for a file the config's `paths` or excludes leave out. On an undocumented item, a code action writes the stub `--fix` would. To stub every file at once, run `docov --fix`.
-
-It reads each file's config (and, with the public scope, the package's module graph) once, and keeps it until a file it came from changes or a config or package.json turns up closer. When the editor can watch files for a server, docov asks it to and goes by what it says; otherwise, and for files outside the workspace, it compares their modified times and sizes on each edit.
-
-VS Code needs an extension to start a language server, but editors with a generic LSP client can run it directly. In Neovim (0.10 or later):
-
-```lua
-vim.api.nvim_create_autocmd("FileType", {
-  pattern = { "javascript", "javascriptreact", "typescript", "typescriptreact" },
-  callback = function(args)
-    vim.lsp.start({
-      name = "docov",
-      cmd = { "docov", "lsp" }, -- or { "npx", "docov", "lsp" }
-      root_dir = vim.fs.root(args.buf, { "docov.json", "docov.jsonc", ".docovrc", "package.json", ".git" }),
-    })
-  end,
-})
-```
-
-In Helix's `languages.toml`, add it next to each language's own server:
-
-```toml
-[language-server.docov]
-command = "docov"
-args = ["lsp"]
-
-[[language]]
-name = "typescript"
-language-servers = ["typescript-language-server", "docov"]
-```
-
-and the same `[[language]]` for `javascript`, `jsx` and `tsx`.
-
-## CI
-
-### GitHub Action
+In GitHub Actions, the Action runs docov once with annotations on each undocumented item, adds the report to the job summary, and can keep one comment on the pull request up to date:
 
 ```yaml
 permissions:
@@ -254,7 +188,7 @@ steps:
       comment: true
 ```
 
-The action runs `npx @docov/cli` once (GitHub's runners have Node), with `--format github` for annotations and `--format markdown` for the report, and fails the step with docov's exit code.
+It runs `npx @docov/cli` (GitHub's runners have Node) with `--format github` for annotations and `--format markdown` for the report, and fails the step with docov's exit code.
 
 | Input | Default | What it does |
 | --- | --- | --- |
@@ -266,15 +200,133 @@ The action runs `npx @docov/cli` once (GitHub's runners have Node), with `--form
 | `data-branch` | | A branch for the reports from the default branch, below |
 | `token` | `github.token` | The token `comment` and `data-branch` use |
 
-The `markdown` output is the report's path.
-
-With `data-branch: docov-data`, each push to the default branch commits `docov.json` (the json report) and `shields.json` (the `shields` format) to that branch as github-actions[bot], so its history is the trend. It needs `contents: write`, and a `concurrency` group keeps two pushes from racing. Pull requests then compare with its `docov.json` unless `compare` names another report. In a public repository a badge can read the branch's raw file:
+Its `markdown` output is the report's path. With `data-branch: docov-data`, each push to the default branch commits `docov.json` (the `json` report) and `shields.json` (the `shields` format) to that branch as github-actions[bot], so its history is the trend. That needs `contents: write`, and a `concurrency` group on the workflow keeps two pushes from racing. Pull requests then compare with its `docov.json` unless `compare` names another report. In a public repository, a badge can read the branch's file:
 
 ```markdown
 ![docs](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/OWNER/REPO/docov-data/shields.json)
 ```
 
-### pre-commit and lefthook
+Anywhere else, run docov and let the exit code fail the job: `npx docov` with `@docov/cli` in your devDependencies, or `npx @docov/cli` without. GitLab reads `--format gitlab=gl-code-quality.json` and `--format cobertura=coverage.xml`; [docs/formats.md](docs/formats.md) has every format with a sample.
+
+A threshold can be more than one number. In docov.json, an object sets one for every file together (`global`, which `--threshold` sets), one for each file on its own (`perFile`), and one for each glob's files together. A negative number is the most undocumented items that pass (`-10` allows 10), as in [Jest](https://jestjs.io/docs/configuration#coveragethreshold-object), and `maxUndocumented` (`--max-undocumented N`) does the same next to a percentage:
+
+```jsonc
+{
+  "$schema": "https://raw.githubusercontent.com/cutenode/docov/v0.1.1/docov.schema.json",
+  "paths": ["src"],
+  "exclude": ["**/*.test.ts"],
+  "threshold": { "global": 80, "perFile": 50, "src/api/**": 100, "src/legacy/**": -10 },
+}
+```
+
+Each threshold that fails prints its own line.
+
+### Ratchet coverage up
+
+In a project that's far from documented, hold new code to a gate while older code catches up. `docov --write-baseline` writes every undocumented item that isn't ignored to `docov-baseline.json` in the config's folder (or the file `baseline` or `--baseline` names) and exits 0:
+
+```sh
+docov --write-baseline
+```
+
+Set `"baseline": "docov-baseline.json"` in docov.json. The gates then count those items as documented, while the report and its total still list them as they are. Items are kept by path, kind and name, so moving lines doesn't make them stale. Each path is relative to the folder of the config that names the baseline (the root config's for `--baseline`), with `/` on every OS. [`docov-baseline.schema.json`](docov-baseline.schema.json) is its schema.
+
+As coverage rises, `docov --update-threshold` raises docov.json's global threshold to the documented percentage, rounded down to a tenth, when that's higher. It changes only that number, so comments and formatting stay, and leaves a negative threshold as it is. Without a config, it writes a new `docov.json` where docov runs. Run it on the default branch, or after merging, and commit the change.
+
+`docov --add-ignore` (or `--add-ignore=REASON`) is the blunter tool: it writes a `// docov-ignore-next-line` above every undocumented item, indented like it, and reports how many in place of the coverage. A file's own item gets one at the top, below a shebang, unless one above the file's first line of code covers it. It changes no other line. Those items then leave the total, which a baseline doesn't do.
+
+### Cover only what changed
+
+`--changed` scans only the files that differ from where HEAD branched off the default branch (`origin/HEAD`, or `main` without one), committed or not, and untracked ones. `--since REF` compares with another branch or commit. `--staged` scans only the staged files, for a pre-commit hook. Paths on the command line still narrow the scan.
+
+`--diff-threshold PERCENT` gates by line instead: it fails when the items on lines a change added (committed or not, and every line of an untracked file) are under that documented percentage, wherever the rest of the project is. The change is from where HEAD branched off the default branch, or off `--diff-base REF`. These run `git` (2.30 or later). A CI checkout may have neither `origin/HEAD` nor `main`, so there, fetch the history (`fetch-depth: 0` in `actions/checkout`) and name the base:
+
+```sh
+docov --diff-threshold 100 --diff-base origin/main   # every item the change adds is documented
+```
+
+### Set it up in a monorepo
+
+`--by-package` adds a total for each workspace package after the text report's total, and a `packages` array to the `json` report. The packages are the folders with a package.json that the globs in the package.json `workspaces`, or pnpm-workspace.yaml `packages`, of the root config's folder match.
+
+For settings per package, put `"nested": true` in the root config. Each file is then scanned with the nearest docov.json, docov.jsonc or .docovrc above it, up to the root config's folder, merged over the root config, the way [oxlint's nested configs](https://oxc.rs/docs/guide/usage/linter/nested-config.html) work:
+
+```jsonc
+// docov.json
+{ "nested": true, "threshold": 80 }
+```
+
+```jsonc
+// packages/legacy/docov.json
+{ "threshold": 40, "exclude": ["src/generated/**"] }
+```
+
+A nested config's `exclude` applies in its folder, and its `overrides` (in place of the root's) set its own files' scope. Its gates hold for its own files, and a failure names the config. Those are `threshold`, `maxUndocumented`, `overrides`, `baseline`, the other figures' thresholds and the doc checks' errors. Its `paths` aren't read. `--update-threshold` goes by the files the root config scans.
+
+To share settings without nesting, `"extends": "../../docov.json"` (or a list) builds on other config files, relative to the one that names them. Its own keys win (`rules` by rule id), and a later file in the list wins over an earlier one. Each file's `paths`, `exclude`, `baseline` and the globs in its `threshold` and `overrides` stay relative to that file.
+
+`overrides` changes `exclude`, `threshold` and `scope` for the files its globs match, the last matching override with the setting winning. The top-level thresholds then cover only the files no override has a threshold for. As in .gitignore, a file in a folder that's left out stays out. `--scope` wins over every override's `scope`, and `--explain` names the override that set a file's scope.
+
+```jsonc
+"overrides": [
+  { "files": ["src/legacy/"], "threshold": 20 },
+  { "files": ["src/internal/"], "scope": "all" },
+]
+```
+
+`--print-config` prints the settings a scan would use, with the config files they came from.
+
+### Fill gaps with `--fix`
+
+`docov --fix` writes a doc stub above every undocumented item that has no block yet, indented like it, prefilled from the code: a `TODO` description, a `@template` for each type parameter, a `@param` for each parameter (a destructured one by its place, as `param0`), `@returns` when its body returns a value, and `@file` for a file's own item. It reports how many it wrote, leaves every existing block as it is, and skips an item that starts after something else on its line. It can't go with `--add-ignore`.
+
+```console
+$ docov --fix
+docov: added 4 doc stubs
+$ docov --quiet
+  55.6%  5/9  total
+```
+
+A `TODO` description documents nothing, so the coverage stays where it was until each one is written. `"syntax": "tsdoc"` writes TSDoc's tags instead: `@typeParam T -`, `@param x -` and `@packageDocumentation`. It also makes `require-template` ask for `@typeParam`, and `valid-link` read the `A` in `{@link A#b}` as a package's name, which it doesn't look up. The scan and the other checks read both syntaxes the same.
+
+### Use it in an editor
+
+`docov lsp` is a language server on stdin and stdout. For each open JavaScript or TypeScript file, it shows an information diagnostic at each undocumented item (`docov/undocumented`) and each doc check finding at its level, from the unsaved text, by the config `docov` would use for that file (nested configs included). On an undocumented item, a code action writes the stub `--fix` would. To stub every file at once, run `docov --fix`.
+
+It finds the config as if it ran in the workspace folder the file is in, or else in the file's own folder, and shows nothing for a file the config's `paths` or excludes leave out. It reads each file's config (and, with the `public` scope, the package's module graph) once, and keeps it until a file it came from changes or a config or package.json turns up closer. When the editor can watch files for a server, docov asks it to; otherwise, and for files outside the workspace, it compares their modified times and sizes on each edit.
+
+VS Code needs an extension to start a language server, but editors with a generic LSP client can run it directly. In Neovim (0.10 or later):
+
+```lua
+vim.api.nvim_create_autocmd("FileType", {
+  pattern = { "javascript", "javascriptreact", "typescript", "typescriptreact" },
+  callback = function(args)
+    vim.lsp.start({
+      name = "docov",
+      cmd = { "docov", "lsp" }, -- or { "npx", "docov", "lsp" } with @docov/cli in devDependencies
+      root_dir = vim.fs.root(args.buf, { "docov.json", "docov.jsonc", ".docovrc", "package.json", ".git" }),
+    })
+  end,
+})
+```
+
+In Helix's `languages.toml`, add it next to each language's own server, and the same `[[language]]` for `javascript`, `jsx` and `tsx`:
+
+```toml
+[language-server.docov]
+command = "docov"
+args = ["lsp"]
+
+[[language]]
+name = "typescript"
+language-servers = ["typescript-language-server", "docov"]
+```
+
+To check a buffer before it's saved without LSP, `--stdin-filename PATH` scans stdin as the file at PATH, whose extension picks the language, and `--format unix` prints lines a problem matcher reads. `--stdin-filename` can't go with `--add-ignore`, `--fix`, `--write-baseline`, `--update-threshold`, `--watch`, `--changed`, `--staged` or `--explain`, which would act on that one file.
+
+`--watch` scans again whenever a JavaScript, TypeScript or config file under the paths changes, with a line between reports, until Ctrl-C.
+
+### Check before each commit
 
 ```yaml
 # .pre-commit-config.yaml
@@ -297,7 +349,7 @@ pre-commit:
       run: npx docov --quiet
 ```
 
-### Codecov
+### Report to Codecov
 
 Upload docov's lcov under its own flag, and carry the flag forward so uploads without it keep its last numbers:
 
@@ -322,15 +374,31 @@ flag_management:
 
 Codecov [merges every upload](https://docs.codecov.com/docs/merging-reports) for a commit, so if you upload test coverage too, the repository's headline number mixes the two on the same lines: an undocumented function your tests cover counts as covered. The `docs` flag's own status and numbers are the doc coverage alone.
 
+### Scan faster
+
+`--cache` keeps each file's items in `.docov-cache` in the config's folder (or the file `--cache-location` names), and the next scan reuses them for each file whose size and modified time haven't changed, as long as docov's version and the settings that change what counts are the same. Add it to `.gitignore`. `--threads N` scans N files at once, one per CPU by default, and `RAYON_NUM_THREADS` sets the same.
+
+## Reference
+
+| Page | What's in it |
+| --- | --- |
+| [docs/cli.md](docs/cli.md) | Every flag, as `docov --help` prints it |
+| [docs/config.md](docs/config.md) | Every docov.json key, with its type, default and values |
+| [docs/checks.md](docs/checks.md) | Every doc check, with its options and an example that fails and one that passes |
+| [docs/formats.md](docs/formats.md) | Every output format, with a sample |
+
 ## Working on it
 
 The toolchain is pinned in `rust-toolchain.toml`, and Node in `.node-version`. The checks need [cargo-nextest](https://nexte.st) and [cargo-llvm-cov](https://github.com/taiki-e/cargo-llvm-cov). `tools/lint.sh` also runs [shellcheck](https://www.shellcheck.net), [cargo-deny](https://github.com/EmbarkStudios/cargo-deny) (`deny.toml`), [zizmor](https://docs.zizmor.sh) and [actionlint](https://github.com/rhysd/actionlint) when they're installed, as they are on CI's Linux lint job.
 
-Each flag and docov.json key belongs to a feature, one file in `src/feature/` that implements `Feature`. Each output format is one file in `src/report/` with a `FORMAT` naming it, describing it for `--help`, and rendering it. Each doc check is one file in `src/check/` that implements `Check`, its rule id the file name in kebab case. `build.rs` registers every file in the three folders, so a new feature, format or check is a new file and nothing else.
+Each flag and docov.json key belongs to a feature, one file in `src/feature/` that implements `Feature`. Each output format is one file in `src/report/` with a `FORMAT` naming it, describing it for `--help`, and rendering it. Each doc check is one file in `src/check/` that implements `Check`, its rule id the file name in kebab case. `build.rs` registers every file in the three folders, so a new feature, format or check is a new file and nothing else. A new check also needs a failing and a passing example in `tests/fixtures/checks/<rule-id>/`.
+
+`tests/docs.rs` generates `docs/` from the schema, the registries and each format's and check's module docs, and runs the README's `console` examples on `tests/fixtures/quickstart`. It fails when any of them is stale, and `DOCOV_BLESS=1` rewrites them.
 
 ```bash
 cargo run -- [PATHS]...   # docov on a project
 tools/check.sh            # what CI runs: tools/lint.sh (format, clippy, rustdoc, matching crate and npm versions, and the linters above) and tools/coverage.sh (coverage for the whole suite, for the Hegel properties alone, and for the npm launcher's tests)
+DOCOV_BLESS=1 cargo test --test docs   # regenerate docs/ and the README's example output
 tools/jsdoc-oracle.sh [DIR]   # where docov and jsdoc disagree on a folder of plain JavaScript (default: tests/fixtures/jsdoc)
 tools/npm-approve.sh 1.2.3   # put a release's staged npm packages live
 ```

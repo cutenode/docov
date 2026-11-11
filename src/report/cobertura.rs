@@ -1,4 +1,7 @@
 //! `cobertura`: Cobertura XML, for GitLab's merge request coverage and other CI coverage views.
+//!
+//! It follows coverage-04.dtd, with the line records `lcov` writes, a package per folder and a
+//! class per file.
 
 use std::{path::Path, time::UNIX_EPOCH};
 

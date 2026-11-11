@@ -1,5 +1,8 @@
 //! `github`: GitHub Actions annotations, a warning on each undocumented item, one at its level on
 //! each doc check finding, and an error for each failed gate.
+//!
+//! In GitHub Actions (`GITHUB_ACTIONS=true`) with no `--format`, docov writes these after the text
+//! report, the way [oxlint](https://oxc.rs/docs/guide/usage/linter/output-formats.html) does.
 
 use crate::report::{Context, Format, diagnostics, message, severity, slash, undocumented};
 
