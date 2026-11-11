@@ -52,7 +52,7 @@ done
 
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
-# The targets release.yml builds, each where it's installed besides the host, so code behind a
+# The release targets in build.yml, each where it's installed besides the host, so code behind a
 # `cfg` for another OS or a dependency that doesn't build there fails here and not on the release
 # tag. CI's lint jobs install the ones their runner doesn't build natively.
 host=$(rustc -vV | sed -n 's/^host: //p')
@@ -61,7 +61,7 @@ while read -r target; do
   if [[ $target != "$host" ]] && grep -qx "$target" <<<"$installed"; then
     cargo clippy --all-targets --target "$target" -- -D warnings
   fi
-done < <(sed -n 's/.*target: \([a-z0-9_-]*\),.*/\1/p' .github/workflows/release.yml)
+done < <(sed -n 's/.*target: \([a-z0-9_-]*\),.*/\1/p' .github/workflows/build.yml)
 # Broken intra-doc links and bare URLs, which clippy doesn't check.
 RUSTDOCFLAGS='-D warnings' cargo doc --no-deps --locked --document-private-items
 if have shellcheck; then

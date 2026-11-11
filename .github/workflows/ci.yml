@@ -27,7 +27,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # The release targets (release.yml) each runner doesn't build natively, for tools/lint.sh's
+        # The release targets (build.yml) each runner doesn't build natively, for tools/lint.sh's
         # clippy.
         include:
           - { os: ubuntu-latest, targets: x86_64-unknown-linux-musl aarch64-unknown-linux-musl }
