@@ -1,22 +1,22 @@
 {
-  "private": true,
-  "description": "Not a package. uppt, which runs release.yml, reads it, and it installs knip, oxlint and oxfmt for tools/lint.sh. docov's npm packages are in npm/.",
-  "devEngines": {
-    "packageManager": {
-      "name": "npm",
-      "version": ">=11.17.0",
-      "onFail": "error"
-    }
-  },
-  "allowScripts": {},
-  "devDependencies": {
-    "knip": "6.44.2",
-    "oxfmt": "0.77.0",
-    "oxlint": "1.92.0"
-  },
-  "scripts": {
-    "knip": "knip",
-    "oxlint": "oxlint --deny-warnings",
-    "format": "oxfmt"
-  }
+	"private": true,
+	"description": "Not a package. uppt, which runs release.yml, reads it, and it installs knip, oxlint and oxfmt for tools/lint.sh. docov's npm packages are in npm/.",
+	"scripts": {
+		"knip": "knip",
+		"oxlint": "oxlint --deny-warnings",
+		"format": "oxfmt"
+	},
+	"devDependencies": {
+		"knip": "6.44.2",
+		"oxfmt": "0.77.0",
+		"oxlint": "1.92.0"
+	},
+	"devEngines": {
+		"packageManager": {
+			"name": "npm",
+			"version": ">=11.17.0",
+			"onFail": "error"
+		}
+	},
+	"allowScripts": {}
 }
