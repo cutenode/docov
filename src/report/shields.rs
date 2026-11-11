@@ -1,4 +1,8 @@
 //! `shields`: a shields.io endpoint badge's JSON, for a badge of the total from a served file.
+//!
+//! Publish the file and point a
+//! [shields.io endpoint badge](https://shields.io/badges/endpoint-badge) at its URL. Its color is
+//! the one `badge` picks.
 
 use serde_json::json;
 

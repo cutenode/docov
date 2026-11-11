@@ -1,5 +1,9 @@
 //! `html`: one self-contained page, with a table of the files and each file's source, its
 //! undocumented declarations highlighted and its doc check findings marked.
+//!
+//! A line is marked missed when one of its items is undocumented and covered when all of them are
+//! documented. A list of the file's findings follows its source. The page has no scripts and
+//! follows the system's light or dark mode. Give it a file, as in `--format html=report.html`.
 
 use std::fs;
 
