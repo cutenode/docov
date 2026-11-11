@@ -1,4 +1,9 @@
 //! `gitlab`: a GitLab Code Quality report, for merge request widgets.
+//!
+//! It has an issue of severity `minor` at each undocumented item, and one at each doc check finding
+//! under the check's rule, such as `docov/require-param`: `minor` at `warn`, `major` at `error`.
+//! Each fingerprint is a hash of the item's path, kind and name, or the finding's path, line, rule
+//! and message, so GitLab tells new issues from old ones.
 
 use std::hash::Hasher;
 

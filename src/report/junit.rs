@@ -1,4 +1,8 @@
 //! `junit`: JUnit XML, for CI test report views.
+//!
+//! It has a test suite per file and a test case per item, which fails when the item is
+//! undocumented, followed by a failed test case for each doc check finding at `error` in it. Its
+//! findings at `warn` go in its test case's `<system-out>`, so they show without failing it.
 
 use crate::check::Level;
 use crate::report::{Context, Format, escape, findings, message, slash};

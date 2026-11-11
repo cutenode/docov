@@ -1,6 +1,7 @@
 //! `summary-sentence`: a description's first sentence, its summary, is at most `maxLength`
 //! characters, and with `period` on, ends with `.`, `!` or `?`. The summary ends at the first of
-//! those followed by a space, or else with the first paragraph.
+//! those followed by a space, or else with the first paragraph. A block that inherits its docs
+//! (`{@inheritDoc Base.m}`) takes its summary from where it inherits, so it's left be.
 
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -36,7 +37,7 @@ impl Check for SummarySentence {
     const ABOUT: &'static str = "A description's first sentence is short and ends with a period.";
 
     fn check(options: &Options, subject: &Subject, out: &mut Vec<Finding>) {
-        let Some(at) = subject.description() else { return };
+        let Some(at) = subject.description().filter(|_| !subject.inherits()) else { return };
         let description = subject.doc.comment().parsed_preserving_whitespace();
         let paragraph = description.split("\n\n").find(|p| !p.trim().is_empty()).unwrap_or_default();
         let paragraph = paragraph.split_whitespace().collect::<Vec<_>>().join(" ");

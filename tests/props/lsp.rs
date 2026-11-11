@@ -11,7 +11,7 @@ use std::{
     time::Duration,
 };
 
-use docov::{FileReport, Rules, Scope, check, collect, lsp, rewrite};
+use docov::{FileReport, Rules, Scope, check, collect, feature::syntax::Syntax, lsp, rewrite};
 use hegel::{TestCase, generators as gs};
 use lsp_server::{Connection, Message, Notification, Request, RequestId, Response};
 use lsp_types::Uri;
@@ -162,10 +162,11 @@ fn apply(text: &str, edit: &Value) -> String {
 }
 
 /// A generated module with a line that has characters past the Basic Multilingual Plane before
-/// its item, whose column the server gives in UTF-16 code units, and a function whose block both
-/// doc checks find something in.
+/// its item, whose column the server gives in UTF-16 code units, a function whose block both doc
+/// checks find something in, and an undocumented generic function, whose stub has a tag for its
+/// parameter and its type parameter.
 fn document(tc: &TestCase) -> String {
-    let checked = "/** No period */\nexport function checked(a) {}\n";
+    let checked = "/** No period */\nexport function checked(a) {}\nexport function stubbed<T>(a: T) {}\n";
     format!("{}/* é😀 */ export const wide = 1;\n{checked}", Module::generate(tc).source)
 }
 
@@ -173,8 +174,8 @@ fn document(tc: &TestCase) -> String {
 /// config docov finds from the workspace folder (or, with none, from the file's folder) with its
 /// scope and doc checks: on open, change and save, and nothing once it closes. A document the
 /// config's `paths`, its `exclude` or a nested config's leaves out gets none. Each undocumented
-/// item with a stub has a code action that inserts it as `--fix` would, and the server shuts down
-/// and exits when the editor asks.
+/// item with a stub has a code action that inserts it as `--fix` would, in the config's `syntax`,
+/// and the server shuts down and exits when the editor asks.
 #[hegel::test(test_cases = 30)]
 fn the_server_publishes_what_a_scan_of_the_buffer_finds(tc: TestCase) {
     let dir = tempfile::tempdir().unwrap();
@@ -184,7 +185,8 @@ fn the_server_publishes_what_a_scan_of_the_buffer_finds(tc: TestCase) {
     let param = tc.draw(gs::sampled_from(vec!["off", "warn", "error"]));
     let levels = [("require-param", param), ("summary-sentence", if param == "error" { "warn" } else { "error" })];
     let paths = tc.draw(gs::booleans());
-    let mut config = json!({ "scope": scope, "rules": levels.iter().map(|(id, level)| ((*id).to_owned(), json!(level))).collect::<serde_json::Map<_, _>>(), "nested": true, "exclude": ["skip.ts"] });
+    let syntax = tc.draw(gs::sampled_from(vec![Syntax::Jsdoc, Syntax::Tsdoc]));
+    let mut config = json!({ "scope": scope, "rules": levels.iter().map(|(id, level)| ((*id).to_owned(), json!(level))).collect::<serde_json::Map<_, _>>(), "nested": true, "exclude": ["skip.ts"], "syntax": syntax });
     if paths {
         config["paths"] = json!(["src"]);
     }
@@ -193,7 +195,7 @@ fn the_server_publishes_what_a_scan_of_the_buffer_finds(tc: TestCase) {
     let settings: Vec<_> =
         levels.iter().map(|(id, level)| (*id, check::Setting::parse(id, &json!(level)).unwrap())).collect();
     let checks = check::Checks::new(settings.iter().map(|(id, setting)| (*id, setting))).map(Arc::new);
-    let rules = Rules { checks, ..Rules::from(scope) };
+    let rules = Rules { checks, syntax, ..Rules::from(scope) };
 
     let folder = json!([{ "uri": uri(&root), "name": "project" }]);
     let params = match tc.draw(gs::integers::<u8>().max_value(2)) {

@@ -1,4 +1,8 @@
 //! `sarif`: SARIF 2.1.0, for GitHub code scanning and other static analysis viewers.
+//!
+//! It has a result at each undocumented item under the rule `docov/undocumented`, and one at its
+//! level for each doc check finding under the check's own rule, such as `docov/require-param`.
+//! `github/codeql-action/upload-sarif` uploads it to code scanning.
 
 use std::path::Path;
 
