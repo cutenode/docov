@@ -71,6 +71,10 @@ fi
 if have typos; then
   typos
 fi
+# Unused dependencies, and source files no module declares, configured in Cargo.toml.
+if have cargo-shear; then
+  cargo shear --deny-warnings --locked
+fi
 # Advisories, licenses and sources, configured in deny.toml.
 if have cargo-deny; then
   cargo deny --locked check

@@ -28,6 +28,10 @@ missing_docs = "warn"
 [lints.clippy]
 cargo_common_metadata = "warn"
 
+# cargo-shear (tools/lint.sh). build.rs declares these modules, so no `mod` line names them.
+[package.metadata.cargo-shear]
+ignored-paths = ["src/check/*.rs", "src/feature/*.rs", "src/report/*.rs"]
+
 [dependencies]
 # Colors the text report, stripping the colors where they don't belong. clap uses both already.
 anstream = "1.0.0"
