@@ -1,0 +1,18 @@
+# typos (tools/lint.sh).
+
+[default]
+extend-ignore-re = [
+  # The tests misspell docov.json's `threshold` key on purpose, to check the unknown-field error.
+  '\\?"treshold\\?"',
+  '`treshold`',
+  # Latin-1 bytes for "café", which aren't UTF-8.
+  'caf\\xe9',
+  # The valid-link tests link a misspelled class on purpose, to check it's reported.
+  'Shpae#',
+  # Hashes, like the fingerprints in docs/formats.md's examples.
+  '\b[0-9a-f]{16,}\b',
+]
+
+[default.extend-words]
+# Overrides::excluder, which builds the exclude matcher.
+excluder = "excluder"

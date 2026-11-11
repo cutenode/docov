@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Formatting, clippy (for each release target that's installed too), rustdoc, the npm config's
-# hardening, and shellcheck, cargo-deny, zizmor, actionlint and knip where they're installed. CI's
-# lint check. CI's Linux lint job installs them all and sets REQUIRE_LINTERS=true, so there a missing
-# one fails instead of being skipped.
+# hardening, and the linters below where they're installed. CI's lint check. CI's Linux lint job
+# installs them all and sets REQUIRE_LINTERS=true, so there a missing one fails instead of being
+# skipped.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 PATH=$PWD/node_modules/.bin:$PATH
@@ -66,6 +66,10 @@ done < <(sed -n 's/.*target: \([a-z0-9_-]*\),.*/\1/p' .github/workflows/build.ym
 RUSTDOCFLAGS='-D warnings' cargo doc --no-deps --locked --document-private-items
 if have shellcheck; then
   shellcheck action/*.sh tools/*.sh
+fi
+# Spelling, configured in _typos.toml.
+if have typos; then
+  typos
 fi
 # Advisories, licenses and sources, configured in deny.toml.
 if have cargo-deny; then

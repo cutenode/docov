@@ -62,7 +62,7 @@ jobs:
       - if: runner.os == 'Linux'
         uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2.87.32
         with:
-          tool: cargo-deny@0.20.2,zizmor@1.31.1,shellcheck@0.11.0
+          tool: cargo-deny@0.20.2,zizmor@1.31.1,shellcheck@0.11.0,typos@1.51.1
       # install-action doesn't carry actionlint. go install checks it against Go's checksum database.
       - if: runner.os == 'Linux'
         run: |
