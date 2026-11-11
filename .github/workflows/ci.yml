@@ -190,6 +190,12 @@ jobs:
       - run: grep -F "| 100.0% | 100.0% | +0.0 | 2/2 |" "$MARKDOWN"
         env:
           MARKDOWN: ${{ steps.docov.outputs.markdown }}
+      # The npm packages from the same build: publint, then packed, installed and run. publint is in
+      # package-lock.json.
+      - run: npm ci
+      - run: tools/npm-pack-check.sh "target/debug/docov$EXE"
+        env:
+          EXE: ${{ runner.os == 'Windows' && '.exe' || '' }}
 
   # What `cargo install docov` and crates.io get: the packaged crate, which leaves out Cargo.toml's
   # `exclude`, built with the oldest Rust Cargo.toml's `rust-version` claims.

@@ -4,12 +4,14 @@
 	"scripts": {
 		"knip": "knip",
 		"oxlint": "oxlint --deny-warnings",
-		"format": "oxfmt"
+		"format": "oxfmt",
+		"publint": "publint"
 	},
 	"devDependencies": {
 		"knip": "6.44.2",
 		"oxfmt": "0.77.0",
-		"oxlint": "1.92.0"
+		"oxlint": "1.92.0",
+		"publint": "0.3.25"
 	},
 	"devEngines": {
 		"packageManager": {
