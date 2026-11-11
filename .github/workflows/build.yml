@@ -1,13 +1,11 @@
 name: Build
 
-# The release binaries. release.yml calls this on a release tag and packs what it uploads. It also
-# runs weekly and on demand, so a target that stops building in the release profile shows up before
-# the next release rather than on its tag. tools/lint.sh reads the targets from here.
+# The release binaries. release.yml calls this on a release tag and packs what it uploads.
+# scheduled.yml calls it weekly, so a target that stops building in the release profile shows up
+# before the next release rather than on its tag. tools/lint.sh reads the targets from here.
 on:
   workflow_call:
   workflow_dispatch:
-  schedule:
-    - cron: "17 5 * * 1"
 
 permissions: {}
 

@@ -1,7 +1,8 @@
 name: Scheduled
 
 # Checks whose results change without a commit here, or that take too long for every pull request,
-# weekly and on demand. build.yml builds the release binaries on the same schedule.
+# weekly and on demand, and the release binaries (build.yml). A weekly run with a failed job opens
+# an issue (scheduled-issue.yml).
 on:
   workflow_dispatch:
   schedule:
@@ -99,3 +100,23 @@ jobs:
           save-if: false
       - run: tools/jsdoc-oracle.sh | diff -u tests/fixtures/jsdoc-oracle.txt -
         shell: bash
+
+  # Every release target in the release profile.
+  build:
+    uses: ./.github/workflows/build.yml
+    permissions:
+      contents: read
+
+  # Weekly runs only: a failed job opens an issue, or comments on the open one, and the next run
+  # that passes closes it.
+  report:
+    needs: [audit, props, links, jsdoc-oracle, build]
+    if: ${{ !cancelled() && github.event_name == 'schedule' }}
+    permissions:
+      actions: read
+      issues: write
+    uses: ./.github/workflows/scheduled-issue.yml
+    with:
+      details: >-
+        A failed Hegel property's examples are in the run's hegel artifact; copying them to .hegel/
+        replays them first in the next local run.
