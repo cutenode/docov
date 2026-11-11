@@ -71,6 +71,11 @@ fi
 if have typos; then
   typos
 fi
+# Links to files and anchors in the Markdown, configured in lychee.toml. scheduled.yml checks the
+# rest weekly, so a site that's down doesn't fail a pull request.
+if have lychee; then
+  lychee --offline --no-progress .
+fi
 # Unused dependencies, and source files no module declares, configured in Cargo.toml.
 if have cargo-shear; then
   cargo shear --deny-warnings --locked
