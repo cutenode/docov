@@ -92,8 +92,15 @@ fi
 if have actionlint; then
   actionlint
 fi
-# Unused files, exports and dependencies in the JavaScript, configured in knip.jsonc. `npm ci`
-# installs it.
+# The JavaScript's lints (.oxlintrc.json) and its and the config files' formatting (.oxfmtrc.json,
+# following .editorconfig). `npm ci` installs oxlint and oxfmt, and knip below.
+if have oxlint; then
+  npm run --silent oxlint
+fi
+if have oxfmt; then
+  npm run --silent format -- --check
+fi
+# Unused files, exports and dependencies in the JavaScript, configured in knip.jsonc.
 if have knip; then
   npm run --silent knip
 fi

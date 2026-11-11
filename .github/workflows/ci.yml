@@ -76,7 +76,7 @@ jobs:
           args: --offline --no-progress .
           output: ${{ runner.temp }}/lychee.md
           jobSummary: false
-      # knip, from package-lock.json.
+      # knip, oxlint and oxfmt, from package-lock.json.
       - if: runner.os == 'Linux'
         run: npm ci
       # Without GH_TOKEN, zizmor runs its offline audits only. scheduled.yml runs the online ones.
