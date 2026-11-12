@@ -1,0 +1,17 @@
+file.js:2 double: docov says documented, jsdoc says undocumented
+lib.js:14 Done: only jsdoc has it (documented)
+lib.js:27 add: only jsdoc has it (undocumented)
+lib.js:28 subtract: only jsdoc has it (undocumented)
+shapes.js:1 Point: only jsdoc has it (documented)
+shapes.js:17 Size: only jsdoc has it (documented)
+shapes.js:18 area: docov says documented, jsdoc says undocumented
+shapes.js:25 Circle: only jsdoc has it (undocumented)
+shapes.js:26 r: only jsdoc has it (undocumented)
+shapes.js:47 x: only jsdoc has it (undocumented)
+shapes.js:47 y: only jsdoc has it (undocumented)
+tags.js:5 empty: docov says undocumented, jsdoc says documented
+tags.js:8 licensed: docov says undocumented, jsdoc says documented
+tags.js:16 a: only jsdoc has it (undocumented)
+tags.js:16 b: only jsdoc has it (undocumented)
+tags.js:17 a: only jsdoc has it (undocumented)
+tags.js:17 b: only jsdoc has it (undocumented)
