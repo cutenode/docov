@@ -1,0 +1,3 @@
+# lychee: tools/lint.sh checks the local links and anchors, and scheduled.yml the rest weekly.
+include_fragments = "full"
+extensions = ["md"]
