@@ -90,7 +90,7 @@ yaml-rust2 = { version = "0.13.0", default-features = false }
 [dev-dependencies]
 # Property-based tests. Pinned: Hegel is in beta and makes breaking changes. `static-engine`
 # links its engine as an ordinary dependency, so it's in Cargo.lock.
-hegeltest = { version = "=0.50.4", features = ["static-engine"] }
+hegeltest = { version = "=0.52.0", features = ["static-engine"] }
 pulldown-cmark = { version = "0.13.6", default-features = false }
 roxmltree = "0.21.2"
 tempfile = "3.27.0"
