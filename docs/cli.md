@@ -235,6 +235,10 @@ Options:
       --threshold <PERCENT>
           Fail under this documented percentage, overall
 
+      --tsdoc-config <FILE>
+          Read TSDoc blocks with this tsdoc.json [default: the config's `tsdocConfig`, or with
+          "syntax": "tsdoc", each file's nearest]
+
       --types
           Also report how many JavaScript functions have a {type} on each @param and @returns
 

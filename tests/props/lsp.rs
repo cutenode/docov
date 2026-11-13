@@ -296,10 +296,12 @@ fn the_server_says_what_it_can_not_do(tc: TestCase) {
     client.notify("textDocument/didOpen", json!({ "textDocument": 1 }));
     assert!(client.logged().starts_with("docov: invalid type"));
 
-    // A config that doesn't load, a jsdoc config, baseline or package.json that isn't there.
+    // A config that doesn't load, a jsdoc config, baseline, tsdoc config or package.json that isn't
+    // there.
     let configs = [
         (r#"{ "threshold": "x" }"#, "docov.json"),
         (r#"{ "jsdocConfig": "jsdoc.json" }"#, "jsdoc.json"),
+        (r#"{ "tsdocConfig": "tsdoc.json", "rules": { "tsdoc-tags": "warn" } }"#, "tsdoc.json"),
         (r#"{ "baseline": "base.json" }"#, "base.json"),
         (r#"{ "scope": "public" }"#, "package.json"),
         (r#"{ "scope": "public", "paths": ["."] }"#, "package.json"),

@@ -65,7 +65,7 @@ export class TextParser extends Parser<string> {
   }
 
   /**
-   * @remarks {@inheritDoc}
+   * {@inheritDoc}
    */
   override emit(event: string): boolean {
     return super.emit(event);
