@@ -1,0 +1,15 @@
+{
+	"$schema": "https://unpkg.com/knip@6/schema-jsonc.json",
+	"workspaces": {
+		".": {
+			// tools/coverage.sh runs these with `node --test`, which knip only looks for in package.json
+			// scripts.
+			"entry": ["**/*.test.mjs"],
+			// Inputs for docov's own Rust tests. Nothing imports them.
+			"ignoreFiles": ["tests/fixtures/**"],
+		},
+		// @docov/cli. The root package.json lists no workspaces, so knip only finds it here, and then
+		// takes its bin as the entry.
+		"npm/docov": {},
+	},
+}

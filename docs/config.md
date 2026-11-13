@@ -260,6 +260,12 @@ Type: number or object.
 | `perFile` | number |  | For each file on its own. |
 | any other key | number |  | For the files a gitignore-style glob matches, relative to this file's folder, together. |
 
+## `tsdocConfig`
+
+A tsdoc.json, relative to this file's folder, that the tsdoc-* checks read every file's blocks with: its tagDefinitions, noStandardTags, supportForTags, supportedHtmlElements, reportUnsupportedHtmlElements and the files it extends (paths or package names, resolved the way Node resolves them). Without it, and with "syntax": "tsdoc", each file gets the tsdoc.json in the nearest folder above it with a tsconfig.json or a package.json, as @microsoft/tsdoc-config finds one; otherwise TSDoc's standard tags. Unknown keys in a tsdoc.json are an error, as in tsdoc-config.
+
+Type: string.
+
 ## `typesThreshold`
 
 The lowest percentage of JavaScript functions and methods with a {type} on each @param and @returns that passes.

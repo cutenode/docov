@@ -15,31 +15,48 @@ const commitLink = / \(\[`[0-9a-f]+`\]\(\S+\/commit\/[0-9a-f]+\)\)$/;
 
 /** The body without the commit entries that repeat one above them in the same section. */
 export function dropRepeatedEntries(body) {
-  const seen = new Set();
-  const kept = [];
-  for (const line of body.split("\n")) {
-    if (line.startsWith("### ")) seen.clear();
-    const entry = line.replace(commitLink, "");
-    const isCommitEntry = entry !== line;
-    if (isCommitEntry && seen.has(entry)) continue;
-    if (isCommitEntry) seen.add(entry);
-    kept.push(line);
-  }
-  return kept.join("\n");
+	const seen = new Set();
+	const kept = [];
+	for (const line of body.split("\n")) {
+		if (line.startsWith("### ")) seen.clear();
+		const entry = line.replace(commitLink, "");
+		const isCommitEntry = entry !== line;
+		if (isCommitEntry && seen.has(entry)) continue;
+		if (isCommitEntry) seen.add(entry);
+		kept.push(line);
+	}
+	return kept.join("\n");
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const listArgs = ["pr", "list", "--state", "open", "--json", "number,headRefName,isCrossRepository,body"];
-  const prs = JSON.parse(execFileSync("gh", listArgs, { encoding: "utf8" }));
-  for (const { number, headRefName, isCrossRepository, body } of prs) {
-    if (isCrossRepository || !headRefName.startsWith("release/v")) continue;
-    const deduped = dropRepeatedEntries(body);
-    if (deduped === body) {
-      console.log(`#${number}: no repeated entries`);
-      continue;
-    }
-    const patchArgs = ["api", "--method", "PATCH", `repos/{owner}/{repo}/pulls/${number}`, "--input", "-", "--silent"];
-    execFileSync("gh", patchArgs, { input: JSON.stringify({ body: deduped }) });
-    console.log(`#${number}: dropped ${body.split("\n").length - deduped.split("\n").length} repeated entries`);
-  }
+	const listArgs = [
+		"pr",
+		"list",
+		"--state",
+		"open",
+		"--json",
+		"number,headRefName,isCrossRepository,body",
+	];
+	const prs = JSON.parse(execFileSync("gh", listArgs, { encoding: "utf8" }));
+	for (const { number, headRefName, isCrossRepository, body } of prs) {
+		if (isCrossRepository || !headRefName.startsWith("release/v")) continue;
+		const deduped = dropRepeatedEntries(body);
+		if (deduped === body) {
+			console.log(`#${number}: no repeated entries`);
+			continue;
+		}
+		const patchArgs = [
+			"api",
+			"--method",
+			"PATCH",
+			`repos/{owner}/{repo}/pulls/${number}`,
+			"--input",
+			"-",
+			"--silent",
+		];
+		execFileSync("gh", patchArgs, { input: JSON.stringify({ body: deduped }) });
+		console.log(
+			`#${number}: dropped ${body.split("\n").length - deduped.split("\n").length} repeated entries`,
+		);
+	}
 }

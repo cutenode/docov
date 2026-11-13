@@ -1,0 +1,54 @@
+name: Scheduled failure issue
+
+# The last job of scheduled.yml and build.yml on their weekly runs: a run with a failed job opens an
+# issue titled for the workflow, or comments on the one still open, and the next run that passes
+# closes it. Runs started by hand, and build.yml's runs for a release, leave the issue alone. The
+# calling job grants the permissions below.
+on:
+  workflow_call:
+    inputs:
+      details:
+        description: Where the run keeps what its jobs found, for the issue.
+        type: string
+        default: ""
+
+permissions: {}
+
+jobs:
+  issue:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      # The run's jobs and their results.
+      actions: read
+      issues: write
+    steps:
+      # Failed jobs come from the API rather than the caller's `needs`, which only has each job's
+      # combined result: this way each matrix leg (a release target) is named.
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TITLE: Weekly ${{ github.workflow }} run failed
+          DETAILS: ${{ inputs.details }}
+          RUN_ID: ${{ github.run_id }}
+          ATTEMPT: ${{ github.run_attempt }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          failed=$(gh run view "$RUN_ID" --attempt "$ATTEMPT" --json jobs --jq '.jobs[]
+            | select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "cancelled")
+            | "- [\(.name)](\(.url))"')
+          issue=$(gh issue list --label scheduled-failure --state open --limit 100 --json number,title \
+            | jq --arg title "$TITLE" 'first(.[] | select(.title == $title) | .number) // empty')
+          if [ -z "$failed" ]; then
+            if [ -n "$issue" ]; then
+              gh issue close "$issue" --comment "Passed again: $RUN_URL"
+            fi
+            exit 0
+          fi
+          body=$(printf 'Failed in %s:\n\n%s\n\n%s\n' "$RUN_URL" "$failed" "$DETAILS")
+          if [ -n "$issue" ]; then
+            gh issue comment "$issue" --body "$body"
+          else
+            gh label create scheduled-failure --color b60205 --description "A weekly scheduled run failed" --force
+            gh issue create --title "$TITLE" --label scheduled-failure --body "$body"
+          fi

@@ -41,6 +41,8 @@ impl Stamp {
             rules.public.as_ref().map(|api| api.reach(path).into_iter().flatten().collect());
         reached.iter_mut().for_each(|names| names.sort_unstable());
         reached.hash(&mut hasher);
+        // So does the file's tsdoc.json, to the checks that read it.
+        rules.tsdoc(path).hash(&mut hasher);
         Some(Self { size: metadata.len(), modified, rules: hasher.finish() })
     }
 }

@@ -2,7 +2,8 @@
 # Compares docov with jsdoc on a folder of plain JavaScript, as a test oracle: runs jsdoc 4's
 # `-X` (every doclet, documented or not, through npx) and `docov --scope all --format json` on the
 # same files, and prints each declaration they disagree on: one of them counts it and the other
-# doesn't, or they disagree on whether it's documented. Not part of the checks or CI.
+# doesn't, or they disagree on whether it's documented. scheduled.yml compares its output for
+# tests/fixtures/jsdoc with tests/fixtures/jsdoc-oracle.txt weekly.
 # Usage: tools/jsdoc-oracle.sh [DIR]   (default: tests/fixtures/jsdoc)
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -11,7 +12,7 @@ dir=${1:-tests/fixtures/jsdoc}
 out=$(mktemp -d)
 trap 'rm -rf "$out"' EXIT
 
-npx --yes jsdoc@4 -X -r "$dir" > "$out/jsdoc.json"
+npx --yes jsdoc@4.0.5 -X -r "$dir" > "$out/jsdoc.json"
 cargo run -q -- --scope all --format json "$dir" > "$out/docov.json"
 
 node - "$out/jsdoc.json" "$out/docov.json" <<'JS'

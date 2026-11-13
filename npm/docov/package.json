@@ -1,15 +1,38 @@
 {
-  "name": "@docov/cli",
-  "version": "0.1.1",
-  "description": "JSDoc coverage for JavaScript and TypeScript",
-  "keywords": ["jsdoc", "coverage", "documentation", "javascript", "typescript"],
-  "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/cutenode/docov.git",
-    "directory": "npm/docov"
-  },
-  "bin": { "docov": "bin/docov" },
-  "files": ["bin/docov"],
-  "publishConfig": { "access": "public" }
+	"name": "@docov/cli",
+	"version": "0.1.1",
+	"description": "JSDoc coverage for JavaScript and TypeScript",
+	"keywords": [
+		"coverage",
+		"documentation",
+		"javascript",
+		"jsdoc",
+		"typescript"
+	],
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/cutenode/docov.git",
+		"directory": "npm/docov"
+	},
+	"bin": {
+		"docov": "bin/docov.cjs"
+	},
+	"files": [
+		"bin/docov.cjs"
+	],
+	"publishConfig": {
+		"access": "public"
+	},
+	"devEngines": {
+		"packageManager": {
+			"name": "npm",
+			"version": ">=11.17.0",
+			"onFail": "error"
+		}
+	},
+	"engines": {
+		"node": ">=22"
+	},
+	"allowScripts": {}
 }

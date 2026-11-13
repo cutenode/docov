@@ -296,10 +296,12 @@ fn the_server_says_what_it_can_not_do(tc: TestCase) {
     client.notify("textDocument/didOpen", json!({ "textDocument": 1 }));
     assert!(client.logged().starts_with("docov: invalid type"));
 
-    // A config that doesn't load, a jsdoc config, baseline or package.json that isn't there.
+    // A config that doesn't load, a jsdoc config, baseline, tsdoc config or package.json that isn't
+    // there.
     let configs = [
         (r#"{ "threshold": "x" }"#, "docov.json"),
         (r#"{ "jsdocConfig": "jsdoc.json" }"#, "jsdoc.json"),
+        (r#"{ "tsdocConfig": "tsdoc.json", "rules": { "tsdoc-tags": "warn" } }"#, "tsdoc.json"),
         (r#"{ "baseline": "base.json" }"#, "base.json"),
         (r#"{ "scope": "public" }"#, "package.json"),
         (r#"{ "scope": "public", "paths": ["."] }"#, "package.json"),
@@ -421,8 +423,15 @@ fn serve_stdio(root: &Path, input: &str, code: i32) {
     let out = child.wait_with_output().unwrap();
     let mut stdout = BufReader::new(&out.stdout[..]);
     let mut messages = Vec::new();
-    while let Some(message) = Message::read(&mut stdout).unwrap() {
-        messages.push(message);
+    loop {
+        match Message::read(&mut stdout) {
+            Ok(Some(message)) => messages.push(message),
+            Ok(None) => break,
+            // When its input breaks, the server stops without waiting on what it was writing, so
+            // its last message can be cut short.
+            Err(e) if code == 2 && e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Err(e) => panic!("{e}"),
+        }
     }
     let published = messages.iter().find_map(|m| match m {
         Message::Notification(n) if n.method == "textDocument/publishDiagnostics" => Some(n.params.clone()),

@@ -486,7 +486,9 @@ fn deprecated_items_and_generated_files_can_be_left_out() {
 /// in `syntax`: each finding's line, rule and message.
 fn findings(source: &str, syntax: Syntax) -> Vec<(usize, &'static str, String)> {
     let error = check::Setting { level: check::Level::Error, options: None };
-    let checks = check::Checks::new(check::ids().map(|id| (id, &error))).unwrap();
+    // The tsdoc-* checks have their own tests, against @microsoft/tsdoc's findings.
+    let ids = check::ids().filter(|id| !id.starts_with("tsdoc-"));
+    let checks = check::Checks::new(ids.map(|id| (id, &error))).unwrap();
     let rules = Rules { checks: Some(std::sync::Arc::new(checks)), syntax, ..Scope::All.into() };
     let items = scan(source, SourceType::ts(), &rules).unwrap().into_iter();
     items.flat_map(|i| i.facts.diagnostics).map(|d| (d.line, d.rule, d.message)).collect()
