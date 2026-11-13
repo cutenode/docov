@@ -24,7 +24,10 @@ coverage suite
 coverage props --test props
 # The launcher and the release scripts. No branch threshold: the launcher's one branch V8 counts is
 # the Windows `.exe` name, and each OS only takes one side of it.
-node --test --experimental-test-coverage --test-coverage-include='npm/docov/**' \
-  --test-coverage-include='tools/*.mjs' --test-coverage-exclude='**/*.test.mjs' \
+include=(--test-coverage-include='npm/docov/**')
+# Windows leaves the release scripts out. Their end-to-end test skips there, since its stand-in gh
+# is found by its shebang, and release.yml only runs them on Linux. Their tests still run.
+[[ $OSTYPE == msys || $OSTYPE == cygwin ]] || include+=(--test-coverage-include='tools/*.mjs')
+node --test --experimental-test-coverage "${include[@]}" --test-coverage-exclude='**/*.test.mjs' \
   --test-coverage-lines=100 --test-coverage-functions=100 \
   npm/launcher.test.mjs tools/release-pr-changelog.test.mjs
