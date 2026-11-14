@@ -5,10 +5,7 @@ use std::{fs, path::Path, sync::Arc};
 
 use docov::{
     Rules,
-    tsdoc::{
-        Configuration, SyntaxKind, TagDefinition,
-        config::{self, Configs},
-    },
+    tsdoc::config::{self, Configs},
 };
 use hegel::{TestCase, generators as gs};
 use serde::Deserialize;
@@ -69,7 +66,8 @@ fn rule_of(id: &str) -> &'static str {
 }
 
 /// An entry of tests/fixtures/tsdoc/corpus.json: a comment, the tsdoc.json keys it's read with,
-/// and what tools/tsdoc-oracle.sh recorded `@microsoft/tsdoc` finding in it.
+/// and what `@microsoft/tsdoc` 0.17.1 finds in it, as recorded before the parser moved to tsdocrs, whose
+/// own corpus and oracle (tools/oracle/) take it from there.
 #[derive(Deserialize)]
 struct Entry {
     comment: String,
@@ -207,180 +205,18 @@ fn tags_are_used_once_unless_they_allow_more(tc: TestCase) {
     assert_eq!(diagnose(&source, &[("tsdoc-tags", value)], Rules::default()), at_level(wanted, error), "{source}");
 }
 
-/// A tag definition as a tsdoc.json writes it, and as docov reads it.
-fn definition(tc: &TestCase, name: &str) -> (Value, TagDefinition) {
-    let (kind, word) = tc.draw(gs::sampled_from(vec![
-        (SyntaxKind::Block, "block"),
-        (SyntaxKind::Inline, "inline"),
-        (SyntaxKind::Modifier, "modifier"),
-    ]));
-    let allow_multiple = tc.draw(gs::booleans());
-    let json = json!({ "tagName": name, "syntaxKind": word, "allowMultiple": allow_multiple });
-    (json, TagDefinition { name: name.into(), kind, allow_multiple })
-}
-
-/// A tsdoc.json sets up TSDoc's parser the way `@microsoft/tsdoc-config` does: the files it
-/// extends (a path, or a file in a package) first, then its own tag definitions,
-/// `supportForTags` and HTML elements over theirs, and its `noStandardTags` or else theirs. Comments
-/// are fine in it. The files it read come back too.
-#[hegel::test(test_cases = 50)]
-fn tsdoc_json_sets_up_the_parser(tc: TestCase) {
-    let dir = tempfile::tempdir().unwrap();
-    let mut base = Map::new();
-    let mut top = Map::new();
-    let base_standard = tc.draw(gs::optional(gs::booleans()));
-    let top_standard = tc.draw(gs::optional(gs::booleans()));
-    let (base_file, specifier) = if tc.draw(gs::booleans()) {
-        ("base/tsdoc.json", "./base/tsdoc.json")
-    } else {
-        ("node_modules/shared/tsdoc.json", "shared/tsdoc.json")
-    };
-    let extends = tc.draw(gs::booleans());
-    // The base file is there either way, and counts only when the top one extends it.
-    if let Some(no) = base_standard {
-        base.insert("noStandardTags".into(), json!(no));
-    }
-    let standard = !top_standard.or(base_standard.filter(|_| extends)).unwrap_or(false);
-    let mut wanted = Configuration::standard(standard);
-    if extends {
-        let (json, custom) = definition(&tc, "@custom");
-        base.insert("tagDefinitions".into(), json!([json]));
-        wanted.tags.push(custom);
-        if tc.draw(gs::booleans()) {
-            base.insert("supportedHtmlElements".into(), json!(["b", "my-el"]));
-            wanted.html = vec!["b".into(), "my-el".into()];
-            wanted.report_unsupported_html = true;
-        }
-        top.insert("extends".into(), json!([specifier]));
-    }
-    if let Some(no) = top_standard {
-        top.insert("noStandardTags".into(), json!(no));
-    }
-    let (json, mine) = definition(&tc, "@mine");
-    top.insert("tagDefinitions".into(), json!([json]));
-    wanted.tags.push(mine);
-    let mut support = Map::new();
-    let mut candidates = vec!["@MINE"];
-    if extends {
-        candidates.push("@custom");
-    }
-    if standard {
-        candidates.push("@remarks");
-    }
-    for name in tc.draw(gs::vecs(gs::sampled_from(candidates)).max_size(4)) {
-        let supported = tc.draw(gs::booleans());
-        support.insert(name.into(), json!(supported));
-    }
-    if !support.is_empty() {
-        let mut supported = Vec::new();
-        for (name, value) in &support {
-            let upper = name.to_uppercase();
-            supported.retain(|tag| *tag != upper);
-            if value == &json!(true) {
-                supported.push(upper);
-            }
-        }
-        wanted.supported = Some(supported);
-        top.insert("supportForTags".into(), Value::Object(support));
-    }
-    if tc.draw(gs::booleans()) {
-        top.insert("supportedHtmlElements".into(), json!(["i"]));
-        wanted.html = vec!["i".into()];
-        wanted.report_unsupported_html = true;
-    }
-    if let Some(report) = tc.draw(gs::optional(gs::booleans())) {
-        top.insert("reportUnsupportedHtmlElements".into(), json!(report));
-        wanted.report_unsupported_html = report;
-    }
-    base.insert("$schema".into(), json!(config::SCHEMA));
-    write(dir.path(), base_file, &format!("// shared\n{}", Value::Object(base)));
-    let path = tsdoc_json(dir.path(), &top);
-    let (configuration, sources) = config::load(&path).unwrap();
-    assert_eq!(configuration, wanted);
-    let mut read = vec![path];
-    if extends {
-        read.push(dir.path().join(base_file));
-    }
-    // The file it extends comes back as the resolver names it: by its real path, which on
-    // Windows can differ from the temporary folder's in form (a short name, no `\\?\`).
-    let real = |paths: &[std::path::PathBuf]| paths.iter().map(|p| fs::canonicalize(p).unwrap()).collect::<Vec<_>>();
-    assert_eq!(real(&sources), real(&read));
-}
-
-/// A tsdoc.json that can't be used fails with TSDoc's message id for why, naming the file: it
-/// isn't there or isn't a file, isn't JSON (a stray `/` included), has another `$schema`, a key
-/// tsdoc-config doesn't know, an HTML element name that isn't one, a tag name that isn't one, a
-/// tag defined twice (in the file, over a file it extends, or over a standard tag), a supported tag
-/// nobody defines, or extends a file that isn't there, one that can't be used, or itself.
+/// A tsdoc.json that can't be used fails the scan with tsdocrs's error, which names the file and
+/// TSDoc's message id for why (tsdocrs's own properties go through every why), whether a config
+/// names it or it's found for a file beside a package.json.
 #[hegel::test(test_cases = 3)]
 fn tsdoc_json_errors_say_why(tc: TestCase) {
     let schema = json!(config::SCHEMA);
-    let tag = |name: &str| json!({ "tagName": name, "syntaxKind": "block" });
     let cases: Vec<(Vec<(&str, String)>, &str)> = vec![
         (vec![], "tsdoc-config-file-not-found"),
-        (vec![("tsdoc.json/x", String::new())], "tsdoc-config-file-not-found"),
-        (vec![("tsdoc.json", "{ / }".into())], "tsdoc-config-invalid-json"),
         (vec![("tsdoc.json", "{".into())], "tsdoc-config-invalid-json"),
-        (vec![("tsdoc.json", "{}".into())], "tsdoc-config-unsupported-schema"),
-        (vec![("tsdoc.json", json!({ "$schema": schema, "x": 1 }).to_string())], "tsdoc-config-schema-error"),
-        (
-            vec![("tsdoc.json", json!({ "$schema": schema, "supportedHtmlElements": ["b c"] }).to_string())],
-            "tsdoc-config-schema-error",
-        ),
-        (
-            vec![("tsdoc.json", json!({ "$schema": schema, "supportedHtmlElements": [""] }).to_string())],
-            "tsdoc-config-schema-error",
-        ),
-        (
-            vec![("tsdoc.json", json!({ "$schema": schema, "tagDefinitions": [tag("custom")] }).to_string())],
-            "tsdoc-config-invalid-tag-name",
-        ),
-        (
-            vec![("tsdoc.json", json!({ "$schema": schema, "tagDefinitions": [tag("@a"), tag("@A")] }).to_string())],
-            "tsdoc-config-duplicate-tag-name",
-        ),
-        (
-            vec![
-                ("base.json", json!({ "$schema": schema, "tagDefinitions": [tag("@a")] }).to_string()),
-                (
-                    "tsdoc.json",
-                    json!({ "$schema": schema, "extends": ["./base.json"], "tagDefinitions": [tag("@a")] }).to_string(),
-                ),
-            ],
-            "tsdoc-config-duplicate-tag-name",
-        ),
-        (
-            vec![("tsdoc.json", json!({ "$schema": schema, "tagDefinitions": [tag("@remarks")] }).to_string())],
-            "tsdoc-config-duplicate-tag-name",
-        ),
-        (
-            vec![("tsdoc.json", json!({ "$schema": schema, "supportForTags": { "@nope": true } }).to_string())],
-            "tsdoc-config-undefined-tag",
-        ),
         (
             vec![("tsdoc.json", json!({ "$schema": schema, "extends": ["./missing.json"] }).to_string())],
             "tsdoc-config-unresolved-extends",
-        ),
-        (
-            vec![
-                ("base.json", "{}".into()),
-                ("tsdoc.json", json!({ "$schema": schema, "extends": ["./base.json"] }).to_string()),
-            ],
-            "tsdoc-config-unsupported-schema",
-        ),
-        (
-            vec![
-                ("base.json", json!({ "$schema": schema, "supportForTags": { "@nope": true } }).to_string()),
-                ("tsdoc.json", json!({ "$schema": schema, "extends": ["./base.json"] }).to_string()),
-            ],
-            "tsdoc-config-undefined-tag",
-        ),
-        (
-            vec![
-                ("base.json", json!({ "$schema": schema, "extends": ["./tsdoc.json"] }).to_string()),
-                ("tsdoc.json", json!({ "$schema": schema, "extends": ["./base.json"] }).to_string()),
-            ],
-            "tsdoc-config-cyclic-extends",
         ),
     ];
     let folder = tc.draw(gs::sampled_from(vec!["", "a/", "a/b/"]));
@@ -390,10 +226,8 @@ fn tsdoc_json_errors_say_why(tc: TestCase) {
             write(dir.path(), &format!("{folder}{name}"), text);
         }
         let path = dir.path().join(format!("{folder}tsdoc.json"));
-        let error = config::load(&path).unwrap_err();
+        let error = Configs::file(&path).unwrap_err();
         assert!(error.contains(id) && error.contains("json: "), "{error}");
-        assert_eq!(Configs::file(&path).unwrap_err(), error);
-        // Found for a file beside a package.json, it fails the same, once it's there to find.
         write(dir.path(), &format!("{folder}package.json"), "{}");
         let file = dir.path().join(format!("{folder}a.ts"));
         if path.is_file() {

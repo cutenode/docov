@@ -1,20 +1,16 @@
-//! TSDoc: the tags a tsdoc.json defines, and a parser of TSDoc's grammar that finds what
-//! `@microsoft/tsdoc` does, by its message ids, so docov's findings line up with
-//! `eslint-plugin-tsdoc`'s. It's a port of that package's parser, which would otherwise take Node
-//! to run; nothing on crates.io parses TSDoc's grammar or reads tsdoc.json.
+//! TSDoc: the `tsdoc-*` checks read each block with tsdocrs, a port of `@microsoft/tsdoc`'s
+//! parser, so their findings carry its message ids and texts and line up with
+//! `eslint-plugin-tsdoc`'s. This module sorts its messages by the part of the grammar each check
+//! covers, and adds the two docov checks TSDoc has no message for: a tag repeated without
+//! `allowMultiple`, and text after a modifier tag on its line.
 
 pub mod config;
-mod parse;
-#[cfg(test)]
-mod tests;
-mod tokens;
 
 use std::sync::LazyLock;
 
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
-
-pub use self::parse::{Message, Parsed, parse};
+use rustc_hash::FxHashSet;
+pub use tsdocrs::TSDocConfiguration as Configuration;
+use tsdocrs::{ParserContext, TSDocParser, TSDocTagSyntaxKind, parser::TokenKind};
 
 /// The parts of TSDoc's grammar, each of which a doc check reports the messages of.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -33,6 +29,95 @@ pub enum Group {
     Html,
     /// `{@link}` and the declaration references in it.
     Links,
+}
+
+/// Something wrong in a comment.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Message {
+    /// TSDoc's message id, as `eslint-plugin-tsdoc` reports it, or docov's for what TSDoc doesn't
+    /// check (`docov-repeated-tag`, `docov-modifier-tag-text`).
+    pub id: &'static str,
+    /// What's wrong, in TSDoc's words.
+    pub text: String,
+    /// Where, as a byte offset into the comment.
+    pub at: u32,
+}
+
+/// What a comment's parse found.
+#[derive(Debug, Default)]
+pub struct Parsed {
+    /// What's wrong, in the order the parser found it, then docov's own findings.
+    pub messages: Vec<Message>,
+}
+
+/// The default configuration, shared.
+pub static DEFAULT: LazyLock<Configuration> = LazyLock::new(Configuration::new);
+
+/// Parses `comment`, a whole `/** */` comment, with the tags and HTML elements `config` defines.
+/// Where TSDoc's parser throws (a selector cut off by the end of a tag, `{@link (Foo:}`), this
+/// keeps the messages it logged before that.
+pub fn parse(comment: &str, config: &Configuration) -> Parsed {
+    let message = |m: &tsdocrs::ParserMessage| Message {
+        id: m.message_id.as_str(),
+        text: m.unformatted_text.clone(),
+        at: m.text_range.pos as u32,
+    };
+    match TSDocParser::new(config).parse_string(comment) {
+        Ok(context) => {
+            let mut messages: Vec<Message> = context.log.iter().map(message).collect();
+            repeated_tags(&context, config, &mut messages);
+            modifier_tag_text(&context, config, &mut messages);
+            Parsed { messages }
+        }
+        Err(error) => Parsed { messages: error.log.iter().map(message).collect() },
+    }
+}
+
+/// Reports each use of a tag after its first, in any case, unless its definition allows more:
+/// `docov-repeated-tag`. TSDoc keeps the last block of a kind and the first of a modifier, and
+/// says nothing. A second `{@inheritDoc}` has a message of its own.
+fn repeated_tags(context: &ParserContext, config: &Configuration, out: &mut Vec<Message>) {
+    let mut used = FxHashSet::default();
+    for tag in &context.tags {
+        let Some(definition) = config.try_get_tag_definition(&tag.tag_name) else { continue };
+        let inline = definition.syntax_kind == TSDocTagSyntaxKind::InlineTag;
+        let counted = inline == tag.inline && definition.tag_name_with_upper_case != "@INHERITDOC";
+        if !counted || definition.allow_multiple || used.insert(&definition.tag_name_with_upper_case) {
+            continue;
+        }
+        out.push(Message {
+            id: "docov-repeated-tag",
+            text: format!("The TSDoc tag \"{}\" may only appear once in a doc comment", tag.tag_name),
+            at: context.tokens[tag.token_sequence.start_index].range.pos as u32,
+        });
+    }
+}
+
+/// Reports a modifier tag with text after it on its line, which TSDoc puts in the section before
+/// the tag: `docov-modifier-tag-text`. Another tag after it is fine.
+fn modifier_tag_text(context: &ParserContext, config: &Configuration, out: &mut Vec<Message>) {
+    let block_tag_at = |index: usize| context.tags.iter().any(|tag| !tag.inline && tag.token_sequence.start_index == index);
+    for tag in context.tags.iter().filter(|tag| !tag.inline) {
+        let modifier = config.try_get_tag_definition(&tag.tag_name).map(|definition| definition.syntax_kind);
+        if modifier != Some(TSDocTagSyntaxKind::ModifierTag) {
+            continue;
+        }
+        let after = context.tokens[tag.token_sequence.end_index..].iter().position(|token| token.kind != TokenKind::Spacing);
+        let next = after.map(|after| tag.token_sequence.end_index + after);
+        let ends_line = next.is_none_or(|next| {
+            matches!(context.tokens[next].kind, TokenKind::Newline | TokenKind::EndOfInput) || block_tag_at(next)
+        });
+        if !ends_line {
+            out.push(Message {
+                id: "docov-modifier-tag-text",
+                text: format!(
+                    "The TSDoc tag \"{}\" is a modifier tag; text after it on its line belongs to the section before it",
+                    tag.tag_name
+                ),
+                at: context.tokens[tag.token_sequence.start_index].range.pos as u32,
+            });
+        }
+    }
 }
 
 impl Message {
@@ -68,113 +153,5 @@ impl Message {
             _ if id.starts_with("tsdoc-html-") => Group::Html,
             _ => Group::Links,
         }
-    }
-}
-
-/// How a tag is written.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "lowercase")]
-pub enum SyntaxKind {
-    /// In braces, inside other text: `{@link}`.
-    Inline,
-    /// Starting a section of its own: `@remarks`.
-    Block,
-    /// By itself, marking the item: `@internal`.
-    Modifier,
-}
-
-/// A tag TSDoc knows.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize)]
-pub struct TagDefinition {
-    /// Its name, with its `@`.
-    pub name: String,
-    /// How it's written.
-    pub kind: SyntaxKind,
-    /// Whether a comment may have it more than once.
-    pub allow_multiple: bool,
-}
-
-/// TSDoc's standard tags, by name, kind and whether a comment may have more than one.
-const STANDARD: [(&str, SyntaxKind, bool); 29] = {
-    use SyntaxKind::{Block, Inline, Modifier};
-    [
-        ("@alpha", Modifier, false),
-        ("@beta", Modifier, false),
-        ("@decorator", Block, true),
-        ("@defaultValue", Block, false),
-        ("@deprecated", Block, false),
-        ("@eventProperty", Modifier, false),
-        ("@example", Block, true),
-        ("@experimental", Modifier, false),
-        ("@inheritDoc", Inline, false),
-        ("@internal", Modifier, false),
-        ("@label", Inline, false),
-        ("@link", Inline, true),
-        ("@override", Modifier, false),
-        ("@packageDocumentation", Modifier, false),
-        ("@param", Block, true),
-        ("@privateRemarks", Block, false),
-        ("@public", Modifier, false),
-        ("@readonly", Modifier, false),
-        ("@remarks", Block, false),
-        ("@returns", Block, false),
-        ("@sealed", Modifier, false),
-        ("@see", Block, false),
-        ("@throws", Block, true),
-        ("@typeParam", Block, true),
-        ("@virtual", Modifier, false),
-        ("@jsx", Block, false),
-        ("@jsxRuntime", Block, false),
-        ("@jsxFrag", Block, false),
-        ("@jsxImportSource", Block, false),
-    ]
-};
-
-/// What TSDoc's parser is set up with: the tags it knows, which of them the tool supports, and
-/// which HTML elements it allows. The default is `@microsoft/tsdoc`'s: every standard tag, and no
-/// check of support or HTML elements.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize)]
-pub struct Configuration {
-    /// The tags it knows.
-    pub tags: Vec<TagDefinition>,
-    /// The names of the tags it supports, upper-cased, when it reports the others.
-    pub supported: Option<Vec<String>>,
-    /// The HTML element names it allows.
-    pub html: Vec<String>,
-    /// Whether it reports the HTML elements `html` doesn't name.
-    pub report_unsupported_html: bool,
-}
-
-impl Default for Configuration {
-    fn default() -> Self {
-        Self::standard(true)
-    }
-}
-
-/// The default configuration, shared.
-pub static DEFAULT: LazyLock<Configuration> = LazyLock::new(Configuration::default);
-
-impl Configuration {
-    /// A configuration with TSDoc's standard tags if `standard`, or none.
-    pub fn standard(standard: bool) -> Self {
-        let tags = STANDARD.iter().filter(|_| standard);
-        let tags = tags.map(|&(name, kind, allow_multiple)| TagDefinition { name: name.into(), kind, allow_multiple });
-        Self { tags: tags.collect(), supported: None, html: Vec::new(), report_unsupported_html: false }
-    }
-
-    /// The tag named `name` (with its `@`), in any case.
-    pub fn tag(&self, name: &str) -> Option<&TagDefinition> {
-        self.tags.iter().find(|tag| tag.name.eq_ignore_ascii_case(name))
-    }
-
-    /// Whether a tag it knows is unsupported, when it says which are.
-    fn unsupported(&self, tag: &TagDefinition) -> bool {
-        let upper = tag.name.to_ascii_uppercase();
-        self.supported.as_ref().is_some_and(|supported| !supported.contains(&upper))
-    }
-
-    /// Whether it reports the HTML element `name`.
-    fn reports_html(&self, name: &str) -> bool {
-        self.report_unsupported_html && !self.html.iter().any(|allowed| allowed == name)
     }
 }

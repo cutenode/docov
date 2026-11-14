@@ -82,6 +82,9 @@ serde = { version = "1.0.229", features = ["derive"] }
 # report's percentages exactly rather than one bit off.
 serde_json = { version = "1.0.154", features = ["float_roundtrip"] }
 thiserror = "2.0.21"
+# TSDoc's grammar for the tsdoc-* checks, and tsdoc.json: a port of @microsoft/tsdoc. A path dependency, on a
+# checkout beside this one, until it's on crates.io.
+tsdocrs = { version = "0.1.0", path = "../tsdocrs" }
 # Turns `docov lsp`'s URIs into paths, which lsp-types' `Uri` doesn't do.
 url = "2.5.8"
 # Reads pnpm-workspace.yaml.
