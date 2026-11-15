@@ -2,7 +2,7 @@
 
 # docov.json
 
-docov reads its settings from `docov.json`, `docov.jsonc` or `.docovrc`, in the folder it runs from or else the nearest folder above that has one, so a subfolder finds its project's config. In one folder, `docov.json` comes first and `.docovrc` last. `--config FILE` names one instead, and flags win over it. Comments and trailing commas are fine in all three. Its paths and globs are relative to its own folder, wherever docov runs from.
+docov reads its settings from `docov.json`, `docov.jsonc` or `.docovrc`, in the folder it runs from or else the nearest folder above that has one, so a subfolder finds its project's config. In one folder, `docov.json` comes first and `.docovrc` last. `--config FILE` names one instead, and flags win over it. `//` and `/* */` comments and trailing commas are fine in all three. `#` comments and a comma with nothing before it, as in `[,]`, aren't JSONC, so a config with one fails to load, naming its line and column. Its paths and globs are relative to its own folder, wherever docov runs from.
 
 [`docov.schema.json`](../docov.schema.json) is its JSON Schema, which editors use for completion and checking. Point `$schema` at the copy for your release, `https://raw.githubusercontent.com/cutenode/docov/vX.Y.Z/docov.schema.json`, so it matches the docov you run, or write your own with `docov --print-schema > docov.schema.json`. Editors don't know `.docovrc` is JSON, so tell yours (in VS Code, `"files.associations": { ".docovrc": "jsonc" }`).
 

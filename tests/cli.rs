@@ -803,6 +803,17 @@ fn update_threshold_ratchets_the_config_in_place() {
     let (code, _, err) = docov(dir.path(), &["--update-threshold"]);
     assert_eq!((code, err.as_str()), (1, "docov: 50.0% documented, under the 66.6% threshold\n"));
     assert_eq!(fs::read_to_string(dir.path().join("docov.json")).unwrap(), raised);
+    // A config that loads is one the rewrite can read. JSONC has no `#` comments, and no comma in
+    // an empty array, which json_strip_comments blanks as a trailing one.
+    for (config, error) in [
+        ("# ours\n{ \"threshold\": 10 }\n", "Unexpected token on line 1 column 1"),
+        ("{ \"threshold\": 10, \"exclude\": [,] }\n", "Unexpected comma on line 1 column 32"),
+    ] {
+        fs::write(dir.path().join("docov.json"), config).unwrap();
+        let (code, _, err) = docov(dir.path(), &["--update-threshold"]);
+        assert_eq!((code, err), (2, format!("docov: docov.json: {error}\n")), "{config}");
+        assert_eq!(fs::read_to_string(dir.path().join("docov.json")).unwrap(), config);
+    }
 }
 
 /// Runs git in `dir`, a throwaway test repository, with an identity and no signing.

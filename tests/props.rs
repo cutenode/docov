@@ -2854,7 +2854,8 @@ fn malformed_configs_fail_to_load_where_they_break(tc: TestCase) {
 }
 
 /// A config file loads the same with comments and trailing commas added as without them, strings
-/// that look like comments included, and fails to load with a `/` that starts no comment.
+/// that look like comments included, and fails to load with a `/` that starts no comment, or a `#`
+/// comment, which JSONC doesn't have.
 #[hegel::test(test_cases = 50)]
 fn comments_in_config_files_change_nothing(tc: TestCase) {
     let dir = tempfile::tempdir().unwrap();
@@ -2896,6 +2897,10 @@ fn comments_in_config_files_change_nothing(tc: TestCase) {
     let stray: Vec<_> =
         lines.iter().enumerate().map(|(i, l)| if i == at { format!("/ {l}") } else { (*l).into() }).collect();
     assert!(matches!(load(&stray.join("\n")), Err(config::Error::Slash { .. })));
+    // A `#` line above one: json_strip_comments blanks it, but --update-threshold couldn't read it.
+    let hashed: Vec<_> =
+        lines.iter().enumerate().map(|(i, l)| if i == at { format!("# a note\n{l}") } else { (*l).into() }).collect();
+    assert!(matches!(load(&hashed.join("\n")), Err(config::Error::Jsonc { .. })));
 }
 
 /// The flags and docov.json keys a generated run sets.
