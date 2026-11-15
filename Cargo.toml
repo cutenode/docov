@@ -11,7 +11,7 @@ repository = "https://github.com/cutenode/docov"
 keywords = ["jsdoc", "coverage", "documentation", "javascript", "typescript"]
 categories = ["command-line-utilities", "development-tools"]
 # The npm packages, the package.json uppt reads to release them and their npm config, the GitHub
-# Action and the pre-commit hook.
+# Action, the pre-commit hook and the fuzz targets.
 exclude = [
     "/npm",
     "/package.json",
@@ -20,6 +20,7 @@ exclude = [
     "/action",
     "/action.yml",
     "/.pre-commit-hooks.yaml",
+    "/fuzz",
 ]
 
 [lints.rust]
