@@ -2,6 +2,7 @@
 
 use std::{borrow::Cow, env, fmt, fs, io, iter, path::Path, path::PathBuf, sync::OnceLock};
 
+use jsonc_parser::{ParseOptions, cst::CstRootNode};
 use rustc_hash::FxHashMap;
 use schemars::JsonSchema;
 use serde::{
@@ -226,6 +227,10 @@ pub enum Error {
     /// It isn't valid JSON, or doesn't match the schema.
     #[error("{}: {source}", path.display())]
     Parse { path: PathBuf, source: serde_json::Error },
+    /// It isn't JSONC, which `--update-threshold` rewrites it as: it has a `#` comment, or a comma in
+    /// an empty array, say.
+    #[error("{}: {source}", path.display())]
+    Jsonc { path: PathBuf, source: jsonc_parser::errors::ParseError },
     /// It extends itself, through the files in `chain`, which starts and ends with the same one.
     #[error("config files extend each other in a cycle: {}", chain.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(" -> "))]
     Cycle { chain: Vec<PathBuf> },
@@ -305,6 +310,10 @@ fn layer(path: &Path, chain: &mut Vec<(PathBuf, PathBuf)>) -> Result<Layer, Erro
         return Err(Error::Cycle { chain: names.chain([path.to_owned()]).collect() });
     }
     let mut text = fs::read_to_string(path).map_err(read)?;
+    // json_strip_comments also blanks `#` comments and a comma in an empty array or object, which
+    // JSONC doesn't have, so the file is read as JSONC too. Its error comes after serde_json's, which
+    // say more.
+    let jsonc_read = jsonc(&text).map(drop);
     // Comments and trailing commas turn into spaces, so serde_json's lines and columns still
     // match the file. A stray `/` stops it partway, after blanking that `/`, so it can't go on
     // to serde_json.
@@ -317,6 +326,7 @@ fn layer(path: &Path, chain: &mut Vec<(PathBuf, PathBuf)>) -> Result<Layer, Erro
     // Each feature's keys are checked here, where an error can say where it is, and read once
     // every file is merged.
     feature::Keys::parse(&text).map_err(parse)?;
+    jsonc_read.map_err(|source| Error::Jsonc { path: path.to_owned(), source })?;
     let mut keys: Map<String, Value> = serde_json::from_str(&text).expect("KnownKeys read an object");
     keys.remove("$schema");
     keys.remove("extends");
@@ -338,6 +348,12 @@ fn layer(path: &Path, chain: &mut Vec<(PathBuf, PathBuf)>) -> Result<Layer, Erro
     chain.pop();
     merged.over(Layer { keys, paths, exclude, jsdoc_config, dirs, files: vec![path.to_owned()] });
     Ok(merged)
+}
+
+/// `text` read as JSONC, as `--update-threshold` reads a config file to rewrite it. Every file that
+/// loads reads this way.
+pub(crate) fn jsonc(text: &str) -> Result<CstRootNode, jsonc_parser::errors::ParseError> {
+    CstRootNode::parse(text, &ParseOptions::default())
 }
 
 /// `path`, written in a file in `dir`, as a path from the current folder with the OS's separator
