@@ -1,0 +1,4 @@
+# Who GitHub asks to review a pull request, by the files it changes. A later line wins over an
+# earlier one, so an owner for one part goes below this, e.g. `/npm/ @someone`. Owners need write
+# access to the repo.
+* @bnb
