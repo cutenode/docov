@@ -1,0 +1,110 @@
+name: Fuzz
+
+# The cargo-fuzz targets in fuzz/, a minute each on pull requests that change them, and for longer
+# when scheduled.yml calls this weekly. Each target is a job of its own, so a failure names it.
+on:
+  pull_request:
+    paths:
+      - fuzz/**
+      - .github/workflows/fuzz.yml
+  workflow_call:
+    inputs:
+      seconds:
+        description: How long to fuzz each target.
+        type: number
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fuzz:
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [scan, jsdoc_checks, config, lsp]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      TARGET: ${{ matrix.target }}
+      SECONDS_EACH: ${{ inputs.seconds || 60 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The pinned toolchain for cargo-fuzz's own build and clippy, and nightly for the targets
+      # (libFuzzer's instrumentation and the sanitizer need it).
+      - run: rustup toolchain install && rustup toolchain install nightly --profile minimal
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: fuzz
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # install-action has no cargo-fuzz of its own. Its cargo-install fallback builds it from
+      # crates.io with the lockfile, where the default would have cargo-binstall download one using
+      # the job's token.
+      - uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2.87.32
+        with:
+          tool: cargo-fuzz@0.13.2
+          fallback: cargo-install
+      # cargo-fuzz has no --locked, so this fails first when fuzz/Cargo.lock is out of date.
+      - run: cargo fetch --locked --manifest-path fuzz/Cargo.toml
+      # tools/lint.sh checks the crate, which this one isn't part of.
+      - if: github.event_name == 'pull_request' && matrix.target == 'scan'
+        run: |
+          cargo fmt --check --manifest-path fuzz/Cargo.toml
+          cargo clippy --locked --manifest-path fuzz/Cargo.toml --all-targets -- -D warnings
+      # A cache entry can't be overwritten: each weekly run saves under its own key and the next
+      # restores the newest.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: fuzz-corpus-${{ matrix.target }}-
+      # The scan target also starts from the test fixtures, whose first byte picks the language.
+      # oxc's parser takes exponential time on some short TypeScript
+      # (https://github.com/oxc-project/oxc/issues/27637), which nothing here can fix, so fork mode
+      # keeps going past an input that times out, saving it as an artifact, and still stops at a
+      # panic. Fork mode exits with the child's wait status, which comes out as 0 after a panic, so
+      # the crash files it writes decide.
+      - run: |
+          mkdir -p "fuzz/corpus/$TARGET"
+          seeds=()
+          [[ $TARGET == scan ]] && seeds=(tests/fixtures)
+          cargo +nightly fuzz run "$TARGET" "fuzz/corpus/$TARGET" "${seeds[@]}" -- \
+            -max_total_time="$SECONDS_EACH" -timeout=10 -rss_limit_mb=2048 -fork=1 -ignore_timeouts=1
+          crashes=$(find "fuzz/artifacts/$TARGET" \( -name 'crash-*' -o -name 'leak-*' \) 2>/dev/null)
+          if [[ -n $crashes ]]; then
+            echo "$crashes"
+            exit 1
+          fi
+      # Inputs that timed out, which fail nothing, for a look at whether they're oxc's.
+      - if: ${{ !cancelled() && hashFiles(format('fuzz/artifacts/{0}/timeout-*', matrix.target)) != '' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-${{ matrix.target }}-timeouts
+          path: fuzz/artifacts/${{ matrix.target }}/timeout-*
+      # Down to the inputs that each add coverage, so the cache doesn't grow every week. Saved even
+      # when the target crashed, so what it found before isn't lost.
+      - if: ${{ !cancelled() && github.event_name != 'pull_request' }}
+        run: cargo +nightly fuzz cmin "$TARGET" "fuzz/corpus/$TARGET"
+      - if: ${{ !cancelled() && github.event_name != 'pull_request' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+      # `cargo fuzz run <target> <file>` replays a crash.
+      - if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-${{ matrix.target }}
+          path: |
+            fuzz/artifacts/${{ matrix.target }}
+            !fuzz/artifacts/${{ matrix.target }}/timeout-*
+          if-no-files-found: ignore

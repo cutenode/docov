@@ -101,6 +101,14 @@ jobs:
       - run: tools/jsdoc-oracle.sh | diff -u tests/fixtures/jsdoc-oracle.txt -
         shell: bash
 
+  # The fuzz targets (fuzz.yml) for ten minutes each, from the corpus the last weekly run left.
+  fuzz:
+    uses: ./.github/workflows/fuzz.yml
+    permissions:
+      contents: read
+    with:
+      seconds: 600
+
   # Every release target in the release profile.
   build:
     uses: ./.github/workflows/build.yml
@@ -110,7 +118,7 @@ jobs:
   # Weekly runs only: a failed job opens an issue, or comments on the open one, and the next run
   # that passes closes it.
   report:
-    needs: [audit, props, links, jsdoc-oracle, build]
+    needs: [audit, props, links, jsdoc-oracle, fuzz, build]
     if: ${{ !cancelled() && github.event_name == 'schedule' }}
     permissions:
       actions: read
@@ -119,4 +127,5 @@ jobs:
     with:
       details: >-
         A failed Hegel property's examples are in the run's hegel artifact; copying them to .hegel/
-        replays them first in the next local run.
+        replays them first in the next local run. A fuzz target's crash is in its
+        fuzz-<target> artifact; `cargo +nightly fuzz run <target> <file>` replays it.
