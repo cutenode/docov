@@ -88,7 +88,7 @@ fn repeated_tags(context: &ParserContext, config: &Configuration, out: &mut Vec<
         out.push(Message {
             id: "docov-repeated-tag",
             text: format!("The TSDoc tag \"{}\" may only appear once in a doc comment", tag.tag_name),
-            at: context.tokens[tag.token_sequence.start_index].range.pos as u32,
+            at: context.tokens[tag.token_sequence.start_index].range().pos as u32,
         });
     }
 }
@@ -116,7 +116,7 @@ fn modifier_tag_text(context: &ParserContext, config: &Configuration, out: &mut 
                     "The TSDoc tag \"{}\" is a modifier tag; text after it on its line belongs to the section before it",
                     tag.tag_name
                 ),
-                at: context.tokens[tag.token_sequence.start_index].range.pos as u32,
+                at: context.tokens[tag.token_sequence.start_index].range().pos as u32,
             });
         }
     }

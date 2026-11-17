@@ -84,7 +84,7 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.154", features = ["float_roundtrip"] }
 thiserror = "2.0.21"
 # TSDoc's grammar for the tsdoc-* checks, and tsdoc.json: a port of @microsoft/tsdoc.
-tsdocrs = "0.1.0"
+tsdocrs = "0.2.0"
 # Turns `docov lsp`'s URIs into paths, which lsp-types' `Uri` doesn't do.
 url = "2.5.8"
 # Reads pnpm-workspace.yaml.
