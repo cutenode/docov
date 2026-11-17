@@ -212,7 +212,7 @@ A threshold can be more than one number. In docov.json, an object sets one for e
 
 ```jsonc
 {
-  "$schema": "https://raw.githubusercontent.com/cutenode/docov/v0.2.0/docov.schema.json",
+  "$schema": "https://raw.githubusercontent.com/cutenode/docov/v0.2.1/docov.schema.json",
   "paths": ["src"],
   "exclude": ["**/*.test.ts"],
   "threshold": { "global": 80, "perFile": 50, "src/api/**": 100, "src/legacy/**": -10 },
