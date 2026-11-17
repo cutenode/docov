@@ -96,13 +96,15 @@ fn repeated_tags(context: &ParserContext, config: &Configuration, out: &mut Vec<
 /// Reports a modifier tag with text after it on its line, which TSDoc puts in the section before
 /// the tag: `docov-modifier-tag-text`. Another tag after it is fine.
 fn modifier_tag_text(context: &ParserContext, config: &Configuration, out: &mut Vec<Message>) {
-    let block_tag_at = |index: usize| context.tags.iter().any(|tag| !tag.inline && tag.token_sequence.start_index == index);
+    let block_tag_at =
+        |index: usize| context.tags.iter().any(|tag| !tag.inline && tag.token_sequence.start_index == index);
     for tag in context.tags.iter().filter(|tag| !tag.inline) {
         let modifier = config.try_get_tag_definition(&tag.tag_name).map(|definition| definition.syntax_kind);
         if modifier != Some(TSDocTagSyntaxKind::ModifierTag) {
             continue;
         }
-        let after = context.tokens[tag.token_sequence.end_index..].iter().position(|token| token.kind != TokenKind::Spacing);
+        let after =
+            context.tokens[tag.token_sequence.end_index..].iter().position(|token| token.kind != TokenKind::Spacing);
         let next = after.map(|after| tag.token_sequence.end_index + after);
         let ends_line = next.is_none_or(|next| {
             matches!(context.tokens[next].kind, TokenKind::Newline | TokenKind::EndOfInput) || block_tag_at(next)
