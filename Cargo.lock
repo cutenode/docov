@@ -320,6 +320,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror",
+ "tsdocrs",
  "url",
  "yaml-rust2",
 ]
@@ -1826,6 +1827,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "db97caf9d906fbde555dd62fa95ddba9eecfd14cb388e4f491a66d74cd5fb79a"
 dependencies = [
  "once_cell",
+]
+
+[[package]]
+name = "tsdocrs"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e1641fa3e9f81026a55ad20671f1400d74a8dfc29c11ad4ef9ea7055c4a08c7c"
+dependencies = [
+ "dunce",
+ "indexmap",
+ "json-strip-comments",
+ "oxc_resolver",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

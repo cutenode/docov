@@ -6,7 +6,7 @@
 //! oxc_linter has eslint-plugin-jsdoc's rules, but it isn't published (its Cargo.toml says
 //! `publish = false`, and crates.io has no `oxc_linter`), and its rules run on oxc_semantic inside
 //! the whole linter. These are written on oxc_jsdoc, the parser oxc_linter's rules use too, and the
-//! `tsdoc-*` checks on docov's port of TSDoc's own parser.
+//! `tsdoc-*` checks on tsdocrs, a port of TSDoc's own parser.
 
 use std::{any::Any, cell::OnceCell, fmt, sync::LazyLock};
 
