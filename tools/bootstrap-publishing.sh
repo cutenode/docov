@@ -4,10 +4,11 @@
 # release.yml from its environment, staged publishing only on npm. Both registries only trust a
 # workflow with a package they already have, so a crate or npm package that isn't there yet gets
 # published first: the crate from this checkout, an npm package as a 0.0.0 placeholder. Finished
-# steps are skipped, so run it again after a failure or after adding a platform to release.yml.
+# steps are skipped, so run it again after a failure or after adding a platform to build.yml.
 #
-# npm drops a trust config that no publish has used within 48 hours, so merge the next release PR
-# within 48 hours of running this, or run it again first with RETRUST=1 to renew them.
+# A new npm trust config expires unless a publish uses it within 2 days
+# (https://docs.npmjs.com/trusted-publishers), so merge the next release PR within 2 days of running
+# this, or run it again first with RETRUST=1 to replace them.
 #
 # Needs `gh` logged in as a repository admin, `npm login` as a member of the docov npm org
 # (https://www.npmjs.com/org/create), and asks for a crates.io token with the publish-new,
@@ -62,7 +63,7 @@ else
   echo "crates.io trusts $workflow for docov"
 fi
 
-for name in @docov/cli $(grep -oE 'platform: [a-z0-9]+-[a-z0-9]+' .github/workflows/$workflow | sed 's|platform: |@docov/|'); do
+for name in @docov/cli $(grep -oE 'platform: [a-z0-9]+-[a-z0-9]+' .github/workflows/build.yml | sed 's|platform: |@docov/|'); do
   if [[ -z $(npm view "$name" version 2>/dev/null) ]]; then
     stub=$(mktemp -d)
     jq --arg name "$name" '{name: $name, description, license, repository}' npm/docov/package.json >"$stub/package.json"
@@ -71,8 +72,13 @@ for name in @docov/cli $(grep -oE 'platform: [a-z0-9]+-[a-z0-9]+' .github/workfl
   fi
 
   # npm keeps one config per package, and an expired one still lists, so replace whatever's there
-  # unless it's the one uppt needs.
-  trusts=$(npm trust list "$name" --json | jq -s .)
+  # unless it's the one uppt needs. Listing takes a second factor, which npm only asks for on a
+  # terminal, so it runs on one of its own from script(1) (macOS's arguments) and leaves what it
+  # printed in a file to read the configs back from.
+  transcript=$(mktemp)
+  script -q "$transcript" npm trust list "$name" --json
+  trusts=$(tr -d '\r' <"$transcript" | sed -n '/^{$/,/^}$/p' | jq -s .)
+  rm "$transcript"
   if [[ -z ${RETRUST:-} ]] && jq -e --arg repo $owner/$repo --arg file $workflow \
     'length == 1 and (.[0] | .repository == $repo and .file == $file and .environment == "npm" and .permissions == ["createStagedPackage"])' \
     <<<"$trusts" >/dev/null; then
