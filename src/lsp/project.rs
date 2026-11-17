@@ -157,6 +157,8 @@ impl Projects {
         let paths = if config.paths.is_empty() { vec![here] } else { config.paths.clone() };
         plan.load_public_with(&paths, |dir, paths| self.api(dir, paths, reading))
             .map_err(|errors| errors.join("\n"))?;
+        let tsdoc = plan.load_tsdoc().map_err(|errors| errors.join("\n"))?;
+        self.see(reading, tsdoc);
         Ok(plan.files().first().map(|(_, rules)| (*rules).clone()))
     }
 

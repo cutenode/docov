@@ -1,4 +1,8 @@
-//! `badge`, or `--badge FILE`: an SVG badge of the total, drawn here without a network call.
+//! `badge`: an SVG badge of the total, drawn without a network call.
+//!
+//! `--badge FILE` is short for `--format badge=FILE`. The badge is red under the global threshold,
+//! yellow up to 10 points over it, and green past that. With no threshold, or a negative one (a
+//! count of undocumented items), it's blue.
 
 use crate::report::{Context, Format, color, total};
 

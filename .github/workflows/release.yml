@@ -2,7 +2,7 @@ name: Release
 
 # uppt (https://github.com/danielroe/uppt) runs releases. Each push to main opens or updates a draft
 # release PR from the conventional commits since the last tag, bumping npm/docov/package.json, and
-# cargo-pr bumps Cargo.toml on it to match. Merging the PR tags it and dispatches this workflow on
+# cargo-pr bumps the rest on it to match. Merging the PR tags it and dispatches this workflow on
 # the tag, which builds the binaries, then stages the npm packages (tools/npm-approve.sh approves
 # them) and publishes the crate alongside. Both registries use trusted publishing, so there are no
 # tokens here. tools/bootstrap-publishing.sh sets that up.
@@ -27,6 +27,12 @@ on:
 
 permissions: {}
 
+# Back-to-back pushes to main would otherwise race their pr and cargo-pr jobs on the release PR's
+# branch. Runs for the same event and ref wait their turn, the newest replacing any still waiting.
+concurrency:
+  group: release-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: false
+
 defaults:
   run:
     shell: bash
@@ -49,6 +55,7 @@ jobs:
         )
       )
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
       pull-requests: write
@@ -63,10 +70,12 @@ jobs:
             npm/docov
             npm/platforms/*
 
-  # uppt/pr only bumps package.json, so this brings Cargo.toml along on the release PR
+  # uppt/pr only bumps package.json, so this brings Cargo.toml, the pre-commit hook and the
+  # README's $schema URL along on the release PR
   cargo-pr:
     needs: pr
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: write
       pull-requests: read
@@ -80,6 +89,27 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  # uppt/pr lists a commit that reached main under two hashes twice, and has no setting for it
+  changelog-pr:
+    needs: pr
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      - run: tools/release-pr-changelog.mjs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   # release PR merged: tag it, cut a GitHub release, dispatch the publish run
   release:
     if: |
@@ -89,6 +119,7 @@ jobs:
       && github.event.pull_request.head.repo.full_name == github.repository
       && !github.event.repository.fork
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     concurrency:
       group: release-${{ github.event.pull_request.number }}
       cancel-in-progress: false
@@ -101,43 +132,19 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           packages: *packages
 
-  # A docov binary for each npm platform package, named for Node's process.platform and
-  # process.arch. The Linux ones link musl statically, so they run whatever a distro's glibc is.
+  # The binaries, from build.yml, which also runs weekly so a target that stops building shows up
+  # before a release.
   build:
     if: github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v')
-    strategy:
-      matrix:
-        include:
-          - { platform: darwin-arm64, target: aarch64-apple-darwin, os: macos-latest }
-          - { platform: darwin-x64, target: x86_64-apple-darwin, os: macos-latest }
-          - { platform: linux-arm64, target: aarch64-unknown-linux-musl, os: ubuntu-24.04-arm }
-          - { platform: linux-x64, target: x86_64-unknown-linux-musl, os: ubuntu-latest }
-          - { platform: win32-arm64, target: aarch64-pc-windows-msvc, os: windows-latest }
-          - { platform: win32-x64, target: x86_64-pc-windows-msvc, os: windows-latest }
-    runs-on: ${{ matrix.os }}
+    uses: ./.github/workflows/build.yml
     permissions:
       contents: read
-    env:
-      TARGET: ${{ matrix.target }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - run: rustup toolchain install && rustup target add "$TARGET"
-      - run: cargo build --release --locked --target "$TARGET"
-        env:
-          # Links the MSVC runtime in, so the Windows binaries run without it installed.
-          RUSTFLAGS: ${{ runner.os == 'Windows' && '-C target-feature=+crt-static' || '' }}
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: ${{ matrix.platform }}
-          path: target/${{ matrix.target }}/release/docov${{ startsWith(matrix.platform, 'win32') && '.exe' || '' }}
-          if-no-files-found: error
 
   # the npm tarballs: @docov/cli and a platform package per binary
   pack:
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     concurrency:
       group: pack-${{ github.ref }}
       cancel-in-progress: false
@@ -170,6 +177,7 @@ jobs:
     if: needs.pack.outputs.files != '[]'
     needs: pack
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     concurrency:
       group: publish-${{ github.ref }}
       cancel-in-progress: false
@@ -187,6 +195,7 @@ jobs:
   cargo-publish:
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     concurrency:
       group: cargo-publish-${{ github.ref }}
       cancel-in-progress: false

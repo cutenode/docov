@@ -1,4 +1,7 @@
 //! `lcov`: a line record for each line with items, for coverage services and editor gutters.
+//!
+//! A line is hit when all of its items are documented. Each item is also a function, hit when it's
+//! documented.
 
 use crate::report::{Context, Format, lines};
 

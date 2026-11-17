@@ -1,0 +1,10 @@
+{
+	"$schema": "./node_modules/oxfmt/configuration_schema.json",
+	"ignorePatterns": [
+		"*.md",
+		"docov.schema.json",
+		"docov-baseline.schema.json",
+		"src/report/html.css",
+		"tests/fixtures/**"
+	]
+}

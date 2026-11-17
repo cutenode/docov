@@ -1,4 +1,9 @@
 //! `gitlab`: a GitLab Code Quality report, for merge request widgets.
+//!
+//! It has an issue of severity `minor` at each undocumented item, and one at each doc check finding
+//! under the check's rule, such as `docov/require-param`: `minor` at `warn`, `major` at `error`.
+//! Each fingerprint is a hash of the item's path, kind and name, or the finding's path, line, rule
+//! and message, so GitLab tells new issues from old ones.
 
 use std::hash::Hasher;
 
@@ -14,7 +19,7 @@ pub const FORMAT: Format =
     Format { name: "gitlab", help: "A GitLab Code Quality report: undocumented items and findings", render };
 
 /// An issue at each undocumented item, then one at each doc check finding:
-/// https://docs.gitlab.com/ci/testing/code_quality/#code-quality-report-format
+/// <https://docs.gitlab.com/ci/testing/code_quality/#code-quality-report-format>
 fn render(context: &Context) -> String {
     let issue = |path: String, line: usize, description: &str, check: &str, severity: &str, fingerprint: String| {
         json!({

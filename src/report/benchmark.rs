@@ -1,4 +1,7 @@
 //! `benchmark`: the total for github-action-benchmark, to chart it over time.
+//!
+//! [github-action-benchmark](https://github.com/benchmark-action/github-action-benchmark) reads it
+//! with `tool: customBiggerIsBetter`.
 
 use serde_json::json;
 
@@ -12,7 +15,7 @@ pub const FORMAT: Format = Format {
     render,
 };
 
-/// https://github.com/benchmark-action/github-action-benchmark#examples, to one decimal place as
+/// <https://github.com/benchmark-action/github-action-benchmark#examples>, to one decimal place as
 /// the other formats show it.
 fn render(context: &Context) -> String {
     let percent = (Totals::of(context.files).percent() * 10.0).round() / 10.0;

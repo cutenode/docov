@@ -146,6 +146,7 @@ fn run(cli: &Cli, matches: &clap::ArgMatches, watched: &mut Vec<PathBuf>) -> Res
     };
     let mut plan = nested::Plan::new(&config, settings, matches, files).map_err(|e| vec![e])?;
     plan.load_public(&paths)?;
+    plan.load_tsdoc()?;
     let (settings, files) = (plan.settings(), plan.files());
     if let Some(explained) = settings.get::<Explain>().write(&files, &mut io::stdout().lock()) {
         return explained.map(|()| true).map_err(|e| vec![e]);

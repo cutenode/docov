@@ -1,4 +1,13 @@
 //! `json`: every item, documented or not, with totals. `--compare` reads one back.
+//!
+//! Each item has its kind, line and column, and there are totals per file, per kind and overall.
+//! Each item also says whether its JSDoc describes it (`hasDescription`) and has an `@example`
+//! (`hasExample`), whether each parameter has a matching `@param` (`paramsDocumented`, `null` for
+//! what isn't a function or method), whether it's `deprecated`, and its `since` text (or `null`).
+//! With doc checks on, an item they found something in lists its findings in `diagnostics`, each
+//! with its `line`, `column`, `rule`, `severity` and `message`. An undocumented item a
+//! `docov-ignore` comment leaves out of the totals has `ignored: true`, and the comment's `reason`
+//! when it gives one.
 
 use std::{fs, path::Path};
 

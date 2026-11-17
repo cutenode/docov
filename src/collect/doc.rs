@@ -1,21 +1,56 @@
 //! What an item's JSDoc block says, read with oxc_jsdoc.
 
+use std::sync::LazyLock;
+
 use oxc_jsdoc::{JSDoc, JSDocTag, parser::jsdoc_parts::JSDocTagTypeNamePart};
+use regex::Regex;
 
 use super::Kind;
 use crate::feature::access::Access;
 
-/// Whether `doc` describes its item: it has text before its first tag, or a tag that stands in for
-/// that (`@description`, `@desc`, `@summary`, a class's `@classdesc`, each with text, or
-/// `@inheritdoc` in any case).
+/// Whether `doc` describes its item: it has text before its first tag, a tag that stands in for
+/// that (`@description`, `@desc`, `@summary`, a class's `@classdesc`, each with text), or it
+/// [inherits] its docs.
 pub(super) fn describes(doc: &JSDoc, kind: Kind) -> bool {
     !doc.comment().parsed().is_empty()
+        || inherits(doc)
         || doc.tags().iter().any(|tag| {
             let name = tag.kind.parsed();
             let describing =
                 matches!(name, "description" | "desc" | "summary") || (name == "classdesc" && kind == Kind::Class);
-            name.eq_ignore_ascii_case("inheritdoc") || (describing && !tag.comment().parsed().is_empty())
+            describing && !tag.comment().parsed().is_empty()
         })
+}
+
+/// TSDoc's inline `{@inheritDoc}` or `{@inheritDoc Ref}`, in any case, as the block tag is.
+static INLINE_INHERIT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)\{@inheritdoc[\s}]").expect("a valid regex"));
+
+/// Whether `doc` inherits its docs: it has an `@inheritdoc` tag (in any case), or TSDoc's inline
+/// `{@inheritDoc}` or `{@inheritDoc Ref}` in its description or a tag's text, unless that's
+/// [literal].
+pub(crate) fn inherits(doc: &JSDoc) -> bool {
+    let inline = |text: String| INLINE_INHERIT.find_iter(&text).any(|tag| !literal(&text, tag.start()));
+    inline(doc.comment().parsed())
+        || doc
+            .tags()
+            .iter()
+            .any(|tag| tag.kind.parsed().eq_ignore_ascii_case("inheritdoc") || inline(tag.comment().parsed()))
+}
+
+/// Whether the inline tag that starts at byte `at` of `text` is an example of its syntax, not a
+/// tag: escaped (`\{@link}`), or in a code span on its line.
+pub(crate) fn literal(text: &str, at: usize) -> bool {
+    let line = &text[text[..at].rfind('\n').map_or(0, |i| i + 1)..at];
+    line.ends_with('\\') || line.matches('`').count() % 2 == 1
+}
+
+/// `text`, a tag's description, past the `-` TSDoc writes between a name and its description
+/// (`@param x - The x.`), which JSDoc allows too. A `-` alone is no description, and one with no
+/// space after it (`-1`) is part of the text.
+pub(crate) fn past_hyphen(text: &str) -> &str {
+    let rest = text.strip_prefix('-').filter(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace));
+    rest.map_or(text, str::trim_start)
 }
 
 /// Whether `doc` is a stub nobody has filled in, as `--fix` writes them: its description is just

@@ -1,0 +1,45 @@
+[package]
+name = "docov-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = { version = "0.4.13", features = ["arbitrary-derive"] }
+lsp-server = "0.10.0"
+serde_json = "1.0.154"
+tempfile = "3.27.0"
+
+[dependencies.docov]
+path = ".."
+
+[[bin]]
+name = "scan"
+path = "fuzz_targets/scan.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "jsdoc_checks"
+path = "fuzz_targets/jsdoc_checks.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "config"
+path = "fuzz_targets/config.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "lsp"
+path = "fuzz_targets/lsp.rs"
+test = false
+doc = false
+bench = false

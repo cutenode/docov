@@ -1,4 +1,8 @@
 //! `rdjson`: reviewdog's diagnostic format, for review comments.
+//!
+//! [reviewdog](https://github.com/reviewdog/reviewdog) reads it with `reviewdog -f=rdjson`. It has
+//! a diagnostic at each undocumented item, with the code `docov/undocumented`, and one at its level
+//! for each doc check finding, with the check's rule as its code, such as `docov/require-param`.
 
 use serde_json::json;
 
@@ -8,7 +12,7 @@ use crate::report::{Context, Format, RULE, diagnostics, json, message, rule_id, 
 pub const FORMAT: Format = Format { name: "rdjson", help: "reviewdog's diagnostic format (rdjson)", render };
 
 /// A diagnostic at each undocumented item, then one at each doc check finding:
-/// https://github.com/reviewdog/reviewdog/tree/master/proto/rdf
+/// <https://github.com/reviewdog/reviewdog/tree/master/proto/rdf>
 fn render(context: &Context) -> String {
     let diagnostic = |path, line: usize, column: usize, message: &str, severity: &str, code: &str| {
         json!({

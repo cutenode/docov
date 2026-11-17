@@ -1,4 +1,12 @@
 //! `markdown`: a summary for `$GITHUB_STEP_SUMMARY` or a pull request comment.
+//!
+//! It has the total, any failed gates, a table of the files, and each file's undocumented items in
+//! a folded `<details>` block, then the doc checks' findings in one. In GitHub Actions,
+//! `--format markdown=$GITHUB_STEP_SUMMARY` adds it to the step's summary.
+//!
+//! `--compare BASE.json` takes an earlier `--format json` report (from the base branch, say) and
+//! adds the percentage before and the change in points, for the total and each file, with files
+//! marked `new` or `gone`.
 
 use std::path::Path;
 

@@ -5,9 +5,10 @@
 //!
 //! oxc_linter has eslint-plugin-jsdoc's rules, but it isn't published (its Cargo.toml says
 //! `publish = false`, and crates.io has no `oxc_linter`), and its rules run on oxc_semantic inside
-//! the whole linter. These are written on oxc_jsdoc, the parser oxc_linter's rules use too.
+//! the whole linter. These are written on oxc_jsdoc, the parser oxc_linter's rules use too, and the
+//! `tsdoc-*` checks on docov's port of TSDoc's own parser.
 
-use std::{any::Any, fmt, sync::LazyLock};
+use std::{any::Any, cell::OnceCell, fmt, sync::LazyLock};
 
 use oxc_jsdoc::JSDoc;
 use rustc_hash::FxHashSet;
@@ -15,7 +16,11 @@ use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::DeserializeOwned};
 use serde_json::Value;
 
-use crate::collect::{Shape, doc};
+use crate::{
+    collect::{Shape, doc},
+    feature::syntax::Syntax,
+    tsdoc::{self, Configuration, Group, Parsed},
+};
 
 /// A check's rule id, and what makes its entry.
 type Registered = (&'static str, fn() -> Entry);
@@ -91,6 +96,13 @@ pub struct Subject<'a, 's> {
     pub source: &'s str,
     /// The names the file declares or imports at its top level, and the types its blocks declare.
     pub names: &'a FxHashSet<&'s str>,
+    /// The doc comment syntax the config writes, which says how a check reads what the two write
+    /// differently.
+    pub syntax: Syntax,
+    /// The TSDoc configuration its file is read with.
+    pub tsdoc: &'a Configuration,
+    /// Its block, parsed as TSDoc, once a check asks.
+    pub(crate) parsed: OnceCell<Parsed>,
 }
 
 impl Subject<'_, '_> {
@@ -110,10 +122,21 @@ impl Subject<'_, '_> {
         names.iter().any(|name| doc::has_tag(self.doc, name))
     }
 
-    /// Whether its block inherits its docs with `@inheritdoc` (in any case), so the checks that
-    /// want tags leave it be.
+    /// Whether its block inherits its docs with `@inheritdoc` (in any case) or an inline
+    /// `{@inheritDoc}`, so the checks that want tags leave it be.
     pub fn inherits(&self) -> bool {
-        self.doc.tags().iter().any(|tag| tag.kind.parsed().eq_ignore_ascii_case("inheritdoc"))
+        doc::inherits(self.doc)
+    }
+
+    /// Adds a finding for each message TSDoc's parser has about `group`'s part of its block's
+    /// grammar, as `id: text`.
+    pub fn tsdoc(&self, group: Group, out: &mut Vec<Finding>) {
+        let block = self.block();
+        // The block's span ends before its `*/`.
+        let comment = &self.source[block as usize..self.doc.span.end as usize + 2];
+        let parsed = self.parsed.get_or_init(|| tsdoc::parse(comment, self.tsdoc));
+        let messages = parsed.messages.iter().filter(|message| message.group() == group);
+        out.extend(messages.map(|m| Finding { at: block + m.at, message: format!("{}: {}", m.id, m.text) }));
     }
 
     /// Adds a finding at its block that it's missing `what`, unless it inherits its docs.
@@ -142,6 +165,9 @@ pub trait Check: 'static {
     /// What it wants, in a line, for the schema.
     const ABOUT: &'static str;
 
+    /// Whether it reads its block as TSDoc, by the tsdoc.json its file has.
+    const TSDOC: bool = false;
+
     /// Adds what it finds wrong with `subject`'s block to `out`.
     fn check(options: &Self::Options, subject: &Subject, out: &mut Vec<Finding>);
 }
@@ -157,6 +183,7 @@ type AnyOptions = Box<dyn Any + Send + Sync>;
 /// A check, registered.
 pub struct Entry {
     about: &'static str,
+    tsdoc: bool,
     schema: fn(&mut SchemaGenerator) -> Schema,
     options: fn(Option<&Value>) -> serde_json::Result<AnyOptions>,
     run: fn(&AnyOptions, &Subject, &mut Vec<Finding>),
@@ -167,6 +194,7 @@ impl Entry {
     pub fn of<C: Check>() -> Self {
         Self {
             about: C::ABOUT,
+            tsdoc: C::TSDOC,
             schema: |generator| generator.subschema_for::<C::Options>(),
             options: options::<C>,
             run: run::<C>,
@@ -274,6 +302,7 @@ struct On {
     setting: Setting,
     options: AnyOptions,
     run: fn(&AnyOptions, &Subject, &mut Vec<Finding>),
+    tsdoc: bool,
 }
 
 /// The checks that are on, which scans run on each counted item with a block.
@@ -305,10 +334,15 @@ impl Checks {
             .map(|(id, setting)| {
                 let (rule, entry) = entry(id).expect("a parsed rule id");
                 let options = (entry.options)(setting.options.as_ref()).expect("parsed options");
-                On { rule, setting: setting.clone(), options, run: entry.run }
+                On { rule, setting: setting.clone(), options, run: entry.run, tsdoc: entry.tsdoc }
             })
             .collect();
         (!on.is_empty()).then_some(Self { on })
+    }
+
+    /// Whether one that's on reads blocks as TSDoc, by the tsdoc.json each file has.
+    pub fn tsdoc(&self) -> bool {
+        self.on.iter().any(|on| on.tsdoc)
     }
 
     /// Each check that's on, by rule id, and its level.

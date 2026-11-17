@@ -1,0 +1,5 @@
+rules:
+  # `uses: $/` is the fix, but actionlint rejects it until
+  # https://github.com/rhysd/actionlint/issues/711 lands.
+  self-repository:
+    disable: true

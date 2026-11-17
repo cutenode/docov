@@ -1,0 +1,2952 @@
+[
+  {
+    "source": "microsoft/tsdoc NodeParserBasics",
+    "comment": "/**\n * line 1 \n * line 2\n */",
+    "messages": []
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserBasics",
+    "comment": "/***/",
+    "messages": []
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserBasics",
+    "comment": "/**\n *\n */",
+    "messages": []
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserBasics",
+    "comment": "/**\n \n \n */",
+    "messages": []
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserBasics",
+    "comment": "/**\n * \\$\\@param\n */",
+    "messages": []
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserBasics",
+    "comment": "/**\n * letter: \\A space: \\  end of line: \\\n */",
+    "messages": [
+      {
+        "id": "tsdoc-unnecessary-backslash",
+        "text": "A backslash can only be used to escape a punctuation character",
+        "at": 15
+      },
+      {
+        "id": "tsdoc-unnecessary-backslash",
+        "text": "A backslash can only be used to escape a punctuation character",
+        "at": 25
+      },
+      {
+        "id": "tsdoc-unnecessary-backslash",
+        "text": "A backslash can only be used to escape a punctuation character",
+        "at": 41
+      }
+    ]
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserCode",
+    "comment": "/**\n * line `1`\n * line ` 2` sdf\n */",
+    "messages": []
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserCode",
+    "comment": "/**\n * M`&`M\n */",
+    "messages": []
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserCode",
+    "comment": "/**\n * `multi\n * line`\n */",
+    "messages": [
+      {
+        "id": "tsdoc-code-span-missing-delimiter",
+        "text": "The code span is missing its closing backtick",
+        "at": 7
+      },
+      {
+        "id": "tsdoc-code-span-missing-delimiter",
+        "text": "The code span is missing its closing backtick",
+        "at": 21
+      }
+    ]
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserCode",
+    "comment": "/**\n * ``\n */",
+    "messages": [
+      {
+        "id": "tsdoc-code-span-empty",
+        "text": "A code span must contain at least one character between the backticks",
+        "at": 7
+      }
+    ]
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserCode",
+    "comment": "/**\n * This is a code fence with all parts:\n * ```a language!   \n *   some `code` here\n * ```   \n */",
+    "messages": []
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserCode",
+    "comment": "/**\n * This is a code fence with no language or trailing whitespace:\n * ```\n *   some `code` here\n * ```*/",
+    "messages": []
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserCode",
+    "comment": "/**\n * Code fence incorrectly indented:\n *    ```\n */",
+    "messages": [
+      {
+        "id": "tsdoc-code-fence-opening-indent",
+        "text": "The opening backtick for a code fence must appear at the start of the line",
+        "at": 46
+      }
+    ]
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserCode",
+    "comment": "/**\n * Code fence not starting the line:\n *a```\n */",
+    "messages": [
+      {
+        "id": "tsdoc-code-fence-opening-indent",
+        "text": "The opening backtick for a code fence must appear at the start of the line",
+        "at": 44
+      }
+    ]
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserCode",
+    "comment": "/**\n * Code fence not being terminated 1:\n * ```*/",
+    "messages": [
+      {
+        "id": "tsdoc-code-fence-missing-delimiter",
+        "text": "Error parsing code fence: Missing closing delimiter",
+        "at": 45
+      }
+    ]
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserCode",
+    "comment": "/**\n * Code fence not being terminated 2:\n * ``` some stuff\n */",
+    "messages": [
+      {
+        "id": "tsdoc-code-fence-missing-delimiter",
+        "text": "Error parsing code fence: Missing closing delimiter",
+        "at": 45
+      }
+    ]
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserCode",
+    "comment": "/**\n * Language having backticks:\n * ``` some stuff ```\n */",
+    "messages": [
+      {
+        "id": "tsdoc-code-fence-specifier-syntax",
+        "text": "Error parsing code fence: The language specifier cannot contain backtick characters",
+        "at": 37
+      },
+      {
+        "id": "tsdoc-code-fence-opening-indent",
+        "text": "The opening backtick for a code fence must appear at the start of the line",
+        "at": 52
+      }
+    ]
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserCode",
+    "comment": "/**\n * Closing delimiter being indented:\n * ```\n * code\n *      ```\n */",
+    "messages": [
+      {
+        "id": "tsdoc-code-fence-closing-indent",
+        "text": "The closing delimiter for a code fence must not be indented",
+        "at": 59
+      }
+    ]
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserCode",
+    "comment": "/**\n * Closing delimiter not being on a line by itself:\n * ```\n * code\n * ```  a\n */",
+    "messages": [
+      {
+        "id": "tsdoc-code-fence-closing-syntax",
+        "text": "Unexpected characters after closing delimiter for code fence",
+        "at": 79
+      }
+    ]
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserHtml",
+    "comment": "/**\n * <tag/>\n * <tag-a />\n * <tag-b ><tag-c />\n * <tag-d\n * >\n * <tag-e\n *      />  \n */",
+    "messages": []
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserHtml",
+    "comment": "/**\n * < tag/>\n * <tag -a />\n * <tag-b /<tag-c / >\n * <tag-d\n */",
+    "messages": [
+      {
+        "id": "tsdoc-malformed-html-name",
+        "text": "Invalid HTML element: A space is not allowed here",
+        "at": 7
+      },
+      {
+        "id": "tsdoc-escape-greater-than",
+        "text": "The \">\" character should be escaped using a backslash to avoid confusion with an HTML tag",
+        "at": 13
+      },
+      {
+        "id": "tsdoc-html-tag-missing-greater-than",
+        "text": "The HTML tag has invalid syntax: Expecting an attribute or \">\" or \"/>\"",
+        "at": 18
+      },
+      {
+        "id": "tsdoc-escape-greater-than",
+        "text": "The \">\" character should be escaped using a backslash to avoid confusion with an HTML tag",
+        "at": 27
+      },
+      {
+        "id": "tsdoc-html-tag-missing-greater-than",
+        "text": "The HTML tag has invalid syntax: Expecting an attribute or \">\" or \"/>\"",
+        "at": 32
+      },
+      {
+        "id": "tsdoc-html-tag-missing-greater-than",
+        "text": "The HTML tag has invalid syntax: Expecting an attribute or \">\" or \"/>\"",
+        "at": 40
+      },
+      {
+        "id": "tsdoc-escape-greater-than",
+        "text": "The \">\" character should be escaped using a backslash to avoid confusion with an HTML tag",
+        "at": 49
+      },
+      {
+        "id": "tsdoc-html-tag-missing-greater-than",
+        "text": "The HTML tag has invalid syntax: Expecting an attribute or \">\" or \"/>\"",
+        "at": 54
+      }
+    ]
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserHtml",
+    "comment": "/**\n * <tag-a attr-one=\"one\" >\n * <tag-b\n *   attr-two\n *   = \"2\"\n * />\n */",
+    "messages": []
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserHtml",
+    "comment": "/**\n * <tag-c attr-three=\"3\" four='4'/>\n * <tag-d\n *   attr-five\n *   = \"5\"\n *   six\n *   = '6'\n * />\n */",
+    "messages": []
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserHtml",
+    "comment": "/**\n * <tag-e attr-one=\"one\" two='two'/>\n * <tag-f\n *   attr-one\n *   = \"one\"\n *   two\n *   = 'two'\n * />\n */",
+    "messages": []
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserHtml",
+    "comment": "/**\n * <tag-a attr -one=\"one\" />\n * <tag-b attr- two=\"two\" />\n * <tag-c attr-three='three\" />\n * <tag-d attr-four=@\"four\" />\n * <tag-e attr-five@=\"five\" />\n * <tag-f attr-six=\"six\"seven=\"seven\" />\n */",
+    "messages": [
+      {
+        "id": "tsdoc-html-tag-missing-equals",
+        "text": "The HTML element has an invalid attribute: Expecting \"=\" after HTML attribute name",
+        "at": 7
+      },
+      {
+        "id": "tsdoc-escape-greater-than",
+        "text": "The \">\" character should be escaped using a backslash to avoid confusion with an HTML tag",
+        "at": 31
+      },
+      {
+        "id": "tsdoc-html-tag-missing-equals",
+        "text": "The HTML element has an invalid attribute: Expecting \"=\" after HTML attribute name",
+        "at": 36
+      },
+      {
+        "id": "tsdoc-escape-greater-than",
+        "text": "The \">\" character should be escaped using a backslash to avoid confusion with an HTML tag",
+        "at": 60
+      },
+      {
+        "id": "tsdoc-html-string-missing-quote",
+        "text": "The HTML element has an invalid attribute: The HTML string is missing its closing quote",
+        "at": 65
+      },
+      {
+        "id": "tsdoc-escape-greater-than",
+        "text": "The \">\" character should be escaped using a backslash to avoid confusion with an HTML tag",
+        "at": 92
+      },
+      {
+        "id": "tsdoc-html-tag-missing-string",
+        "text": "The HTML element has an invalid attribute: Expecting an HTML string starting with a single-quote or double-quote character",
+        "at": 97
+      },
+      {
+        "id": "tsdoc-at-sign-in-word",
+        "text": "The \"@\" character looks like part of a TSDoc tag; use a backslash to escape it",
+        "at": 114
+      },
+      {
+        "id": "tsdoc-escape-greater-than",
+        "text": "The \">\" character should be escaped using a backslash to avoid confusion with an HTML tag",
+        "at": 123
+      },
+      {
+        "id": "tsdoc-html-tag-missing-equals",
+        "text": "The HTML element has an invalid attribute: Expecting \"=\" after HTML attribute name",
+        "at": 128
+      },
+      {
+        "id": "tsdoc-at-sign-in-word",
+        "text": "The \"@\" character looks like part of a TSDoc tag; use a backslash to escape it",
+        "at": 144
+      },
+      {
+        "id": "tsdoc-escape-greater-than",
+        "text": "The \">\" character should be escaped using a backslash to avoid confusion with an HTML tag",
+        "at": 154
+      },
+      {
+        "id": "tsdoc-text-after-html-string",
+        "text": "The HTML element has an invalid attribute: The next character after a closing quote must be spacing or punctuation",
+        "at": 159
+      },
+      {
+        "id": "tsdoc-escape-greater-than",
+        "text": "The \">\" character should be escaped using a backslash to avoid confusion with an HTML tag",
+        "at": 195
+      }
+    ]
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserHtml",
+    "comment": "/**\n * <tag-g attr=\"multi\n * line\" />\n */",
+    "messages": [
+      {
+        "id": "tsdoc-html-string-missing-quote",
+        "text": "The HTML element has an invalid attribute: The HTML string is missing its closing quote",
+        "at": 7
+      },
+      {
+        "id": "tsdoc-escape-greater-than",
+        "text": "The \">\" character should be escaped using a backslash to avoid confusion with an HTML tag",
+        "at": 36
+      }
+    ]
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserHtml",
+    "comment": "/**\n * <tag attr-one=\"@tag\" />\n */",
+    "messages": []
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserHtml",
+    "comment": "/**\n * </tag-a>\n * </tag-b  >\n * </tag-c\n *   >\n */",
+    "messages": []
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserHtml",
+    "comment": "/**\n * </tag-a/>\n * </ tag-b>\n * </tag-c\n */",
+    "messages": [
+      {
+        "id": "tsdoc-html-tag-missing-greater-than",
+        "text": "Expecting a closing \">\" for the HTML tag",
+        "at": 7
+      },
+      {
+        "id": "tsdoc-escape-greater-than",
+        "text": "The \">\" character should be escaped using a backslash to avoid confusion with an HTML tag",
+        "at": 15
+      },
+      {
+        "id": "tsdoc-malformed-html-name",
+        "text": "Expecting an HTML element name: A space is not allowed here",
+        "at": 20
+      },
+      {
+        "id": "tsdoc-escape-greater-than",
+        "text": "The \">\" character should be escaped using a backslash to avoid confusion with an HTML tag",
+        "at": 28
+      },
+      {
+        "id": "tsdoc-html-tag-missing-greater-than",
+        "text": "Expecting a closing \">\" for the HTML tag",
+        "at": 33
+      }
+    ]
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserHtml",
+    "comment": "/**\n * <a1/>\n * <a-a>\n * <a--9->\n */",
+    "messages": []
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserHtml",
+    "comment": "/**\n * <1a/>\n * <a.a>\n * <_a>\n */",
+    "messages": [
+      {
+        "id": "tsdoc-malformed-html-name",
+        "text": "Invalid HTML element: An HTML name must be an ASCII letter followed by zero or more letters, digits, or hyphens",
+        "at": 7
+      },
+      {
+        "id": "tsdoc-escape-greater-than",
+        "text": "The \">\" character should be escaped using a backslash to avoid confusion with an HTML tag",
+        "at": 11
+      },
+      {
+        "id": "tsdoc-malformed-html-name",
+        "text": "Invalid HTML element: An HTML name must be an ASCII letter followed by zero or more letters, digits, or hyphens",
+        "at": 16
+      },
+      {
+        "id": "tsdoc-escape-greater-than",
+        "text": "The \">\" character should be escaped using a backslash to avoid confusion with an HTML tag",
+        "at": 20
+      },
+      {
+        "id": "tsdoc-malformed-html-name",
+        "text": "Invalid HTML element: An HTML name must be an ASCII letter followed by zero or more letters, digits, or hyphens",
+        "at": 25
+      },
+      {
+        "id": "tsdoc-escape-greater-than",
+        "text": "The \">\" character should be escaped using a backslash to avoid confusion with an HTML tag",
+        "at": 28
+      }
+    ]
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserInheritDocTag",
+    "comment": "/**\n * {@inheritDoc}\n */",
+    "messages": []
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserInheritDocTag",
+    "comment": "/**\n * {@inheritDoc Class.member}\n */",
+    "messages": []
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserInheritDocTag",
+    "comment": "/**\n * {@inheritDoc package# Class . member}\n */",
+    "messages": []
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserInheritDocTag",
+    "comment": "/**\n * {@inheritDoc | link text}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-missing-reference",
+        "text": "Expecting a declaration reference",
+        "at": 8
+      }
+    ]
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserInheritDocTag",
+    "comment": "/**\n * {@inheritDoc Class % junk}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-inheritdoc-tag-syntax",
+        "text": "Unexpected character after declaration reference",
+        "at": 26
+      }
+    ]
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserInheritDocTag",
+    "comment": "/**\n * {@inheritDoc}\n * {@inheritDoc}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-extra-inheritdoc-tag",
+        "text": "A doc comment cannot have more than one @inheritDoc tag",
+        "at": 24
+      }
+    ]
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserInheritDocTag",
+    "comment": "/**\n * summary text\n * @remarks\n * {@inheritDoc}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-inheritdoc-incompatible-tag",
+        "text": "A \"@remarks\" block must not be used, because that content is provided by the @inheritDoc tag",
+        "at": 23
+      },
+      {
+        "id": "tsdoc-inheritdoc-incompatible-summary",
+        "text": "The summary section must not have any content, because that content is provided by the @inheritDoc tag",
+        "at": 0
+      }
+    ]
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserInheritDocTag",
+    "comment": "/**\n * {@inheritdoc @scope/library:IDisposable.isDisposed}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-reference-missing-hash",
+        "text": "The declaration reference appears to contain a package name or import path, but it is missing the \"#\" delimiter",
+        "at": 20
+      }
+    ]
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserLinkTag",
+    "comment": "/**\n * {@link http://example1.com}\n * {@link http://example2.com|}\n * {@link http://example3.com| }\n * {@link http://example4.com|link text}\n * 1{@link http://example5.com| link\n * text }2\n * 3{@link http://example5.com| \n * link text \n *  }4\n */",
+    "messages": []
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserLinkTag",
+    "comment": "/**\n * {@link}\n * {@link http://example1.com| link | text}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-link-tag-empty",
+        "text": "The @link tag content is missing",
+        "at": 8
+      },
+      {
+        "id": "tsdoc-link-tag-unescaped-text",
+        "text": "The \"|\" character may not be used in the link text without escaping it",
+        "at": 46
+      }
+    ]
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserLinkTag",
+    "comment": "/**\n * {@link http://example1.com}\n * {@link https://example2.com#hash|link text}\n * {@link customscheme://data}\n */",
+    "messages": []
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserLinkTag",
+    "comment": "/**\n * {@link http://example1.com spaces}\n * {@link http://example2.com spaces|link text}\n * {@link ftp+ssh://example3.com}\n * {@link mailto:bob@example4.com}\n * {@link //example5.com}\n * {@link http://}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-link-tag-destination-syntax",
+        "text": "Unexpected character after link destination",
+        "at": 34
+      },
+      {
+        "id": "tsdoc-link-tag-destination-syntax",
+        "text": "Unexpected character after link destination",
+        "at": 72
+      },
+      {
+        "id": "tsdoc-link-tag-invalid-url",
+        "text": "An @link URL must begin with a scheme comprised only of letters and numbers followed by \"://\". (For general URLs, use an HTML \"<a>\" tag instead.)",
+        "at": 100
+      },
+      {
+        "id": "tsdoc-reference-selector-missing-parens",
+        "text": "Syntax error in declaration reference: the member selector must be enclosed in parentheses",
+        "at": 140
+      },
+      {
+        "id": "tsdoc-link-tag-invalid-url",
+        "text": "An @link URL must begin with a scheme comprised only of letters and numbers followed by \"://\". (For general URLs, use an HTML \"<a>\" tag instead.)",
+        "at": 169
+      },
+      {
+        "id": "tsdoc-link-tag-invalid-url",
+        "text": "An @link URL must have at least one character after \"://\"",
+        "at": 195
+      }
+    ]
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserLinkTag",
+    "comment": "/**\n * {@link my-example1#}\n * {@link my-example2/path3#}\n * {@link my-example4/path5/path6#}\n * {@link @scope/my-example7/path8/path9#}\n * {@link @scope/my-example7#}\n */",
+    "messages": []
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserLinkTag",
+    "comment": "/**\n * {@link example1/#}\n * {@link example2/a//b#}\n * {@link @scope/ex@mple3#}\n * {@link @/example4#}\n * {@link @scope//my-example5#}\n * {@link @scope#}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-reference-malformed-import-path",
+        "text": "An import path must not end with \"/\"",
+        "at": 22
+      },
+      {
+        "id": "tsdoc-reference-malformed-import-path",
+        "text": "An import path must not contain \"//\"",
+        "at": 44
+      },
+      {
+        "id": "tsdoc-reference-malformed-package-name",
+        "text": "The package name \"@scope/ex@mple3\" is not a valid package name",
+        "at": 62
+      },
+      {
+        "id": "tsdoc-reference-malformed-package-name",
+        "text": "The package name \"@/example4\" is not a valid package name",
+        "at": 90
+      },
+      {
+        "id": "tsdoc-reference-malformed-package-name",
+        "text": "The package name \"@scope/\" is not a valid package name",
+        "at": 113
+      },
+      {
+        "id": "tsdoc-reference-malformed-package-name",
+        "text": "The package name \"@scope\" is not a valid package name",
+        "at": 145
+      }
+    ]
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserLinkTag",
+    "comment": "/**\n * {@link @#}\n * {@link #}\n * {@link #Button}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-reference-malformed-package-name",
+        "text": "The package name \"@\" is not a valid package name",
+        "at": 14
+      },
+      {
+        "id": "tsdoc-reference-hash-syntax",
+        "text": "The hash character must be preceded by a package name or import path",
+        "at": 28
+      },
+      {
+        "id": "tsdoc-reference-hash-syntax",
+        "text": "The hash character must be preceded by a package name or import path",
+        "at": 41
+      }
+    ]
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserLinkTag",
+    "comment": "/**\n * {@link ../path1#}\n * {@link ./path2#}\n * {@link ./path3/../path4#}\n */",
+    "messages": []
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserLinkTag",
+    "comment": "/**\n * {@link /path1#}\n * {@link /path1 path2#}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-reference-malformed-import-path",
+        "text": "An import path must not start with \"/\" unless prefixed by a package name",
+        "at": 14
+      },
+      {
+        "id": "tsdoc-reference-missing-hash",
+        "text": "The declaration reference appears to contain a package name or import path, but it is missing the \"#\" delimiter",
+        "at": 33
+      }
+    ]
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserLinkTag2",
+    "comment": "/**\n * {@link Class1}\n * {@link Class2.member2}\n * {@link namespace3 . namespace4 \n *        . namespace5 | link text}\n */",
+    "messages": []
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserLinkTag2",
+    "comment": "/**\n * {@link Class1..member2}\n * {@link .member3}\n * {@link member4.}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-reference-missing-identifier",
+        "text": "Syntax error in declaration reference: expecting a member identifier",
+        "at": 8
+      },
+      {
+        "id": "tsdoc-reference-missing-identifier",
+        "text": "Syntax error in declaration reference: expecting a member identifier",
+        "at": 35
+      },
+      {
+        "id": "tsdoc-reference-missing-identifier",
+        "text": "Syntax error in declaration reference: expecting a member identifier",
+        "at": 55
+      }
+    ]
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserLinkTag2",
+    "comment": "/**\n * {@link (Class1:class)}\n * {@link (Class2:class).(member3:static)}\n * {@link Class4.(member5:static)}\n * {@link (Class6:class ) . ( member7:static)}\n */",
+    "messages": []
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserLinkTag2",
+    "comment": "/**\n * {@link (Class1:class}\n * {@link (Class2:class))}\n * {@link (Class3::class)}\n * {@link (Class4 class)}\n * {@link (member5:badname)}\n * {@link (Class6:class)(member:static)}\n * {@link Class7:class}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-reference-missing-right-paren",
+        "text": "Expecting a matching right parenthesis",
+        "at": 14
+      },
+      {
+        "id": "tsdoc-link-tag-destination-syntax",
+        "text": "Unexpected character after link destination",
+        "at": 53
+      },
+      {
+        "id": "tsdoc-reference-missing-label",
+        "text": "Expecting a selector label after the colon",
+        "at": 73
+      },
+      {
+        "id": "tsdoc-reference-selector-syntax",
+        "text": "Invalid syntax for selector",
+        "at": 74
+      },
+      {
+        "id": "tsdoc-reference-missing-colon",
+        "text": "Expecting a colon after the identifier because the expression is in parentheses",
+        "at": 93
+      },
+      {
+        "id": "tsdoc-reference-selector-syntax",
+        "text": "The selector \"badname\" is not a recognized TSDoc system selector name",
+        "at": 128
+      },
+      {
+        "id": "tsdoc-reference-missing-dot",
+        "text": "Expecting a period before the next component of a declaration reference",
+        "at": 142
+      },
+      {
+        "id": "tsdoc-reference-selector-missing-parens",
+        "text": "Syntax error in declaration reference: the member selector must be enclosed in parentheses",
+        "at": 195
+      }
+    ]
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserLinkTag2",
+    "comment": "/**\n * {@link (Class1:LABEL1)}\n * {@link ( function2 : MY_LABEL2 ) }\n */",
+    "messages": []
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserLinkTag2",
+    "comment": "/**\n * {@link (Class1:Label)}\n * {@link (Class2:SPAß)}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-reference-selector-syntax",
+        "text": "A label selector must be comprised of upper case letters, numbers, and underscores and must not start with a number",
+        "at": 22
+      },
+      {
+        "id": "tsdoc-reference-missing-right-paren",
+        "text": "Expecting a matching right parenthesis",
+        "at": 40
+      }
+    ]
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserLinkTag2",
+    "comment": "/**\n * {@link (function2 : 3 )}\n */",
+    "messages": []
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserLinkTag2",
+    "comment": "/**\n * {@link (function2:03)}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-reference-selector-syntax",
+        "text": "If the selector begins with a number, it must be a positive integer value",
+        "at": 25
+      }
+    ]
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserLinkTag2",
+    "comment": "/**\n * {@link Class$_1 . $_1member}\n */",
+    "messages": []
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserLinkTag2",
+    "comment": "/**\n * {@link Class-1}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-link-tag-destination-syntax",
+        "text": "Unexpected character after link destination",
+        "at": 19
+      }
+    ]
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserLinkTag2",
+    "comment": "/**\n * {@link \"static\"}\n * {@link Class1 . \"member\"}\n * {@link Class2.\"|\" | link text}\n */",
+    "messages": []
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserLinkTag2",
+    "comment": "/**\n * {@link \"static}\n * {@link Class1.\"\"}\n * {@link Class2.interface}\n * {@link Class3.1}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-reference-missing-quote",
+        "text": "Unexpected end of input inside quoted member identifier",
+        "at": 14
+      },
+      {
+        "id": "tsdoc-reference-empty-identifier",
+        "text": "The quoted identifier cannot be empty",
+        "at": 40
+      },
+      {
+        "id": "tsdoc-reference-unquoted-identifier",
+        "text": "The identifier \"interface\" must be quoted because it is a TSDoc system selector name",
+        "at": 61
+      },
+      {
+        "id": "tsdoc-reference-unquoted-identifier",
+        "text": "The identifier must not start with a number",
+        "at": 89
+      }
+    ]
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserLinkTag3",
+    "comment": "/**\n * {@link Class1.[WellknownSymbols.toStringPrimitive]}\n * {@link Class1 . ( [ WellknownSymbols . toStringPrimitive ] : static) | link text}\n */",
+    "messages": []
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserLinkTag3",
+    "comment": "/**\n * {@link Class1.[WellknownSymbols.toStringPrimitive}\n * {@link Class1.[]}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-reference-missing-right-bracket",
+        "text": "Missing closing square bracket for symbol reference",
+        "at": 21
+      },
+      {
+        "id": "tsdoc-missing-reference",
+        "text": "Expecting a declaration reference",
+        "at": 75
+      },
+      {
+        "id": "tsdoc-reference-symbol-syntax",
+        "text": "Missing declaration reference in symbol reference",
+        "at": 75
+      }
+    ]
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserLinkTag3",
+    "comment": "/**\n * {@link ./lib/controls/Button#Button.([(WellknownSymbols:namespace).toStringPrimitive]:instance)}\n */",
+    "messages": []
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserTags",
+    "comment": "/**\n * @one \n * @two\n */",
+    "messages": [
+      {
+        "id": "tsdoc-undefined-tag",
+        "text": "The TSDoc tag \"@one\" is not defined in this configuration",
+        "at": 7
+      },
+      {
+        "id": "tsdoc-undefined-tag",
+        "text": "The TSDoc tag \"@two\" is not defined in this configuration",
+        "at": 16
+      }
+    ]
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserTags",
+    "comment": "/**\n * @ one \n * +@two \n * @two+ \n */",
+    "messages": [
+      {
+        "id": "tsdoc-at-sign-without-tag-name",
+        "text": "Expecting a TSDoc tag name after \"@\"; if it is not a tag, use a backslash to escape this character",
+        "at": 7
+      },
+      {
+        "id": "tsdoc-at-sign-in-word",
+        "text": "The \"@\" character looks like part of a TSDoc tag; use a backslash to escape it",
+        "at": 18
+      },
+      {
+        "id": "tsdoc-characters-after-block-tag",
+        "text": "The token \"@two\" looks like a TSDoc tag but contains an invalid character \"+\"; if it is not a tag, use a backslash to escape the \"@\"",
+        "at": 27
+      }
+    ]
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserTags",
+    "comment": "/**\n * {@one} \n * {@two } \n * {@three}{@four} \n * {@five \n *   } \n */",
+    "messages": [
+      {
+        "id": "tsdoc-undefined-tag",
+        "text": "The TSDoc tag \"@one\" is not defined in this configuration",
+        "at": 8
+      },
+      {
+        "id": "tsdoc-undefined-tag",
+        "text": "The TSDoc tag \"@two\" is not defined in this configuration",
+        "at": 19
+      },
+      {
+        "id": "tsdoc-undefined-tag",
+        "text": "The TSDoc tag \"@three\" is not defined in this configuration",
+        "at": 31
+      },
+      {
+        "id": "tsdoc-undefined-tag",
+        "text": "The TSDoc tag \"@four\" is not defined in this configuration",
+        "at": 39
+      },
+      {
+        "id": "tsdoc-undefined-tag",
+        "text": "The TSDoc tag \"@five\" is not defined in this configuration",
+        "at": 51
+      }
+    ]
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserTags",
+    "comment": "/**\n * {@ one} \n * {@two~} \n * { @three} \n * {@four\n */",
+    "messages": [
+      {
+        "id": "tsdoc-malformed-inline-tag",
+        "text": "Expecting a TSDoc inline tag name after the \"{@\" characters",
+        "at": 7
+      },
+      {
+        "id": "tsdoc-escape-right-brace",
+        "text": "The \"}\" character should be escaped using a backslash to avoid confusion with a TSDoc inline tag",
+        "at": 13
+      },
+      {
+        "id": "tsdoc-characters-after-inline-tag",
+        "text": "The character \"~\" cannot appear after the TSDoc tag name; expecting a space",
+        "at": 19
+      },
+      {
+        "id": "tsdoc-escape-right-brace",
+        "text": "The \"}\" character should be escaped using a backslash to avoid confusion with a TSDoc inline tag",
+        "at": 25
+      },
+      {
+        "id": "tsdoc-malformed-inline-tag",
+        "text": "Expecting a TSDoc tag starting with \"{@\"",
+        "at": 31
+      },
+      {
+        "id": "tsdoc-characters-after-block-tag",
+        "text": "The token \"@three\" looks like a TSDoc tag but contains an invalid character \"}\"; if it is not a tag, use a backslash to escape the \"@\"",
+        "at": 33
+      },
+      {
+        "id": "tsdoc-escape-right-brace",
+        "text": "The \"}\" character should be escaped using a backslash to avoid confusion with a TSDoc inline tag",
+        "at": 39
+      },
+      {
+        "id": "tsdoc-inline-tag-missing-right-brace",
+        "text": "The TSDoc inline tag name is missing its closing \"}\"",
+        "at": 45
+      }
+    ]
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserTags",
+    "comment": "/**\n * {@one some content}\n * {@two multi\n * line}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-undefined-tag",
+        "text": "The TSDoc tag \"@one\" is not defined in this configuration",
+        "at": 8
+      },
+      {
+        "id": "tsdoc-undefined-tag",
+        "text": "The TSDoc tag \"@two\" is not defined in this configuration",
+        "at": 31
+      }
+    ]
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserTags",
+    "comment": "/**\n * {@three @taglike}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-undefined-tag",
+        "text": "The TSDoc tag \"@three\" is not defined in this configuration",
+        "at": 8
+      }
+    ]
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserTags",
+    "comment": "/**\n * {@one left \\{ right \\} backslash \\\\ }\n */",
+    "messages": [
+      {
+        "id": "tsdoc-undefined-tag",
+        "text": "The TSDoc tag \"@one\" is not defined in this configuration",
+        "at": 8
+      }
+    ]
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserTags",
+    "comment": "/**\n * {@one curly\\}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-inline-tag-missing-right-brace",
+        "text": "The TSDoc inline tag name is missing its closing \"}\"",
+        "at": 7
+      }
+    ]
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserTags",
+    "comment": "/**\n * {@two curly{}}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-inline-tag-unescaped-brace",
+        "text": "The \"{\" character must be escaped with a backslash when used inside a TSDoc inline tag",
+        "at": 7
+      },
+      {
+        "id": "tsdoc-malformed-inline-tag",
+        "text": "Expecting a TSDoc tag starting with \"{@\"",
+        "at": 18
+      },
+      {
+        "id": "tsdoc-escape-right-brace",
+        "text": "The \"}\" character should be escaped using a backslash to avoid confusion with a TSDoc inline tag",
+        "at": 19
+      },
+      {
+        "id": "tsdoc-escape-right-brace",
+        "text": "The \"}\" character should be escaped using a backslash to avoid confusion with a TSDoc inline tag",
+        "at": 20
+      }
+    ]
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserTags",
+    "comment": "/**\n * three: }\n */",
+    "messages": [
+      {
+        "id": "tsdoc-escape-right-brace",
+        "text": "The \"}\" character should be escaped using a backslash to avoid confusion with a TSDoc inline tag",
+        "at": 14
+      }
+    ]
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserValidationChecks",
+    "comment": "/**\n * @deprecated\n * Use the other thing\n */",
+    "messages": []
+  },
+  {
+    "source": "microsoft/tsdoc NodeParserValidationChecks",
+    "comment": "/**\n * @deprecated\n * \n * @public\n */",
+    "messages": [
+      {
+        "id": "tsdoc-missing-deprecation-message",
+        "text": "The @deprecated block must include a deprecation message, e.g. describing the recommended alternative",
+        "at": 7
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * Summary.\n * @foo bar\n */",
+    "messages": [
+      {
+        "id": "tsdoc-undefined-tag",
+        "text": "The TSDoc tag \"@foo\" is not defined in this configuration",
+        "at": 19
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * Summary.\n *\n * @remarks Some.\n * @returns A value.\n * @beta\n */",
+    "config": {
+      "supportForTags": {
+        "@remarks": true,
+        "@beta": true
+      }
+    },
+    "messages": [
+      {
+        "id": "tsdoc-unsupported-tag",
+        "text": "The TSDoc tag \"@returns\" is not supported by this tool",
+        "at": 40
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * Summary {@remarks inline}.\n */",
+    "messages": [
+      {
+        "id": "tsdoc-tag-should-not-have-braces",
+        "text": "The TSDoc tag \"@remarks\" is not an inline tag; it must not be enclosed in \"{ }\" braces",
+        "at": 16
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * Summary.\n * @link Foo\n */",
+    "messages": [
+      {
+        "id": "tsdoc-inline-tag-missing-braces",
+        "text": "The TSDoc tag \"@link\" is an inline tag; it must be enclosed in \"{ }\" braces",
+        "at": 19
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * Summary.\n * @deprecated\n */",
+    "messages": [
+      {
+        "id": "tsdoc-missing-deprecation-message",
+        "text": "The @deprecated block must include a deprecation message, e.g. describing the recommended alternative",
+        "at": 19
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * Summary.\n * @deprecated\n * Use `other` instead.\n */",
+    "messages": []
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * Summary.\n * @deprecated {@link Other | the other}\n */",
+    "messages": []
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * Summary.\n * @deprecated {@link Other}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-missing-deprecation-message",
+        "text": "The @deprecated block must include a deprecation message, e.g. describing the recommended alternative",
+        "at": 19
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * Summary.\n * @deprecated \\@\n */",
+    "messages": []
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * @deprecated\n * ```\n * code\n * ```\n */",
+    "messages": []
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@inheritDoc}\n * {@inheritDoc Foo}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-extra-inheritdoc-tag",
+        "text": "A doc comment cannot have more than one @inheritDoc tag",
+        "at": 24
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * Text.\n * {@inheritDoc Foo}\n * @remarks More.\n */",
+    "messages": [
+      {
+        "id": "tsdoc-inheritdoc-incompatible-tag",
+        "text": "A \"@remarks\" block must not be used, because that content is provided by the @inheritDoc tag",
+        "at": 37
+      },
+      {
+        "id": "tsdoc-inheritdoc-incompatible-summary",
+        "text": "The summary section must not have any content, because that content is provided by the @inheritDoc tag",
+        "at": 0
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@inheritDoc Foo|bar}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-inheritdoc-tag-syntax",
+        "text": "Unexpected character after declaration reference",
+        "at": 23
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@inheritDoc Foo bar}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-reference-missing-dot",
+        "text": "Expecting a period before the next component of a declaration reference",
+        "at": 8
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@inheritDoc}\n * @foo text\n */",
+    "messages": [
+      {
+        "id": "tsdoc-undefined-tag",
+        "text": "The TSDoc tag \"@foo\" is not defined in this configuration",
+        "at": 24
+      },
+      {
+        "id": "tsdoc-inheritdoc-incompatible-summary",
+        "text": "The summary section must not have any content, because that content is provided by the @inheritDoc tag",
+        "at": 0
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * Summary.\n * @custom thing\n * @mark\n */",
+    "config": {
+      "tagDefinitions": [
+        {
+          "tagName": "@custom",
+          "syntaxKind": "block"
+        },
+        {
+          "tagName": "@mark",
+          "syntaxKind": "modifier"
+        }
+      ]
+    },
+    "messages": []
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * Summary {@inl x}.\n * @inl\n */",
+    "config": {
+      "noStandardTags": true,
+      "tagDefinitions": [
+        {
+          "tagName": "@inl",
+          "syntaxKind": "inline",
+          "allowMultiple": true
+        }
+      ]
+    },
+    "messages": [
+      {
+        "id": "tsdoc-inline-tag-missing-braces",
+        "text": "The TSDoc tag \"@inl\" is an inline tag; it must be enclosed in \"{ }\" braces",
+        "at": 28
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * Summary.\n * @param x - y\n * @remarks z\n */",
+    "config": {
+      "noStandardTags": true
+    },
+    "messages": [
+      {
+        "id": "tsdoc-undefined-tag",
+        "text": "The TSDoc tag \"@param\" is not defined in this configuration",
+        "at": 19
+      },
+      {
+        "id": "tsdoc-undefined-tag",
+        "text": "The TSDoc tag \"@remarks\" is not defined in this configuration",
+        "at": 35
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * Summary.\n * @PARAM x - y\n * @Remarks z\n * @INTERNAL\n */",
+    "messages": []
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * Summary.\n * @public extra text\n * @internal @beta\n * @sealed\n */",
+    "messages": []
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * @param x desc\n */",
+    "messages": [
+      {
+        "id": "tsdoc-param-tag-missing-hyphen",
+        "text": "The @param block should be followed by a parameter name and then a hyphen",
+        "at": 7
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * @param {string} x - desc\n */",
+    "messages": [
+      {
+        "id": "tsdoc-param-tag-with-invalid-type",
+        "text": "The @param block should not include a JSDoc-style '{type}'",
+        "at": 14
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * @param x {string} - desc\n */",
+    "messages": [
+      {
+        "id": "tsdoc-param-tag-with-invalid-type",
+        "text": "The @param block should not include a JSDoc-style '{type}'",
+        "at": 16
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * @param x - {string} desc\n */",
+    "messages": [
+      {
+        "id": "tsdoc-param-tag-with-invalid-type",
+        "text": "The @param block should not include a JSDoc-style '{type}'",
+        "at": 18
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * @param {string x - desc\n */",
+    "messages": [
+      {
+        "id": "tsdoc-param-tag-with-invalid-name",
+        "text": "The @param block should be followed by a parameter name",
+        "at": 7
+      },
+      {
+        "id": "tsdoc-malformed-inline-tag",
+        "text": "Expecting a TSDoc tag starting with \"{@\"",
+        "at": 14
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * @param {{a: '}'}} x - desc\n */",
+    "messages": [
+      {
+        "id": "tsdoc-param-tag-with-invalid-type",
+        "text": "The @param block should not include a JSDoc-style '{type}'",
+        "at": 14
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * @param {\"a'}\"} x - desc\n */",
+    "messages": [
+      {
+        "id": "tsdoc-param-tag-with-invalid-type",
+        "text": "The @param block should not include a JSDoc-style '{type}'",
+        "at": 14
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * @param {\"a\\\"}\"} x - desc\n */",
+    "messages": [
+      {
+        "id": "tsdoc-param-tag-with-invalid-type",
+        "text": "The @param block should not include a JSDoc-style '{type}'",
+        "at": 14
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * @param [x] - desc\n */",
+    "messages": [
+      {
+        "id": "tsdoc-param-tag-with-invalid-optional-name",
+        "text": "The @param should not include a JSDoc-style optional name; it must not be enclosed in '[ ]' brackets.",
+        "at": 14
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * @param [x=\"]\"] - desc\n */",
+    "messages": [
+      {
+        "id": "tsdoc-param-tag-with-invalid-optional-name",
+        "text": "The @param should not include a JSDoc-style optional name; it must not be enclosed in '[ ]' brackets.",
+        "at": 14
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * @param [x=[1, [2]]] - desc\n */",
+    "messages": [
+      {
+        "id": "tsdoc-param-tag-with-invalid-optional-name",
+        "text": "The @param should not include a JSDoc-style optional name; it must not be enclosed in '[ ]' brackets.",
+        "at": 14
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * @param [x - desc\n */",
+    "messages": [
+      {
+        "id": "tsdoc-param-tag-with-invalid-optional-name",
+        "text": "The @param should not include a JSDoc-style optional name; it must not be enclosed in '[ ]' brackets.",
+        "at": 14
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * @param 1x - desc\n */",
+    "messages": [
+      {
+        "id": "tsdoc-param-tag-with-invalid-name",
+        "text": "The @param block should be followed by a valid parameter name: The identifier must not start with a number",
+        "at": 7
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * @param - desc\n */",
+    "messages": [
+      {
+        "id": "tsdoc-param-tag-with-invalid-name",
+        "text": "The @param block should be followed by a parameter name",
+        "at": 7
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * @param x.y - desc\n */",
+    "messages": [
+      {
+        "id": "tsdoc-param-tag-with-invalid-name",
+        "text": "The @param block should be followed by a valid parameter name: The identifier cannot non-word characters",
+        "at": 7
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * @param $x - desc\n */",
+    "messages": []
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * @param\n */",
+    "messages": [
+      {
+        "id": "tsdoc-param-tag-with-invalid-name",
+        "text": "The @param block should be followed by a parameter name",
+        "at": 7
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * @param x\n */",
+    "messages": [
+      {
+        "id": "tsdoc-param-tag-missing-hyphen",
+        "text": "The @param block should be followed by a parameter name and then a hyphen",
+        "at": 7
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * @param x -\n */",
+    "messages": []
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * @param\n *   x\n *   - desc\n */",
+    "messages": []
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * @typeParam T desc\n */",
+    "messages": [
+      {
+        "id": "tsdoc-param-tag-missing-hyphen",
+        "text": "The @typeParam block should be followed by a parameter name and then a hyphen",
+        "at": 7
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * @typeParam T - desc\n */",
+    "messages": []
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * @param {@link Foo} x - desc\n */",
+    "messages": [
+      {
+        "id": "tsdoc-param-tag-with-invalid-name",
+        "text": "The @param block should be followed by a parameter name",
+        "at": 7
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * a } b\n */",
+    "messages": [
+      {
+        "id": "tsdoc-escape-right-brace",
+        "text": "The \"}\" character should be escaped using a backslash to avoid confusion with a TSDoc inline tag",
+        "at": 9
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * a > b\n */",
+    "messages": [
+      {
+        "id": "tsdoc-escape-greater-than",
+        "text": "The \">\" character should be escaped using a backslash to avoid confusion with an HTML tag",
+        "at": 9
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * \\a and \\{ and \\\\\n */",
+    "messages": [
+      {
+        "id": "tsdoc-unnecessary-backslash",
+        "text": "A backslash can only be used to escape a punctuation character",
+        "at": 7
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * ends with \\\n */",
+    "messages": [
+      {
+        "id": "tsdoc-unnecessary-backslash",
+        "text": "A backslash can only be used to escape a punctuation character",
+        "at": 17
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * a@b\n */",
+    "messages": [
+      {
+        "id": "tsdoc-at-sign-in-word",
+        "text": "The \"@\" character looks like part of a TSDoc tag; use a backslash to escape it",
+        "at": 8
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * @ x\n */",
+    "messages": [
+      {
+        "id": "tsdoc-at-sign-without-tag-name",
+        "text": "Expecting a TSDoc tag name after \"@\"; if it is not a tag, use a backslash to escape this character",
+        "at": 7
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * x @\n */",
+    "messages": [
+      {
+        "id": "tsdoc-at-sign-without-tag-name",
+        "text": "Expecting a TSDoc tag name after \"@\"; if it is not a tag, use a backslash to escape this character",
+        "at": 9
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {x}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-malformed-inline-tag",
+        "text": "Expecting a TSDoc tag starting with \"{@\"",
+        "at": 7
+      },
+      {
+        "id": "tsdoc-escape-right-brace",
+        "text": "The \"}\" character should be escaped using a backslash to avoid confusion with a TSDoc inline tag",
+        "at": 9
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-malformed-inline-tag",
+        "text": "Expecting a TSDoc inline tag name after the \"{@\" characters",
+        "at": 7
+      },
+      {
+        "id": "tsdoc-escape-right-brace",
+        "text": "The \"}\" character should be escaped using a backslash to avoid confusion with a TSDoc inline tag",
+        "at": 9
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@ x}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-malformed-inline-tag",
+        "text": "Expecting a TSDoc inline tag name after the \"{@\" characters",
+        "at": 7
+      },
+      {
+        "id": "tsdoc-escape-right-brace",
+        "text": "The \"}\" character should be escaped using a backslash to avoid confusion with a TSDoc inline tag",
+        "at": 11
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * a {\n */",
+    "messages": [
+      {
+        "id": "tsdoc-malformed-inline-tag",
+        "text": "Expecting a TSDoc tag starting with \"{@\"",
+        "at": 9
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * @foo-bar\n */",
+    "messages": [
+      {
+        "id": "tsdoc-characters-after-block-tag",
+        "text": "The token \"@foo\" looks like a TSDoc tag but contains an invalid character \"-\"; if it is not a tag, use a backslash to escape the \"@\"",
+        "at": 7
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * @foo.\n */",
+    "messages": [
+      {
+        "id": "tsdoc-characters-after-block-tag",
+        "text": "The token \"@foo\" looks like a TSDoc tag but contains an invalid character \".\"; if it is not a tag, use a backslash to escape the \"@\"",
+        "at": 7
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * @1abc\n */",
+    "messages": [
+      {
+        "id": "tsdoc-malformed-tag-name",
+        "text": "A TSDoc tag name must start with a letter and contain only letters and numbers",
+        "at": 7
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * @_x\n */",
+    "messages": [
+      {
+        "id": "tsdoc-malformed-tag-name",
+        "text": "A TSDoc tag name must start with a letter and contain only letters and numbers",
+        "at": 7
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@1x}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-malformed-tag-name",
+        "text": "A TSDoc tag name must start with a letter and contain only letters and numbers",
+        "at": 7
+      },
+      {
+        "id": "tsdoc-escape-right-brace",
+        "text": "The \"}\" character should be escaped using a backslash to avoid confusion with a TSDoc inline tag",
+        "at": 11
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link:x}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-characters-after-inline-tag",
+        "text": "The character \":\" cannot appear after the TSDoc tag name; expecting a space",
+        "at": 7
+      },
+      {
+        "id": "tsdoc-escape-right-brace",
+        "text": "The \"}\" character should be escaped using a backslash to avoid confusion with a TSDoc inline tag",
+        "at": 15
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@label}\n */",
+    "messages": []
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link x\n */",
+    "messages": [
+      {
+        "id": "tsdoc-inline-tag-missing-right-brace",
+        "text": "The TSDoc inline tag name is missing its closing \"}\"",
+        "at": 7
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link x\n * y}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-reference-missing-dot",
+        "text": "Expecting a period before the next component of a declaration reference",
+        "at": 8
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link {x}}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-inline-tag-unescaped-brace",
+        "text": "The \"{\" character must be escaped with a backslash when used inside a TSDoc inline tag",
+        "at": 7
+      },
+      {
+        "id": "tsdoc-malformed-inline-tag",
+        "text": "Expecting a TSDoc tag starting with \"{@\"",
+        "at": 14
+      },
+      {
+        "id": "tsdoc-escape-right-brace",
+        "text": "The \"}\" character should be escaped using a backslash to avoid confusion with a TSDoc inline tag",
+        "at": 16
+      },
+      {
+        "id": "tsdoc-escape-right-brace",
+        "text": "The \"}\" character should be escaped using a backslash to avoid confusion with a TSDoc inline tag",
+        "at": 17
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link x\\a}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-unnecessary-backslash",
+        "text": "Error reading inline TSDoc tag: A backslash can only be used to escape a punctuation character",
+        "at": 7
+      },
+      {
+        "id": "tsdoc-unnecessary-backslash",
+        "text": "A backslash can only be used to escape a punctuation character",
+        "at": 15
+      },
+      {
+        "id": "tsdoc-escape-right-brace",
+        "text": "The \"}\" character should be escaped using a backslash to avoid confusion with a TSDoc inline tag",
+        "at": 17
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link x\\}}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-link-tag-destination-syntax",
+        "text": "Unexpected character after link destination",
+        "at": 15
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@label A} {@label B}\n */",
+    "messages": []
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@foo x}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-undefined-tag",
+        "text": "The TSDoc tag \"@foo\" is not defined in this configuration",
+        "at": 8
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * Text.\n * @see Foo\n * @see Bar\n */",
+    "messages": []
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * Text.\n * @returns A.\n * @returns B.\n */",
+    "messages": []
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * Text.\n * @example A.\n * @example B.\n */",
+    "messages": []
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * `code`\n */",
+    "messages": []
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * ``\n */",
+    "messages": [
+      {
+        "id": "tsdoc-code-span-empty",
+        "text": "A code span must contain at least one character between the backticks",
+        "at": 7
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * `x\n */",
+    "messages": [
+      {
+        "id": "tsdoc-code-span-missing-delimiter",
+        "text": "The code span is missing its closing backtick",
+        "at": 7
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * ` `\n */",
+    "messages": []
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * ```ts\n * code\n * ```\n */",
+    "messages": []
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * text ```ts\n */",
+    "messages": [
+      {
+        "id": "tsdoc-code-fence-opening-indent",
+        "text": "The opening backtick for a code fence must appear at the start of the line",
+        "at": 12
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * ```ts`x\n * code\n * ```\n */",
+    "messages": [
+      {
+        "id": "tsdoc-code-fence-specifier-syntax",
+        "text": "Error parsing code fence: The language specifier cannot contain backtick characters",
+        "at": 7
+      },
+      {
+        "id": "tsdoc-code-span-missing-delimiter",
+        "text": "The code span is missing its closing backtick",
+        "at": 12
+      },
+      {
+        "id": "tsdoc-code-fence-missing-delimiter",
+        "text": "Error parsing code fence: Missing closing delimiter",
+        "at": 26
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * ```ts\n * code\n */",
+    "messages": [
+      {
+        "id": "tsdoc-code-fence-missing-delimiter",
+        "text": "Error parsing code fence: Missing closing delimiter",
+        "at": 7
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * ```\n */",
+    "messages": [
+      {
+        "id": "tsdoc-code-fence-missing-delimiter",
+        "text": "Error parsing code fence: Missing closing delimiter",
+        "at": 7
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * ```ts\n * code\n *   ```\n */",
+    "messages": [
+      {
+        "id": "tsdoc-code-fence-closing-indent",
+        "text": "The closing delimiter for a code fence must not be indented",
+        "at": 24
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * ```ts\n * code\n * ``` trailing\n */",
+    "messages": [
+      {
+        "id": "tsdoc-code-fence-closing-syntax",
+        "text": "Unexpected characters after closing delimiter for code fence",
+        "at": 28
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * ```ts\n * code\n * ```  \n */",
+    "messages": []
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * ```ts\n * code\n * `` not yet\n * ```\n */",
+    "messages": []
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * ```ts\n *\n * ```\n */",
+    "messages": []
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * <b>bold</b>\n */",
+    "messages": []
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * <b>bold</b> <i>no</i>\n */",
+    "config": {
+      "supportedHtmlElements": [
+        "b"
+      ]
+    },
+    "messages": [
+      {
+        "id": "tsdoc-unsupported-html-name",
+        "text": "Invalid HTML element: The HTML element name \"i\" is not defined by your TSDoc configuration",
+        "at": 19
+      },
+      {
+        "id": "tsdoc-escape-greater-than",
+        "text": "The \">\" character should be escaped using a backslash to avoid confusion with an HTML tag",
+        "at": 21
+      },
+      {
+        "id": "tsdoc-unsupported-html-name",
+        "text": "Expecting an HTML element name: The HTML element name \"i\" is not defined by your TSDoc configuration",
+        "at": 24
+      },
+      {
+        "id": "tsdoc-escape-greater-than",
+        "text": "The \">\" character should be escaped using a backslash to avoid confusion with an HTML tag",
+        "at": 27
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * <b>bold</b> <i>no</i>\n */",
+    "config": {
+      "supportedHtmlElements": [
+        "b"
+      ],
+      "reportUnsupportedHtmlElements": false
+    },
+    "messages": []
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * <a href=\"x\">link</a>\n */",
+    "config": {
+      "supportedHtmlElements": [
+        "a"
+      ]
+    },
+    "messages": [
+      {
+        "id": "tsdoc-unsupported-html-name",
+        "text": "The HTML element has an invalid attribute: The HTML element name \"href\" is not defined by your TSDoc configuration",
+        "at": 7
+      },
+      {
+        "id": "tsdoc-escape-greater-than",
+        "text": "The \">\" character should be escaped using a backslash to avoid confusion with an HTML tag",
+        "at": 18
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * <a href=\"x\">link</a>\n */",
+    "config": {
+      "reportUnsupportedHtmlElements": true
+    },
+    "messages": [
+      {
+        "id": "tsdoc-unsupported-html-name",
+        "text": "Invalid HTML element: The HTML element name \"a\" is not defined by your TSDoc configuration",
+        "at": 7
+      },
+      {
+        "id": "tsdoc-escape-greater-than",
+        "text": "The \">\" character should be escaped using a backslash to avoid confusion with an HTML tag",
+        "at": 18
+      },
+      {
+        "id": "tsdoc-unsupported-html-name",
+        "text": "Expecting an HTML element name: The HTML element name \"a\" is not defined by your TSDoc configuration",
+        "at": 23
+      },
+      {
+        "id": "tsdoc-escape-greater-than",
+        "text": "The \">\" character should be escaped using a backslash to avoid confusion with an HTML tag",
+        "at": 26
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * < b>\n */",
+    "messages": [
+      {
+        "id": "tsdoc-malformed-html-name",
+        "text": "Invalid HTML element: A space is not allowed here",
+        "at": 7
+      },
+      {
+        "id": "tsdoc-escape-greater-than",
+        "text": "The \">\" character should be escaped using a backslash to avoid confusion with an HTML tag",
+        "at": 10
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * <>\n */",
+    "messages": [
+      {
+        "id": "tsdoc-malformed-html-name",
+        "text": "Invalid HTML element: Expecting an HTML name",
+        "at": 7
+      },
+      {
+        "id": "tsdoc-escape-greater-than",
+        "text": "The \">\" character should be escaped using a backslash to avoid confusion with an HTML tag",
+        "at": 8
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * <1b>\n */",
+    "messages": [
+      {
+        "id": "tsdoc-malformed-html-name",
+        "text": "Invalid HTML element: An HTML name must be an ASCII letter followed by zero or more letters, digits, or hyphens",
+        "at": 7
+      },
+      {
+        "id": "tsdoc-escape-greater-than",
+        "text": "The \">\" character should be escaped using a backslash to avoid confusion with an HTML tag",
+        "at": 10
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * <b.c>\n */",
+    "messages": [
+      {
+        "id": "tsdoc-malformed-html-name",
+        "text": "Invalid HTML element: An HTML name must be an ASCII letter followed by zero or more letters, digits, or hyphens",
+        "at": 7
+      },
+      {
+        "id": "tsdoc-escape-greater-than",
+        "text": "The \">\" character should be escaped using a backslash to avoid confusion with an HTML tag",
+        "at": 11
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * <a href>\n */",
+    "messages": [
+      {
+        "id": "tsdoc-html-tag-missing-equals",
+        "text": "The HTML element has an invalid attribute: Expecting \"=\" after HTML attribute name",
+        "at": 7
+      },
+      {
+        "id": "tsdoc-escape-greater-than",
+        "text": "The \">\" character should be escaped using a backslash to avoid confusion with an HTML tag",
+        "at": 14
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * <a href=x>\n */",
+    "messages": [
+      {
+        "id": "tsdoc-html-tag-missing-string",
+        "text": "The HTML element has an invalid attribute: Expecting an HTML string starting with a single-quote or double-quote character",
+        "at": 7
+      },
+      {
+        "id": "tsdoc-escape-greater-than",
+        "text": "The \">\" character should be escaped using a backslash to avoid confusion with an HTML tag",
+        "at": 16
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * <a href=\"x>\n */",
+    "messages": [
+      {
+        "id": "tsdoc-html-string-missing-quote",
+        "text": "The HTML element has an invalid attribute: The HTML string is missing its closing quote",
+        "at": 7
+      },
+      {
+        "id": "tsdoc-escape-greater-than",
+        "text": "The \">\" character should be escaped using a backslash to avoid confusion with an HTML tag",
+        "at": 17
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * <a href='x'y>\n */",
+    "messages": [
+      {
+        "id": "tsdoc-text-after-html-string",
+        "text": "The HTML element has an invalid attribute: The next character after a closing quote must be spacing or punctuation",
+        "at": 7
+      },
+      {
+        "id": "tsdoc-escape-greater-than",
+        "text": "The \">\" character should be escaped using a backslash to avoid confusion with an HTML tag",
+        "at": 19
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * <a href = 'x' >\n */",
+    "messages": []
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * <br/>\n */",
+    "messages": []
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * <br/ >\n */",
+    "messages": [
+      {
+        "id": "tsdoc-html-tag-missing-greater-than",
+        "text": "The HTML tag has invalid syntax: Expecting an attribute or \">\" or \"/>\"",
+        "at": 7
+      },
+      {
+        "id": "tsdoc-escape-greater-than",
+        "text": "The \">\" character should be escaped using a backslash to avoid confusion with an HTML tag",
+        "at": 12
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * <a b='c' d=\"e\"/>\n */",
+    "messages": []
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * <a b='c'\n */",
+    "messages": [
+      {
+        "id": "tsdoc-html-tag-missing-greater-than",
+        "text": "The HTML tag has invalid syntax: Expecting an attribute or \">\" or \"/>\"",
+        "at": 7
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * </a>\n */",
+    "messages": []
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * </ a>\n */",
+    "messages": [
+      {
+        "id": "tsdoc-malformed-html-name",
+        "text": "Expecting an HTML element name: A space is not allowed here",
+        "at": 7
+      },
+      {
+        "id": "tsdoc-escape-greater-than",
+        "text": "The \">\" character should be escaped using a backslash to avoid confusion with an HTML tag",
+        "at": 11
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * </a b>\n */",
+    "messages": [
+      {
+        "id": "tsdoc-html-tag-missing-greater-than",
+        "text": "Expecting a closing \">\" for the HTML tag",
+        "at": 7
+      },
+      {
+        "id": "tsdoc-escape-greater-than",
+        "text": "The \">\" character should be escaped using a backslash to avoid confusion with an HTML tag",
+        "at": 12
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * </>\n */",
+    "messages": [
+      {
+        "id": "tsdoc-malformed-html-name",
+        "text": "Expecting an HTML element name: Expecting an HTML name",
+        "at": 7
+      },
+      {
+        "id": "tsdoc-escape-greater-than",
+        "text": "The \">\" character should be escaped using a backslash to avoid confusion with an HTML tag",
+        "at": 9
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-link-tag-empty",
+        "text": "The @link tag content is missing",
+        "at": 8
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link }\n */",
+    "messages": [
+      {
+        "id": "tsdoc-link-tag-empty",
+        "text": "The @link tag content is missing",
+        "at": 8
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link http://}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-link-tag-invalid-url",
+        "text": "An @link URL must have at least one character after \"://\"",
+        "at": 14
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link http://x.dev}\n */",
+    "messages": []
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link https://x.dev | text}\n */",
+    "messages": []
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link https://x.dev y}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-link-tag-destination-syntax",
+        "text": "Unexpected character after link destination",
+        "at": 28
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link //x.dev}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-link-tag-invalid-url",
+        "text": "An @link URL must begin with a scheme comprised only of letters and numbers followed by \"://\". (For general URLs, use an HTML \"<a>\" tag instead.)",
+        "at": 14
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link 1http://x}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-link-tag-invalid-url",
+        "text": "An @link URL must begin with a scheme comprised only of letters and numbers followed by \"://\". (For general URLs, use an HTML \"<a>\" tag instead.)",
+        "at": 14
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link ftp:x}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-reference-selector-missing-parens",
+        "text": "Syntax error in declaration reference: the member selector must be enclosed in parentheses",
+        "at": 17
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link a.b-c+d:x}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-link-tag-destination-syntax",
+        "text": "Unexpected character after link destination",
+        "at": 17
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link a|b|c}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-link-tag-unescaped-text",
+        "text": "The \"|\" character may not be used in the link text without escaping it",
+        "at": 16
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link a | b {c}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-inline-tag-unescaped-brace",
+        "text": "The \"{\" character must be escaped with a backslash when used inside a TSDoc inline tag",
+        "at": 7
+      },
+      {
+        "id": "tsdoc-malformed-inline-tag",
+        "text": "Expecting a TSDoc tag starting with \"{@\"",
+        "at": 20
+      },
+      {
+        "id": "tsdoc-escape-right-brace",
+        "text": "The \"}\" character should be escaped using a backslash to avoid confusion with a TSDoc inline tag",
+        "at": 22
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link a |}\n */",
+    "messages": []
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link a | }\n */",
+    "messages": []
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link a |\n * b}\n */",
+    "messages": []
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link Foo bar}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-reference-missing-dot",
+        "text": "Expecting a period before the next component of a declaration reference",
+        "at": 8
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link Foo.bar}\n */",
+    "messages": []
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link Foo.}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-reference-missing-identifier",
+        "text": "Syntax error in declaration reference: expecting a member identifier",
+        "at": 8
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link .foo}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-reference-missing-identifier",
+        "text": "Syntax error in declaration reference: expecting a member identifier",
+        "at": 8
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link :foo}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-reference-missing-identifier",
+        "text": "Syntax error in declaration reference: expecting a member identifier",
+        "at": 8
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link pkg}\n */",
+    "messages": []
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link @scope/pkg}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-reference-missing-hash",
+        "text": "The declaration reference appears to contain a package name or import path, but it is missing the \"#\" delimiter",
+        "at": 14
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link ./path}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-reference-missing-hash",
+        "text": "The declaration reference appears to contain a package name or import path, but it is missing the \"#\" delimiter",
+        "at": 14
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link pkg#Foo}\n */",
+    "messages": []
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link @scope/pkg#Foo}\n */",
+    "messages": []
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link @scope/pkg/path/to#Foo}\n */",
+    "messages": []
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link pkg/path#Foo}\n */",
+    "messages": []
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link #Foo}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-reference-hash-syntax",
+        "text": "The hash character must be preceded by a package name or import path",
+        "at": 14
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link ./path#Foo}\n */",
+    "messages": []
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link /path#Foo}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-reference-malformed-import-path",
+        "text": "An import path must not start with \"/\" unless prefixed by a package name",
+        "at": 14
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link pkg//path#Foo}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-reference-malformed-import-path",
+        "text": "An import path must not contain \"//\"",
+        "at": 17
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link pkg/path/#Foo}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-reference-malformed-import-path",
+        "text": "An import path must not end with \"/\"",
+        "at": 17
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link @scope#Foo}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-reference-malformed-package-name",
+        "text": "The package name \"@scope\" is not a valid package name",
+        "at": 14
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link @#Foo}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-reference-malformed-package-name",
+        "text": "The package name \"@\" is not a valid package name",
+        "at": 14
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link pk!g#Foo}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-reference-malformed-package-name",
+        "text": "The package name \"pk!g\" is not a valid package name",
+        "at": 14
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link pkg# }\n */",
+    "messages": []
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link pkg#}\n */",
+    "messages": []
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link (Foo:constructor)}\n */",
+    "messages": []
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link (Foo:static)}\n */",
+    "messages": []
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link Foo.(bar:instance)}\n */",
+    "messages": []
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link (Foo)}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-reference-missing-colon",
+        "text": "Expecting a colon after the identifier because the expression is in parentheses",
+        "at": 14
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link (Foo:)}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-reference-missing-label",
+        "text": "Expecting a selector label after the colon",
+        "at": 18
+      },
+      {
+        "id": "tsdoc-reference-selector-syntax",
+        "text": "Invalid syntax for selector",
+        "at": 19
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link (Foo:}\n */",
+    "throws": "Cannot read past end of stream"
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link Foo:static}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-reference-selector-missing-parens",
+        "text": "Syntax error in declaration reference: the member selector must be enclosed in parentheses",
+        "at": 17
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link (Foo:static}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-reference-missing-right-paren",
+        "text": "Expecting a matching right parenthesis",
+        "at": 14
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link (Foo:LABEL)}\n */",
+    "messages": []
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link (Foo:L)}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-reference-selector-syntax",
+        "text": "A label selector must be comprised of upper case letters, numbers, and underscores and must not start with a number",
+        "at": 19
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link (Foo:Label)}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-reference-selector-syntax",
+        "text": "A label selector must be comprised of upper case letters, numbers, and underscores and must not start with a number",
+        "at": 19
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link (Foo:_A1)}\n */",
+    "messages": []
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link (Foo:2)}\n */",
+    "messages": []
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link (Foo:02)}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-reference-selector-syntax",
+        "text": "If the selector begins with a number, it must be a positive integer value",
+        "at": 19
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link (Foo:2a)}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-reference-selector-syntax",
+        "text": "If the selector begins with a number, it must be a positive integer value",
+        "at": 19
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link (Foo:staticx)}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-reference-selector-syntax",
+        "text": "The selector \"staticx\" is not a recognized TSDoc system selector name",
+        "at": 19
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link (Foo:x1)}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-reference-selector-syntax",
+        "text": "Invalid syntax for selector",
+        "at": 19
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link [Symbol.iterator]}\n */",
+    "messages": []
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link Foo.[Symbol.iterator]}\n */",
+    "messages": []
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link [Symbol.iterator}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-reference-missing-right-bracket",
+        "text": "Missing closing square bracket for symbol reference",
+        "at": 14
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link [ ]}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-missing-reference",
+        "text": "Expecting a declaration reference",
+        "at": 14
+      },
+      {
+        "id": "tsdoc-reference-symbol-syntax",
+        "text": "Missing declaration reference in symbol reference",
+        "at": 14
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link Foo.\"bar baz\"}\n */",
+    "messages": []
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link \"\"}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-reference-empty-identifier",
+        "text": "The quoted identifier cannot be empty",
+        "at": 14
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link \"bar}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-reference-missing-quote",
+        "text": "Unexpected end of input inside quoted member identifier",
+        "at": 14
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link static}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-reference-unquoted-identifier",
+        "text": "The identifier \"static\" must be quoted because it is a TSDoc system selector name",
+        "at": 14
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link Foo.class}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-reference-unquoted-identifier",
+        "text": "The identifier \"class\" must be quoted because it is a TSDoc system selector name",
+        "at": 18
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link $a.b$}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-missing-reference",
+        "text": "Expecting a declaration reference",
+        "at": 8
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link Foo.1a}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-reference-unquoted-identifier",
+        "text": "The identifier must not start with a number",
+        "at": 18
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link Foo . bar}\n */",
+    "messages": []
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link ( Foo : static )}\n */",
+    "messages": []
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * {@link Foo.(bar:1)|text}\n */",
+    "messages": []
+  },
+  {
+    "source": "docov",
+    "comment": "/** One line. */",
+    "messages": []
+  },
+  {
+    "source": "docov",
+    "comment": "/** One line with a tag @beta */",
+    "messages": []
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n   no star\n   @beta\n */",
+    "messages": []
+  },
+  {
+    "source": "docov",
+    "comment": "/**\r\n * CRLF {@link Foo}.\r\n * @beta\r\n */",
+    "messages": []
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n *\n *\n * after blanks\n */",
+    "messages": []
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * a\n\n * b `x\n\n * y`\n */",
+    "messages": [
+      {
+        "id": "tsdoc-code-span-missing-delimiter",
+        "text": "The code span is missing its closing backtick",
+        "at": 15
+      },
+      {
+        "id": "tsdoc-code-span-missing-delimiter",
+        "text": "The code span is missing its closing backtick",
+        "at": 23
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n *x\n *  y\n */",
+    "messages": []
+  },
+  {
+    "source": "docov",
+    "comment": "/** first\n * second */",
+    "messages": []
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * café été {@link Café}\n */",
+    "messages": [
+      {
+        "id": "tsdoc-link-tag-destination-syntax",
+        "text": "Unexpected character after link destination",
+        "at": 29
+      }
+    ]
+  },
+  {
+    "source": "docov",
+    "comment": "/**\n * tab\tseparated\t@beta\n */",
+    "messages": []
+  }
+]

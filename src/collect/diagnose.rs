@@ -1,5 +1,7 @@
 //! Runs the doc checks that are on over a file's counted items with a block.
 
+use std::cell::OnceCell;
+
 use oxc_ast::{
     CommentContent,
     ast::{BindingIdentifier, Declaration, ExportDefaultDeclarationKind, Program, Statement},
@@ -8,16 +10,23 @@ use oxc_ecmascript::BoundNames;
 use rustc_hash::FxHashSet;
 
 use super::{Found, Lines, Rules, doc, jsdoc};
-use crate::check::{Checks, Diagnostic, Subject};
+use crate::{
+    check::{Checks, Diagnostic, Subject},
+    feature::syntax::Syntax,
+    tsdoc::Configuration,
+};
 
 /// What `checks` find in `found`'s block, if it has one: an item that's `exported` or not, in the
-/// file whose text `lines` has, which declares or imports `names` at its top level.
+/// file whose text `lines` has, which declares or imports `names` at its top level, read in
+/// `syntax`, and as TSDoc by `tsdoc`.
 pub(super) fn diagnose<'s>(
     checks: &Checks,
     found: &Found<'s>,
     exported: bool,
     lines: &Lines<'s>,
     names: &FxHashSet<&'s str>,
+    syntax: Syntax,
+    tsdoc: &Configuration,
 ) -> Vec<Diagnostic> {
     let Some(doc) = &found.doc else { return Vec::new() };
     let subject = Subject {
@@ -28,6 +37,9 @@ pub(super) fn diagnose<'s>(
         shape: &found.shape,
         source: lines.source,
         names,
+        syntax,
+        tsdoc,
+        parsed: OnceCell::new(),
     };
     checks.run(&subject, |at| lines.position(at as usize))
 }

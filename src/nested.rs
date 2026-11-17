@@ -18,9 +18,12 @@ use crate::{
         baseline::{Baseline, Excused},
         nested::Nested,
         overrides::Overrides,
+        syntax::Syntax,
+        tsdoc_config::TsdocConfig,
     },
     public::Api,
     root::Root,
+    tsdoc::config::Configs,
     walk,
 };
 
@@ -48,6 +51,8 @@ pub struct Group {
     baseline_dir: PathBuf,
     /// The items its baseline lets through, if it reads one.
     excused: Option<Excused>,
+    /// The tsdoc.json it names, as a path from the current folder, if it names one.
+    tsdoc_config: Option<PathBuf>,
     /// Its files, sorted.
     pub files: Vec<PathBuf>,
 }
@@ -79,8 +84,21 @@ impl Group {
             Some(place)
         };
         let scoped_by = files.iter().map(scope_of).collect();
-        let configs = config.files.clone();
-        Ok(Self { config: path, configs, settings, rules, scoped, scoped_by, root, dir, baseline_dir, excused, files })
+        let (configs, tsdoc_config) = (config.files.clone(), settings.get::<TsdocConfig>().path(config));
+        Ok(Self {
+            config: path,
+            configs,
+            settings,
+            rules,
+            scoped,
+            scoped_by,
+            root,
+            dir,
+            baseline_dir,
+            excused,
+            tsdoc_config,
+            files,
+        })
     }
 
     /// Each of its files, with the rules it's scanned with.
@@ -179,6 +197,28 @@ impl Plan {
             public.into_iter().for_each(|rules| rules.public = Some(api.clone()));
         }
         Ok(())
+    }
+
+    /// Reads the tsdoc.json each group's files are read with, for the groups with a check that
+    /// reads blocks as TSDoc: the one the group's config names, or with TSDoc's syntax, each
+    /// file's nearest. It says which files it read and looked for, or why one can't be used.
+    pub fn load_tsdoc(&mut self) -> Result<Vec<PathBuf>, Vec<String>> {
+        let mut sources = Vec::new();
+        for group in &mut self.groups {
+            if !group.rules.checks.as_ref().is_some_and(|checks| checks.tsdoc()) {
+                continue;
+            }
+            let configs = match &group.tsdoc_config {
+                Some(path) => Configs::file(path),
+                None if group.rules.syntax == Syntax::Tsdoc => Configs::find(group.files.iter().map(PathBuf::as_path)),
+                None => continue,
+            };
+            let configs = Arc::new(configs.map_err(|e| vec![e])?);
+            sources.extend(configs.sources.iter().cloned());
+            let all = std::iter::once(&mut group.rules).chain(group.scoped.values_mut());
+            all.for_each(|rules| rules.tsdoc = Some(Arc::clone(&configs)));
+        }
+        Ok(sources)
     }
 
     /// The root config's settings.

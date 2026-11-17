@@ -3,14 +3,11 @@
 
 use std::{fs, io, path::Path};
 
-use jsonc_parser::{
-    ParseOptions,
-    cst::{CstInputValue, CstRootNode},
-};
+use jsonc_parser::cst::CstInputValue;
 
 use crate::{
     Totals,
-    config::FILE_NAMES,
+    config::{self, FILE_NAMES},
     feature::{Entry, Feature, NoKeys},
 };
 
@@ -50,9 +47,8 @@ impl UpdateThreshold {
 /// `text` with its global threshold set to `percent` (`tenths` tenths of a percent), if that
 /// raises it. Only that number changes, so comments and formatting stay.
 fn raise(text: &str, tenths: usize, percent: &str) -> Option<String> {
-    // Config::load read it already, and jsonc-parser reads everything serde_json does once
-    // comments are blanked, and comments too.
-    let root = CstRootNode::parse(text, &ParseOptions::default()).expect("the config loaded");
+    // Config::load read it already, this way too.
+    let root = config::jsonc(text).expect("the config loaded");
     let config = root.object_value_or_set();
     // An object of thresholds keeps its others and changes `global`.
     let (object, key) = match config.object_value("threshold") {

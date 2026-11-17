@@ -1,5 +1,8 @@
 //! `unix`: a line per undocumented item and per doc check finding, the way compilers write
 //! warnings, for editors and grep.
+//!
+//! An undocumented item's line is `path:line:column: kind name undocumented [docov]`, and a
+//! finding's is `path:line:column: rule-id: message`, which editors' problem matchers can read.
 
 use crate::report::{Context, Format, diagnostics, undocumented};
 

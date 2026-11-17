@@ -1,4 +1,5 @@
-//! `inherit`: what documents an item by inheriting its docs.
+//! `inherit`: what documents an item by inheriting its docs. An `@inheritdoc` tag or TSDoc's inline
+//! `{@inheritDoc}` always does.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -16,10 +17,11 @@ pub(crate) fn entry() -> Entry {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Inherit {
-    /// An `@inheritdoc` tag.
+    /// An `@inheritdoc` tag, or an inline `{@inheritDoc}` or `{@inheritDoc Ref}` anywhere in the
+    /// block.
     #[default]
     Tag,
-    /// An `@inheritdoc` tag, or TypeScript's `override` on a class member.
+    /// The same, or TypeScript's `override` on a class member.
     Override,
 }
 

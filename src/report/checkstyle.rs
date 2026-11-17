@@ -1,4 +1,8 @@
 //! `checkstyle`: Checkstyle XML, which many CI tools and editors read.
+//!
+//! It has a warning at each undocumented item, with the source `docov/undocumented`, and one at its
+//! level for each doc check finding, with the source `docov.<rule-id>` as ESLint's Checkstyle
+//! formatter writes it, such as `docov.require-param`.
 
 use crate::report::{Context, Format, RULE, escape, findings, message, severity, slash};
 

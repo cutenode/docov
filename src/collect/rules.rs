@@ -1,6 +1,6 @@
 //! Which items count, and when one is documented: the scan's settings, which features fill in.
 
-use std::{fmt, sync::Arc};
+use std::{fmt, path::Path, sync::Arc};
 
 use regex::Regex;
 use rustc_hash::FxHashSet;
@@ -10,9 +10,12 @@ use super::{Found, Via, doc};
 use crate::{
     Kind, Scope,
     check::Checks,
-    feature::{access::Access, exports::Exports, file_docs::FileDocs, inherit::Inherit, members::Members},
+    feature::{
+        access::Access, exports::Exports, file_docs::FileDocs, inherit::Inherit, members::Members, syntax::Syntax,
+    },
     glob::Globs,
     public::Api,
+    tsdoc::{self, Configuration, config::Configs},
 };
 
 /// Which items count, and when one is documented. The default is docov's out of the box.
@@ -51,6 +54,10 @@ pub struct Rules {
     pub virtual_types: bool,
     /// Which members count.
     pub members: Members,
+    /// The doc comment syntax of the stubs `--fix` writes, which also says how `valid-link` reads
+    /// `#` and which tag `require-template` asks for. The cache stamps by it, since it keeps each
+    /// item's stub and findings.
+    pub syntax: Syntax,
     /// Whether `X.prototype.m = …` and `X.m = …` add members, and `this.a = …` in a CommonJS file
     /// exports.
     pub commonjs_members: bool,
@@ -62,6 +69,10 @@ pub struct Rules {
     /// cache stamps a file by their levels and options.
     #[serde(serialize_with = "checks")]
     pub checks: Option<Arc<Checks>>,
+    /// The TSDoc configuration each file's blocks are read with, when a check reads them as TSDoc
+    /// and the config names a tsdoc.json or has TSDoc's syntax. The cache stamps a file by its own.
+    #[serde(skip)]
+    pub tsdoc: Option<Arc<Configs>>,
 }
 
 /// Regexes, by their sources.
@@ -81,6 +92,12 @@ impl From<Scope> for Rules {
 }
 
 impl Rules {
+    /// The TSDoc configuration the file at `path` is read with: TSDoc's default when none is
+    /// loaded.
+    pub fn tsdoc(&self, path: &Path) -> &Configuration {
+        self.tsdoc.as_ref().map_or(&tsdoc::DEFAULT, |configs| configs.of(path))
+    }
+
     /// Whether `found` counts: it's in scope (`exported` holds the names exported apart from their
     /// declarations, and how, and `reached` the local names the package's entry points reach in
     /// its file, if they reach it), and no filter leaves it out.

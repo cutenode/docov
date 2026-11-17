@@ -1,4 +1,13 @@
-//! `text`, the default: each file's percentage and its undocumented items, then the total.
+//! `text`: each file's percentage and its undocumented items, then the total. It's the default.
+//!
+//! `--omit-covered` leaves out fully documented files, and `--quiet` leaves out every file, so only
+//! the total and the totals after it are left. Failed gates go to stderr either way.
+//! `--sort priority` lists each file's undocumented items by what to document first: exported
+//! functions and methods (more parameters first), then classes, then the rest.
+//!
+//! On a terminal, a percentage under the global threshold is red and the undocumented items are
+//! dim. `--color always` or `--color never` says otherwise, and `NO_COLOR` turns the colors off
+//! unless `--color always` is given. Written to a file, the report has no colors.
 
 use crate::report::{Context, Format, Text};
 use crate::{FileReport, Item, Totals, metric::EXAMPLES};

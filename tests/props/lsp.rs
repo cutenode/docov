@@ -11,11 +11,12 @@ use std::{
     time::Duration,
 };
 
-use docov::{FileReport, Rules, Scope, check, collect, lsp, rewrite};
+use docov::{FileReport, Rules, Scope, check, collect, feature::syntax::Syntax, lsp, rewrite};
 use hegel::{TestCase, generators as gs};
 use lsp_server::{Connection, Message, Notification, Request, RequestId, Response};
-use lsp_types::Url;
+use lsp_types::Uri;
 use serde_json::{Value, json};
+use url::Url;
 
 use super::{Module, write};
 
@@ -77,7 +78,7 @@ impl Client {
     }
 
     /// The diagnostics published next, for `uri`.
-    fn published(&self, uri: &Url) -> Value {
+    fn published(&self, uri: &Uri) -> Value {
         let params = self.expect("textDocument/publishDiagnostics");
         assert_eq!(params["uri"], json!(uri));
         params["diagnostics"].clone()
@@ -88,12 +89,12 @@ impl Client {
         self.expect("window/logMessage")["message"].as_str().unwrap().to_owned()
     }
 
-    fn open(&self, uri: &Url, text: &str) {
+    fn open(&self, uri: &Uri, text: &str) {
         let document = json!({ "uri": uri, "languageId": "typescript", "version": 1, "text": text });
         self.notify("textDocument/didOpen", json!({ "textDocument": document }));
     }
 
-    fn change(&self, uri: &Url, text: &str) {
+    fn change(&self, uri: &Uri, text: &str) {
         let changes = json!([{ "text": text }]);
         self.notify(
             "textDocument/didChange",
@@ -101,7 +102,7 @@ impl Client {
         );
     }
 
-    fn actions(&mut self, uri: &Url, lines: (u32, u32)) -> Value {
+    fn actions(&mut self, uri: &Uri, lines: (u32, u32)) -> Value {
         let range = json!({ "start": { "line": lines.0, "character": 0 }, "end": { "line": lines.1, "character": 0 } });
         let params = json!({ "textDocument": { "uri": uri }, "range": range, "context": { "diagnostics": [] } });
         self.request("textDocument/codeAction", params).response_result.unwrap()
@@ -115,8 +116,8 @@ impl Client {
     }
 }
 
-fn uri(path: &Path) -> Url {
-    Url::from_file_path(path).unwrap()
+fn uri(path: &Path) -> Uri {
+    Url::from_file_path(path).unwrap().as_str().parse().unwrap()
 }
 
 /// What the server should publish for `report`, a scan of `text`: an information diagnostic at
@@ -161,10 +162,11 @@ fn apply(text: &str, edit: &Value) -> String {
 }
 
 /// A generated module with a line that has characters past the Basic Multilingual Plane before
-/// its item, whose column the server gives in UTF-16 code units, and a function whose block both
-/// doc checks find something in.
+/// its item, whose column the server gives in UTF-16 code units, a function whose block both doc
+/// checks find something in, and an undocumented generic function, whose stub has a tag for its
+/// parameter and its type parameter.
 fn document(tc: &TestCase) -> String {
-    let checked = "/** No period */\nexport function checked(a) {}\n";
+    let checked = "/** No period */\nexport function checked(a) {}\nexport function stubbed<T>(a: T) {}\n";
     format!("{}/* é😀 */ export const wide = 1;\n{checked}", Module::generate(tc).source)
 }
 
@@ -172,8 +174,8 @@ fn document(tc: &TestCase) -> String {
 /// config docov finds from the workspace folder (or, with none, from the file's folder) with its
 /// scope and doc checks: on open, change and save, and nothing once it closes. A document the
 /// config's `paths`, its `exclude` or a nested config's leaves out gets none. Each undocumented
-/// item with a stub has a code action that inserts it as `--fix` would, and the server shuts down
-/// and exits when the editor asks.
+/// item with a stub has a code action that inserts it as `--fix` would, in the config's `syntax`,
+/// and the server shuts down and exits when the editor asks.
 #[hegel::test(test_cases = 30)]
 fn the_server_publishes_what_a_scan_of_the_buffer_finds(tc: TestCase) {
     let dir = tempfile::tempdir().unwrap();
@@ -183,7 +185,8 @@ fn the_server_publishes_what_a_scan_of_the_buffer_finds(tc: TestCase) {
     let param = tc.draw(gs::sampled_from(vec!["off", "warn", "error"]));
     let levels = [("require-param", param), ("summary-sentence", if param == "error" { "warn" } else { "error" })];
     let paths = tc.draw(gs::booleans());
-    let mut config = json!({ "scope": scope, "rules": levels.iter().map(|(id, level)| ((*id).to_owned(), json!(level))).collect::<serde_json::Map<_, _>>(), "nested": true, "exclude": ["skip.ts"] });
+    let syntax = tc.draw(gs::sampled_from(vec![Syntax::Jsdoc, Syntax::Tsdoc]));
+    let mut config = json!({ "scope": scope, "rules": levels.iter().map(|(id, level)| ((*id).to_owned(), json!(level))).collect::<serde_json::Map<_, _>>(), "nested": true, "exclude": ["skip.ts"], "syntax": syntax });
     if paths {
         config["paths"] = json!(["src"]);
     }
@@ -192,7 +195,7 @@ fn the_server_publishes_what_a_scan_of_the_buffer_finds(tc: TestCase) {
     let settings: Vec<_> =
         levels.iter().map(|(id, level)| (*id, check::Setting::parse(id, &json!(level)).unwrap())).collect();
     let checks = check::Checks::new(settings.iter().map(|(id, setting)| (*id, setting))).map(Arc::new);
-    let rules = Rules { checks, ..Rules::from(scope) };
+    let rules = Rules { checks, syntax, ..Rules::from(scope) };
 
     let folder = json!([{ "uri": uri(&root), "name": "project" }]);
     let params = match tc.draw(gs::integers::<u8>().max_value(2)) {
@@ -284,16 +287,21 @@ fn the_server_says_what_it_can_not_do(tc: TestCase) {
 
     client.open(&uri(&root.join("notes.md")), "# notes");
     assert!(client.logged().contains("not a JavaScript or TypeScript file"));
-    let untitled = Url::parse("untitled:Untitled-1").unwrap();
+    let untitled = "untitled:Untitled-1".parse().unwrap();
     client.open(&untitled, "export const a = 1;\n");
     assert_eq!(client.logged(), "docov: untitled:Untitled-1: not a file");
+    let document = json!({ "uri": "a.ts", "languageId": "typescript", "version": 1, "text": "" });
+    client.notify("textDocument/didOpen", json!({ "textDocument": document }));
+    assert_eq!(client.logged(), "docov: a.ts: not a file");
     client.notify("textDocument/didOpen", json!({ "textDocument": 1 }));
     assert!(client.logged().starts_with("docov: invalid type"));
 
-    // A config that doesn't load, a jsdoc config, baseline or package.json that isn't there.
+    // A config that doesn't load, a jsdoc config, baseline, tsdoc config or package.json that isn't
+    // there.
     let configs = [
         (r#"{ "threshold": "x" }"#, "docov.json"),
         (r#"{ "jsdocConfig": "jsdoc.json" }"#, "jsdoc.json"),
+        (r#"{ "tsdocConfig": "tsdoc.json", "rules": { "tsdoc-tags": "warn" } }"#, "tsdoc.json"),
         (r#"{ "baseline": "base.json" }"#, "base.json"),
         (r#"{ "scope": "public" }"#, "package.json"),
         (r#"{ "scope": "public", "paths": ["."] }"#, "package.json"),
@@ -415,8 +423,15 @@ fn serve_stdio(root: &Path, input: &str, code: i32) {
     let out = child.wait_with_output().unwrap();
     let mut stdout = BufReader::new(&out.stdout[..]);
     let mut messages = Vec::new();
-    while let Some(message) = Message::read(&mut stdout).unwrap() {
-        messages.push(message);
+    loop {
+        match Message::read(&mut stdout) {
+            Ok(Some(message)) => messages.push(message),
+            Ok(None) => break,
+            // When its input breaks, the server stops without waiting on what it was writing, so
+            // its last message can be cut short.
+            Err(e) if code == 2 && e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Err(e) => panic!("{e}"),
+        }
     }
     let published = messages.iter().find_map(|m| match m {
         Message::Notification(n) if n.method == "textDocument/publishDiagnostics" => Some(n.params.clone()),
