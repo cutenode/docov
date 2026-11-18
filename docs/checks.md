@@ -303,6 +303,8 @@ export function first<T>(items: T[]): T | undefined {
 
 An exported function or method whose own body has a `throw` (outside a `try` with a `catch`, and not in a function inside it) has `@throws` (or `@exception`).
 
+Async functions, async generators among them, are left out, as [eslint-plugin-jsdoc's `require-throws`](https://github.com/gajus/eslint-plugin-jsdoc/blob/main/docs/rules/require-throws.md) leaves them out: a `throw` in one rejects the promise it returns instead of throwing to its caller. A sync generator still counts, since its `throw` reaches whoever iterates it.
+
 Fails:
 
 ```ts

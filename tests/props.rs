@@ -4219,7 +4219,8 @@ fn returned_and_yielded_values_are_documented(tc: TestCase) {
 
 /// `require-throws` finds an exported function or method whose own body throws (outside a `try`
 /// with a `catch`, and past the functions inside it) with no `@throws` or `@exception`, unless its
-/// block inherits its docs (`@inheritdoc` or `{@inheritDoc}`).
+/// block inherits its docs (`@inheritdoc` or `{@inheritDoc}`) or it's async. A sync generator still
+/// counts, and an async generator doesn't.
 #[hegel::test(test_cases = 100)]
 fn thrown_errors_are_documented(tc: TestCase) {
     let (throws_level, throws_on) = level(&tc);
@@ -4234,6 +4235,7 @@ fn thrown_errors_are_documented(tc: TestCase) {
         ("try { try { throw x; } finally { } } catch { }", false),
         ("function inner() { throw x; }", false),
         ("const g = () => { throw x; };", false),
+        ("const a = async () => { throw x; };", false),
         ("return 1;", false),
     ];
     let tags = vec![
@@ -4245,23 +4247,30 @@ fn thrown_errors_are_documented(tc: TestCase) {
     ];
     let mut source = String::new();
     let mut wanted = Vec::new();
-    for (owner, exported) in [("f", true), ("g", false), ("C", true), ("h", true)] {
+    for (owner, exported) in [("f", true), ("g", false), ("C", true), ("h", true), ("e", true)] {
         let body = tc.draw(gs::vecs(gs::sampled_from(statements.clone())).max_size(3));
         let (tag, documented) = tc.draw(gs::sampled_from(tags.clone()));
+        let is_async = tc.draw(gs::booleans());
+        let asynchronous = if is_async { "async " } else { "" };
+        let star = if owner != "h" && tc.draw(gs::booleans()) { "*" } else { "" };
         let text = body.iter().map(|(t, _)| *t).collect::<Vec<_>>().join(" ");
         let (mut line, mut column) = (source.matches('\n').count() + 1, 1);
+        let docs = format!("/**\n * Docs.\n{tag} */\n");
         match owner {
             "C" => {
-                source += &format!("export class C {{\n  /**\n   * Docs.\n{tag}   */\n  m(x) {{ {text} }}\n}}\n");
+                let method = format!("{asynchronous}{star}m(x) {{ {text} }}");
+                source += &format!("export class C {{\n  /**\n   * Docs.\n{tag}   */\n  {method}\n}}\n");
                 (line, column) = (line + 1, 3);
             }
-            "h" => source += &format!("/**\n * Docs.\n{tag} */\nexports.h = (x) => {{ {text} }};\n"),
+            "h" => source += &format!("{docs}exports.h = {asynchronous}(x) => {{ {text} }};\n"),
+            "e" => source += &format!("{docs}exports.e = {asynchronous}function{star} (x) {{ {text} }};\n"),
             name => {
                 let export = if exported { "export " } else { "" };
-                source += &format!("/**\n * Docs.\n{tag} */\n{export}function {name}(x) {{ {text} }}\n");
+                source += &format!("{docs}{export}{asynchronous}function{star} {name}(x) {{ {text} }}\n");
             }
         }
-        if exported && !documented && body.iter().any(|(_, throws)| *throws) {
+        // A throw in an async function rejects the promise it returns instead of throwing.
+        if exported && !documented && !is_async && body.iter().any(|(_, throws)| *throws) {
             wanted.push((line, column, "require-throws", "missing @throws".to_owned()));
         }
     }
