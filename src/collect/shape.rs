@@ -18,7 +18,8 @@ pub struct Shape<'s> {
     pub returns: bool,
     /// Whether its own body yields a value.
     pub yields: bool,
-    /// Whether its own body throws, outside a `try` block that has a `catch`.
+    /// Whether its own body throws, outside a `try` block that has a `catch`, and it isn't async: an
+    /// async function's `throw` rejects the promise it returns instead of throwing to its caller.
     pub throws: bool,
     /// Whether its return type is `void`, `undefined` or `Promise<void>`.
     pub void: bool,
@@ -58,7 +59,8 @@ impl<'s> Shape<'s> {
 
     /// A function's.
     pub(super) fn of(f: &Function<'s>) -> Self {
-        Self::function(f.type_parameters.as_deref(), f.return_type.as_deref(), f.body.as_deref())
+        let shape = Self::function(f.type_parameters.as_deref(), f.return_type.as_deref(), f.body.as_deref());
+        Self { throws: shape.throws && !f.r#async, ..shape }
     }
 
     fn arrow(f: &ArrowFunctionExpression<'s>) -> Self {
@@ -66,7 +68,7 @@ impl<'s> Shape<'s> {
         found.visit_arrow_function_body(&f.body);
         let shape = Self::function(f.type_parameters.as_deref(), f.return_type.as_deref(), None);
         let returns = found.returns || f.body.as_expression().is_some_and(is_value);
-        Self { returns, throws: found.throws, ..shape }
+        Self { returns, throws: found.throws && !f.r#async, ..shape }
     }
 }
 
