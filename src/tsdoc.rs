@@ -5,6 +5,7 @@
 //! `allowMultiple`, and text after a modifier tag on its line.
 
 pub mod config;
+pub mod jsdoc_types;
 
 use std::sync::LazyLock;
 

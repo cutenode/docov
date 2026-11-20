@@ -1,6 +1,7 @@
 //! `tsdoc-html`: HTML tags are well formed, as `@microsoft/tsdoc` reads them, and when the file's
 //! tsdoc.json has `supportedHtmlElements` (or `reportUnsupportedHtmlElements`), name only the
 //! elements it lists. Like TSDoc, it holds attribute names to that list too.
+//! With `tsdocJsdocTypes`, it skips the `{type}` JSDoc writes after a tag.
 
 use crate::{
     check::{Check, Entry, Finding, NoOptions, Subject},

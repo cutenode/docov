@@ -101,6 +101,8 @@ pub struct Subject<'a, 's> {
     pub syntax: Syntax,
     /// The TSDoc configuration its file is read with.
     pub tsdoc: &'a Configuration,
+    /// Whether its block is read as TSDoc without its JSDoc types and JSDoc's `@param` names.
+    pub jsdoc_types: bool,
     /// Its block, parsed as TSDoc, once a check asks.
     pub(crate) parsed: OnceCell<Parsed>,
 }
@@ -134,7 +136,13 @@ impl Subject<'_, '_> {
         let block = self.block();
         // The block's span ends before its `*/`.
         let comment = &self.source[block as usize..self.doc.span.end as usize + 2];
-        let parsed = self.parsed.get_or_init(|| tsdoc::parse(comment, self.tsdoc));
+        let parsed = self.parsed.get_or_init(|| {
+            if self.jsdoc_types {
+                tsdoc::parse(&tsdoc::jsdoc_types::blank(comment, block, self.doc), self.tsdoc)
+            } else {
+                tsdoc::parse(comment, self.tsdoc)
+            }
+        });
         let messages = parsed.messages.iter().filter(|message| message.group() == group);
         out.extend(messages.map(|m| Finding { at: block + m.at, message: format!("{}: {}", m.id, m.text) }));
     }

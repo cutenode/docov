@@ -264,8 +264,7 @@ impl Collected<'_> {
                 let (documented, ignore) = (rules.documents(f), ignores.covering(f.kind, line));
                 let mut item = Item { name: f.name.clone(), kind: f.kind, line, column, documented, facts, ignore };
                 if let Some(checks) = rules.checks.as_ref().filter(|_| !item.ignored()) {
-                    item.facts.diagnostics =
-                        diagnose::diagnose(checks, f, is_exported, &lines, &names, rules.syntax, tsdoc);
+                    item.facts.diagnostics = diagnose::diagnose(checks, f, is_exported, &lines, &names, rules, tsdoc);
                 }
                 // `--fix` leaves a block that's there already alone, a stub included.
                 if !item.documented && !item.ignored() && !f.block {

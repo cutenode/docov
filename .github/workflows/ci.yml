@@ -107,6 +107,8 @@ jobs:
       - uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2.90.1
         with:
           tool: cargo-nextest@0.9.149,cargo-llvm-cov@0.9.1
+      # @microsoft/tsdoc and @microsoft/tsdoc-config, for tests/tsdoc-oracle.test.mjs.
+      - run: npm ci
       - run: tools/coverage.sh
         shell: bash
         env:

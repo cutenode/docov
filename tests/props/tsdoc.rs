@@ -5,9 +5,14 @@ use std::{fs, path::Path, sync::Arc};
 
 use docov::{
     Rules,
-    tsdoc::config::{self, Configs},
+    tsdoc::{
+        config::{self, Configs},
+        jsdoc_types,
+    },
 };
 use hegel::{TestCase, generators as gs};
+use oxc_jsdoc::JSDoc;
+use oxc_span::Span;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
@@ -316,4 +321,238 @@ fn no_package_no_tsdoc_json(tc: TestCase) {
     let (found, looked) = config::find(&folder);
     assert_eq!(found, None);
     assert_eq!(looked.len(), 2 * folder.ancestors().count());
+}
+
+/// The checks `tsdocJsdocTypes` is for.
+const JSDOC_RULES: [&str; 3] = ["tsdoc-escapes", "tsdoc-html", "tsdoc-params"];
+
+/// JSDoc `{type}`s for [`jsdoc_types_read_as_if_blank`].
+const JSDOC_TYPES: [&str; 6] =
+    ["{string}", "{Array<string>}", "{{ a?: string }}", "{import('x').Y}", "{Map<string, number>}", "{T}"];
+
+/// `@param` names for [`jsdoc_types_read_as_if_blank`], each with the same-width name TSDoc should
+/// read it as: an optional name with its brackets and default blanked, and a dotted one with `_`
+/// for each dot.
+const JSDOC_NAMES: [(&str, &str); 6] = [
+    ("name", "name"),
+    ("[name]", " name "),
+    ("[name='a b']", " name       "),
+    ("[options={}]", " options    "),
+    ("options.flag", "options_flag"),
+    ("[options.a.b=1]", " options_a_b   "),
+];
+
+/// The tags besides `@param` that [`jsdoc_types_read_as_if_blank`] writes a JSDoc `{type}` after.
+const TYPED_TAGS: [&str; 12] = [
+    "@returns",
+    "@return",
+    "@throws",
+    "@type",
+    "@typedef",
+    "@template",
+    "@property",
+    "@yields",
+    "@satisfies",
+    "@this",
+    "@enum",
+    "@arg",
+];
+
+/// Lines with TSDoc's own mistakes where JSDoc's syntax could be: an inline tag where a type
+/// would go, and a `{` after a tag that takes no type.
+const MISTAKEN: [&str; 2] = [" * @returns {@link Foo..bar} the thing\n", " * @remarks {x} the thing\n"];
+
+/// What follows each block in a generated file: a function for it to document.
+const DOCUMENTED: &str = "\nexport function f(name: string, options: object) {}\n";
+
+/// A `@param` line with type `ty`, if any, and `name`, and ` - ` before its description if
+/// `hyphen`.
+fn param_line(ty: Option<&str>, name: &str, hyphen: bool) -> String {
+    let ty = ty.map_or(String::new(), |ty| format!("{ty} "));
+    let description = if hyphen { " - The value." } else { " The value." };
+    format!(" * @param {ty}{name}{description}\n")
+}
+
+/// A `tag` line with type `ty`, if any.
+fn typed_line(tag: &str, ty: Option<&str>) -> String {
+    format!(" * {tag} {}Folder the thing\n", ty.unwrap_or_default())
+}
+
+/// A block with a summary and then `lines`.
+fn summarized(lines: &str) -> String {
+    format!("/**\n * Summary.\n *\n{lines} */")
+}
+
+/// With `tsdocJsdocTypes` on, the `tsdoc-*` checks read a block the way TSDoc reads it with each
+/// JSDoc `{type}` after a tag that takes one blanked out, and each `@param` name written as a plain
+/// identifier of the same width. So an inline tag where a type would go, and a `{` after a tag
+/// that takes no type, are still reported, and `@param` still wants ` - ` before its description.
+/// Without it, each JSDoc type and optional or dotted name is reported.
+#[hegel::test(test_cases = 100)]
+fn jsdoc_types_read_as_if_blank(tc: TestCase) {
+    let on: Vec<(&str, Value)> = RULES.iter().map(|rule| (*rule, json!("error"))).collect();
+    let (mut jsdoc, mut plain) = (String::new(), String::new());
+    // The lines with JSDoc's syntax on them, the `@param` lines without ` - ` and with it, and the
+    // lines with TSDoc's own mistakes, each after the block's first three.
+    let (mut typed, mut hyphenless, mut hyphened, mut mistaken) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    for _ in 0..tc.draw(gs::integers::<usize>().max_value(6)) {
+        let line = jsdoc.matches('\n').count() + 4;
+        let ty = tc.draw(gs::optional(gs::sampled_from(JSDOC_TYPES.to_vec())));
+        let blank = ty.map(|ty| " ".repeat(ty.len()));
+        let (written, read_as) = match tc.draw(gs::sampled_from(vec!["param", "typed", "mistaken"])) {
+            "param" => {
+                let (name, plain_name) = tc.draw(gs::sampled_from(JSDOC_NAMES.to_vec()));
+                let hyphen = tc.draw(gs::booleans());
+                if ty.is_some() || name != plain_name {
+                    typed.push(line);
+                }
+                (if hyphen { &mut hyphened } else { &mut hyphenless }).push(line);
+                (param_line(ty, name, hyphen), param_line(blank.as_deref(), plain_name, hyphen))
+            }
+            "typed" => {
+                let tag = tc.draw(gs::sampled_from(TYPED_TAGS.to_vec()));
+                typed.extend(ty.map(|_| line));
+                (typed_line(tag, ty), typed_line(tag, blank.as_deref()))
+            }
+            _ => {
+                mistaken.push(line);
+                let text = tc.draw(gs::sampled_from(MISTAKEN.to_vec())).to_owned();
+                (text.clone(), text)
+            }
+        };
+        jsdoc += &written;
+        plain += &read_as;
+    }
+    let (jsdoc, plain) = (summarized(&jsdoc) + DOCUMENTED, summarized(&plain) + DOCUMENTED);
+    let read = diagnose(&jsdoc, &on, Rules { tsdoc_jsdoc_types: true, ..Rules::default() });
+    assert_eq!(read, diagnose(&plain, &on, Rules::default()), "{jsdoc}");
+    let on_line = |found: &[(usize, usize, &str, String, bool)], line: usize| -> Vec<String> {
+        found.iter().filter(|finding| finding.0 == line).map(|finding| finding.3.clone()).collect()
+    };
+    for &line in &hyphened {
+        assert_eq!(on_line(&read, line), Vec::<String>::new(), "{line}: {jsdoc}");
+    }
+    for &line in &hyphenless {
+        let messages = on_line(&read, line);
+        assert!(messages.iter().any(|m| m.starts_with("tsdoc-param-tag-missing-hyphen: ")), "{line}: {jsdoc}");
+    }
+    for line in mistaken {
+        assert!(!on_line(&read, line).is_empty(), "{line}: {jsdoc}");
+    }
+    let without = diagnose(&jsdoc, &on, Rules::default());
+    for line in typed {
+        assert!(!on_line(&without, line).is_empty(), "{line}: {jsdoc}");
+    }
+}
+
+/// An entry of tests/fixtures/tsdoc/jsdoc-types-corpus.json: a block, the tsdoc.json keys it's
+/// read with, the text TSDoc reads with `tsdocJsdocTypes` on, for a generated block the same block
+/// written without JSDoc's syntax, and what the `tsdoc-*` checks find in it with the setting off and
+/// on, as TSDoc's message ids by line and column.
+#[derive(serde::Serialize)]
+struct OracleEntry<'a> {
+    comment: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    config: Option<&'a Map<String, Value>>,
+    blanked: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    plain: Option<&'a str>,
+    off: Vec<(usize, usize, String)>,
+    on: Vec<(usize, usize, String)>,
+}
+
+/// A block for tests/fixtures/tsdoc/jsdoc-types-corpus.json, the tsdoc.json keys it's read with, and
+/// for a generated one, the block written without JSDoc's syntax.
+type OracleBlock = (String, Option<Map<String, Value>>, Option<String>);
+
+/// tests/fixtures/tsdoc/jsdoc-types-corpus.json, which tests/tsdoc-oracle.test.mjs checks against
+/// `@microsoft/tsdoc`, is current. It has each block in the tsdoc fixtures, each comment in
+/// corpus.json but the one TSDoc's parser throws on, and a block for each line
+/// [`jsdoc_types_read_as_if_blank`] draws, with how it reads written without JSDoc's syntax.
+/// `DOCOV_BLESS=1` writes it anew.
+#[test]
+fn jsdoc_types_corpus_is_current() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut blocks: Vec<OracleBlock> = Vec::new();
+    let mut fixtures =
+        vec![root.join("tests/fixtures/tsdoc/parser.ts"), root.join("tests/fixtures/tsdoc/jsdoc-types.js")];
+    for rule in RULES {
+        fixtures.extend(["fail.ts", "pass.ts"].map(|name| root.join("tests/fixtures/checks").join(rule).join(name)));
+    }
+    for file in fixtures {
+        let text = fs::read_to_string(file).unwrap();
+        let mut rest = text.as_str();
+        while let Some(start) = rest.find("/**") {
+            let end = start + rest[start..].find("*/").unwrap() + 2;
+            blocks.push((rest[start..end].to_owned(), None, None));
+            rest = &rest[end..];
+        }
+    }
+    let entries: Vec<Entry> = serde_json::from_str(include_str!("../fixtures/tsdoc/corpus.json")).unwrap();
+    let kept = entries.into_iter().filter(|entry| entry.throws.is_none());
+    blocks.extend(kept.map(|entry| (entry.comment, entry.config, None)));
+    let generated = |written: String, plain: String| (summarized(&written), None, Some(summarized(&plain)));
+    for ty in std::iter::once(None).chain(JSDOC_TYPES.map(Some)) {
+        let blank = ty.map(|ty| " ".repeat(ty.len()));
+        for (name, plain_name) in JSDOC_NAMES {
+            blocks.extend([false, true].map(|hyphen| {
+                generated(param_line(ty, name, hyphen), param_line(blank.as_deref(), plain_name, hyphen))
+            }));
+        }
+        blocks.extend(TYPED_TAGS.map(|tag| generated(typed_line(tag, ty), typed_line(tag, blank.as_deref()))));
+    }
+    blocks.extend(MISTAKEN.map(|line| generated(line.to_owned(), line.to_owned())));
+    let dir = tempfile::tempdir().unwrap();
+    let on: Vec<(&str, Value)> = RULES.iter().map(|rule| (*rule, json!("error"))).collect();
+    let mut lines = Vec::new();
+    for (comment, config, plain) in &blocks {
+        // A block with nothing in it documents nothing, so it isn't checked.
+        if comment[3..comment.len() - 2].chars().all(|c| c.is_whitespace() || c == '*') {
+            continue;
+        }
+        let tsdoc = config.as_ref().map(|keys| Arc::new(Configs::file(&tsdoc_json(dir.path(), keys)).unwrap()));
+        let source = comment.clone() + DOCUMENTED;
+        let found = |tsdoc_jsdoc_types| {
+            let rules = Rules { tsdoc: tsdoc.clone(), tsdoc_jsdoc_types, ..Rules::default() };
+            diagnose(&source, &on, rules)
+                .into_iter()
+                .filter(|(.., message, _)| !message.starts_with("docov-"))
+                .map(|(line, column, _, message, _)| (line, column, message.split(": ").next().unwrap().to_owned()))
+                .collect()
+        };
+        // A block's span runs from past its `/**` to before its `*/`.
+        let end = comment.len() - 2;
+        let blanked = jsdoc_types::blank(comment, 0, &JSDoc::new(&comment[3..end], Span::new(3, end as u32)));
+        let (config, plain) = (config.as_ref(), plain.as_deref());
+        let entry = OracleEntry { comment, config, blanked, plain, off: found(false), on: found(true) };
+        lines.push(serde_json::to_string(&entry).unwrap());
+    }
+    let text = format!("[\n{}\n]\n", lines.join(",\n"));
+    let path = root.join("tests/fixtures/tsdoc/jsdoc-types-corpus.json");
+    if std::env::var_os("DOCOV_BLESS").is_some() {
+        fs::write(&path, &text).unwrap();
+    }
+    let checked_in = fs::read_to_string(&path).unwrap_or_default();
+    assert!(checked_in == text, "{} is stale: run `DOCOV_BLESS=1 cargo nextest run --test props`", path.display());
+}
+
+/// With `"tsdocJsdocTypes": true` in docov.json, `tsdoc-escapes`, `tsdoc-html` and `tsdoc-params`
+/// pass a JavaScript file typed in JSDoc (tests/fixtures/tsdoc/jsdoc-types.js) that each of them
+/// fails without it, `false` or unset.
+#[hegel::test(test_cases = 4)]
+fn the_cli_reads_jsdoc_types_when_asked(tc: TestCase) {
+    let on = tc.draw(gs::booleans());
+    let dir = tempfile::tempdir().unwrap();
+    write(dir.path(), "a.js", include_str!("../fixtures/tsdoc/jsdoc-types.js"));
+    let rules: Map<String, Value> = JSDOC_RULES.iter().map(|rule| ((*rule).to_owned(), json!("error"))).collect();
+    let mut config = json!({ "rules": rules });
+    if on || tc.draw(gs::booleans()) {
+        config["tsdocJsdocTypes"] = json!(on);
+    }
+    write(dir.path(), "docov.json", &config.to_string());
+    let (code, _, stderr) = docov(dir.path(), &["--threshold", "0"], false);
+    for rule in JSDOC_RULES {
+        assert_eq!(stderr.contains(&format!(": {rule}: ")), !on, "{rule}\n{stderr}");
+    }
+    assert_eq!(code, i32::from(!on), "{stderr}");
 }

@@ -73,6 +73,8 @@ pub struct Rules {
     /// and the config names a tsdoc.json or has TSDoc's syntax. The cache stamps a file by its own.
     #[serde(skip)]
     pub tsdoc: Option<Arc<Configs>>,
+    /// Whether the `tsdoc-*` checks skip JSDoc types and read JSDoc's `@param` names.
+    pub tsdoc_jsdoc_types: bool,
 }
 
 /// Regexes, by their sources.

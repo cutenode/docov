@@ -168,7 +168,7 @@ docov also measures four other shares, each with a gate and fields in the `json`
 
 The complete, types and release-tags gates turn their figure on too; the examples gate doesn't add it to the text report. An undocumented function isn't typed. `--by-kind` adds a line of totals by kind after the text report's total, which the `json` report always has under `kinds`.
 
-[Doc checks](docs/checks.md) go past whether a block exists to what it says (a `@param` for each parameter, a summary that ends with a period). They're findings, not part of the percentage.
+[Doc checks](docs/checks.md) go past whether a block exists to what it says (a `@param` for each parameter, a summary that ends with a period). They're findings, not part of the percentage. The `tsdoc-*` checks read blocks as TSDoc. A JavaScript project that writes its types in JSDoc can set `"tsdocJsdocTypes": true` so they skip each `{type}` and read `@param [name]`, `[name=default]` and `name.sub` as names.
 
 ## Recipes
 
@@ -395,11 +395,13 @@ The npm config in the root and in `npm/docov` (`.npmrc`, and `devEngines` and `a
 
 Each flag and docov.json key belongs to a feature, one file in `src/feature/` that implements `Feature`. Each output format is one file in `src/report/` with a `FORMAT` naming it, describing it for `--help`, and rendering it. Each doc check is one file in `src/check/` that implements `Check`, its rule id the file name in kebab case. `build.rs` registers every file in the three folders, so a new feature, format or check is a new file and nothing else. A new check also needs a failing and a passing example in `tests/fixtures/checks/<rule-id>/`.
 
+`tests/tsdoc-oracle.test.mjs` runs each block in `tests/fixtures/tsdoc/jsdoc-types-corpus.json` through `@microsoft/tsdoc` and fails when docov's `tsdoc-*` findings, with `tsdocJsdocTypes` off or on, aren't its findings. `tests/props/tsdoc.rs` writes that file from the tsdoc fixtures, `corpus.json` and generated JSDoc, fails when it's stale, and rewrites it with `DOCOV_BLESS=1`.
+
 `tests/docs.rs` generates `docs/` from the schema, the registries and each format's and check's module docs, and runs the README's `console` examples on `tests/fixtures/quickstart`. It fails when any of them is stale, and `DOCOV_BLESS=1` rewrites them.
 
 ```bash
 cargo run -- [PATHS]...   # docov on a project
-tools/check.sh            # what CI runs: tools/lint.sh (format, clippy, rustdoc, matching crate and npm versions, the npm config's hardening, and the linters above), tools/coverage.sh (coverage for the whole suite, for the Hegel properties alone, and for the npm launcher's and release scripts' tests), and tools/npm-pack-check.sh (the npm packages built, checked with publint, packed, installed and run)
+tools/check.sh            # what CI runs: tools/lint.sh (format, clippy, rustdoc, matching crate and npm versions, the npm config's hardening, and the linters above), tools/coverage.sh (coverage for the whole suite, for the Hegel properties alone, and for the npm launcher's and release scripts' tests, plus tests/tsdoc-oracle.test.mjs), and tools/npm-pack-check.sh (the npm packages built, checked with publint, packed, installed and run)
 DOCOV_BLESS=1 cargo test --test docs   # regenerate docs/ and the README's example output
 tools/jsdoc-oracle.sh [DIR]   # where docov and jsdoc disagree on a folder of plain JavaScript (default: tests/fixtures/jsdoc)
 tools/npm-approve.sh 1.2.3   # put a release's staged npm packages live
