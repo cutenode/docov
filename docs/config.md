@@ -266,6 +266,12 @@ A tsdoc.json, relative to this file's folder, that the tsdoc-* checks read every
 
 Type: string.
 
+## `tsdocJsdocTypes`
+
+For JavaScript typed in JSDoc: the tsdoc-* checks skip the `{type}` after `@param`, `@returns`, `@type`, `@typedef`, `@property`, `@template`, `@throws` and the other tags that take one, and read `[name]`, `[name=default]` and `name.sub` as plain names. Everything else is checked as before, and tsdoc-params still wants ` - ` before a `@param`'s description.
+
+Type: boolean. Default: `false`.
+
 ## `typesThreshold`
 
 The lowest percentage of JavaScript functions and methods with a {type} on each @param and @returns that passes.

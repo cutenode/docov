@@ -1,6 +1,7 @@
 //! `tsdoc-params`: each `@param` and `@typeParam` names a parameter with a valid identifier and
 //! puts ` - ` before its description (`tsdoc-param-tag-missing-hyphen`), with no JSDoc-style
-//! `{type}` or `[optional]` name, as `@microsoft/tsdoc` reads them.
+//! `{type}` or `[optional]` name, as `@microsoft/tsdoc` reads them. With `tsdocJsdocTypes`, it skips
+//! the `{type}` and reads `[name]`, `[name=default]` and `name.sub` as names, and still wants ` - `.
 
 use crate::{
     check::{Check, Entry, Finding, NoOptions, Subject},

@@ -1,6 +1,7 @@
 //! `tsdoc-escapes`: text escapes what TSDoc would read as markup, as `@microsoft/tsdoc` reads it:
 //! a `{` that doesn't start an inline tag, a `}` and a `>` outside one, and an `@` in a word or
 //! without a tag name. A backslash escapes only punctuation.
+//! With `tsdocJsdocTypes`, it skips the `{type}` JSDoc writes after a tag.
 
 use crate::{
     check::{Check, Entry, Finding, NoOptions, Subject},

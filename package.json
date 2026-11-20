@@ -1,6 +1,6 @@
 {
 	"private": true,
-	"description": "Not a package. uppt, which runs release.yml, reads it, and it installs knip, oxlint and oxfmt for tools/lint.sh. docov's npm packages are in npm/.",
+	"description": "Not a package. uppt, which runs release.yml, reads it, and it installs knip, oxlint and oxfmt for tools/lint.sh, and @microsoft/tsdoc for tests/tsdoc-oracle.test.mjs. docov's npm packages are in npm/.",
 	"scripts": {
 		"knip": "knip",
 		"oxlint": "oxlint --deny-warnings",
@@ -8,6 +8,8 @@
 		"publint": "publint"
 	},
 	"devDependencies": {
+		"@microsoft/tsdoc": "0.17.1",
+		"@microsoft/tsdoc-config": "0.18.3",
 		"knip": "6.44.2",
 		"oxfmt": "0.77.0",
 		"oxlint": "1.92.0",

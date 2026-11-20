@@ -470,7 +470,7 @@ export function runTests(): void {}
 
 ## `tsdoc-escapes`
 
-Text escapes what TSDoc would read as markup, as `@microsoft/tsdoc` reads it: a `{` that doesn't start an inline tag, a `}` and a `>` outside one, and an `@` in a word or without a tag name. A backslash escapes only punctuation.
+Text escapes what TSDoc would read as markup, as `@microsoft/tsdoc` reads it: a `{` that doesn't start an inline tag, a `}` and a `>` outside one, and an `@` in a word or without a tag name. A backslash escapes only punctuation. With `tsdocJsdocTypes`, it skips the `{type}` JSDoc writes after a tag.
 
 Fails:
 
@@ -503,7 +503,7 @@ export function formatUser(name: string, email: string): string {
 
 ## `tsdoc-html`
 
-HTML tags are well formed, as `@microsoft/tsdoc` reads them, and when the file's tsdoc.json has `supportedHtmlElements` (or `reportUnsupportedHtmlElements`), name only the elements it lists. Like TSDoc, it holds attribute names to that list too.
+HTML tags are well formed, as `@microsoft/tsdoc` reads them, and when the file's tsdoc.json has `supportedHtmlElements` (or `reportUnsupportedHtmlElements`), name only the elements it lists. Like TSDoc, it holds attribute names to that list too. With `tsdocJsdocTypes`, it skips the `{type}` JSDoc writes after a tag.
 
 Fails:
 
@@ -600,7 +600,7 @@ export function retry(attempts: number): number {
 
 ## `tsdoc-params`
 
-Each `@param` and `@typeParam` names a parameter with a valid identifier and puts ` - ` before its description (`tsdoc-param-tag-missing-hyphen`), with no JSDoc-style `{type}` or `[optional]` name, as `@microsoft/tsdoc` reads them.
+Each `@param` and `@typeParam` names a parameter with a valid identifier and puts ` - ` before its description (`tsdoc-param-tag-missing-hyphen`), with no JSDoc-style `{type}` or `[optional]` name, as `@microsoft/tsdoc` reads them. With `tsdocJsdocTypes`, it skips the `{type}` and reads `[name]`, `[name=default]` and `name.sub` as names, and still wants ` - `.
 
 Fails:
 
